@@ -1575,10 +1575,6 @@ static void scp_last_ack_process(struct scp_stream *ss,
                                  uint32_t wnd,
                                  uint32_t sack)
 {
-    if (sh->flags & SCP_FLAG_ACK) {
-        scp_process_ack(ss, ack, wnd, sack);
-    }
-
     if (sh->flags & SCP_FLAG_PING) {
         scp_output_ack(ss);
     }
