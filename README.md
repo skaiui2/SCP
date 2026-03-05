@@ -2,22 +2,50 @@
 
 [中文介绍](./docs/中文/README中文.md)
 
-SCP is a lightweight, controllable, and stable stream‑oriented protocol built on top of UDP or any unreliable transport. Its goal is to provide a simple and maintainable alternative in scenarios where TCP is too heavy and KCP is too aggressive or unpredictable.
+SCP is a lightweight and predictable stream‑oriented protocol built on top of UDP or any unreliable transport. It focuses on clarity, controllability, and a small, easy‑to‑understand state machine suitable for user‑space networking, embedded systems, and internal service communication.
 
-SCP is lighter than a full TCP stack and far easier to customize or extend. Compared with aggressive protocols like KCP, SCP behaves more predictably and wastes significantly less bandwidth, making it well‑suited for controlled or high‑quality internal networks.
-
-It implements sequence numbers, ACK, SACK, retransmission, flow control, congestion control, connection setup, and graceful shutdown, while keeping the codebase small and the state machine easy to understand. This makes SCP suitable for user‑space networking, embedded systems, and internal service communication.
+It provides reliable byte‑stream delivery with sequence numbers, ACK/SACK, retransmission, flow control, congestion control, connection setup, and graceful shutdown, all implemented with a compact and readable codebase.
 
 ## Features
 
-- Reliable byte‑stream transport over an unreliable medium
-- Clean and readable implementation, easy to port or modify
-- SACK, timeout‑based retransmission, flow control, and congestion control
-- Full connection semantics (CONNECT / FIN)
-- Tunable behavior: retransmission, window strategy, and aggressiveness can be adjusted per scenario
-- Red‑black tree–based reordering and timer management for better performance under packet disorder
+- Small and readable implementation, easy to port or extend
+- Reliable byte‑stream transport with ACK/SACK
+- Timeout‑based retransmission and congestion control
+- Full connection lifecycle (CONNECT / FIN)
+- Tunable behavior for different environments
+- Efficient reordering and timer management using red‑black trees
 
 ## Design
+
+```mermaid
+classDiagram
+    direction LR
+
+    class Sender {
+        + sends packets
+        + receives ACKs
+    }
+
+    class Network {
+        <<layer>>
+        + delay
+        + loss
+        + reordering
+        + queueing
+    }
+
+    class Receiver {
+        + receives packets
+        + sends ACKs
+    }
+
+    Sender --> Network : packets →
+    Network --> Receiver : packets →
+    Receiver --> Sender : ← ACK
+
+```
+
+### state machine
 
 ```mermaid
 graph LR
@@ -62,6 +90,16 @@ graph LR
 ## Performance
 
 In a realistic weak‑network test environment with delay, jitter, light packet loss, reordering, and bandwidth limits (20 ms ± 5 ms latency, 0.5% loss, 5% reordering, 50 Mbps rate, 500‑packet queue), ,a test was written to send 100MB files bidirectionally. Each round of the loop had a certain delay, taking more than 700 seconds, with bandwidth wasted at around 10%.
+
+**nodeB:**
+
+![SCP B_seq](test/output/B_seq.png)
+
+**Transmitted bytes for nodeB**
+
+![SCP B_packet_bytes](test/output/B_packet_bytes.png)
+
+
 
 ## Use Cases
 
