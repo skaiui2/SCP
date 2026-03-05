@@ -17,6 +17,48 @@ It implements sequence numbers, ACK, SACK, retransmission, flow control, congest
 - Tunable behavior: retransmission, window strategy, and aggressiveness can be adjusted per scenario
 - Red‑black tree–based reordering and timer management for better performance under packet disorder
 
+## Design
+
+```mermaid
+graph LR
+
+    CLOSED((CLOSED))
+
+    SYN_SENT((SYN_SENT))
+    SYN_RECV((SYN_RECV))
+
+    ESTABLISHED((ESTABLISHED))
+
+    FIN_WAIT((FIN_WAIT))
+    LAST_ACK((LAST_ACK))
+
+    %% Handshake
+    CLOSED -->|send CONNECT| SYN_SENT
+    CLOSED -->|RCV CONNECT / send CONNECT_ACK| SYN_RECV
+
+    SYN_SENT -->|RCV CONNECT_ACK / send ACK| ESTABLISHED
+    SYN_RECV -->|RCV ACK| ESTABLISHED
+
+    %% Data transfer
+    ESTABLISHED -->|RCV DATA / RCV ACK| ESTABLISHED
+
+    %% Active close
+    ESTABLISHED -->|send FIN+ACK| FIN_WAIT
+
+    %% Passive close
+    ESTABLISHED -->|RCV FIN+ACK / send ACK+FIN| LAST_ACK
+
+    %% FIN_WAIT transitions
+    FIN_WAIT -->|RCV FIN+ACK/ send ACK| CLOSED
+
+    %% LAST_ACK transitions
+    LAST_ACK -->|RCV ACK| CLOSED
+
+    %% FIN retransmission loops
+    FIN_WAIT -->|t_fin timeout / retransmit FIN| FIN_WAIT
+    LAST_ACK -->|t_fin timeout / retransmit FIN| LAST_ACK
+```
+
 ## Performance
 
 In a realistic weak‑network test environment with delay, jitter, light packet loss, reordering, and bandwidth limits (20 ms ± 5 ms latency, 0.5% loss, 5% reordering, 50 Mbps rate, 500‑packet queue), ,a test was written to send 100MB files bidirectionally. Each round of the loop had a certain delay, taking more than 700 seconds, with bandwidth wasted at around 10%.
@@ -146,3 +188,4 @@ Example outputs (included in the repository under `test/output/`):
 ![SCP A_cwnd](test/output/A_cwnd.png)
 
 These figures illustrate SCP’s behavior under delay, jitter, packet loss, and reordering, including visible cwnd drops caused by timeout‑driven retransmissions.
+

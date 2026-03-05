@@ -175,17 +175,17 @@ python3 analyze_scp.py
 
 seq变化：
 
-![SCP A_seq](test/output/A_seq.png)
+![SCP A_seq](../../test/output/A_seq.png)
 
 A端耗时700000多ms，总发送数据：
 
 带宽利用率还不错，并没有很多浪费：
 
-![SCP A_packet_bytes](test/output/A_packet_bytes.png)
+![SCP A_packet_bytes](../../test/output/A_packet_bytes.png)
 
 拥塞控制窗口变化：
 
 其中的小范围密集竖线是因为遇到了频繁的超时丢包事件：
 
-![SCP A_cwnd](test/output/A_cwnd.png)
+![SCP A_cwnd](../../test/output/A_cwnd.png)
 
