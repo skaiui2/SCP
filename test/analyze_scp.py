@@ -92,7 +92,6 @@ def main():
     RTT_FIELDS = ["srtt", "rto"]
     CORE_FIELDS = ["seq", "ack", "snd_una", "snd_nxt", "rcv_nxt"]
 
-    # 新增：吞吐相关字段
     THROUGHPUT_FIELDS = ["packet_bytes", "packet_count"]
 
     for prefix in ["A", "B"]:
@@ -112,7 +111,6 @@ def main():
         for f in RTT_FIELDS:
             plot_curve_json(logfile, f, f"{prefix} {f}", f"{prefix}_{f}.png")
 
-        # 新增：吞吐图
         for f in THROUGHPUT_FIELDS:
             plot_curve_json(logfile, f, f"{prefix} {f}", f"{prefix}_{f}.png")
 
