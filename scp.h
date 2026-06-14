@@ -109,6 +109,7 @@ struct scp_stream {
     uint32_t packet_count; 
 
     uint32_t srtt;                      // smoothed RTT
+    uint32_t rtt_min;
     uint32_t rttvar;                    // RTT variation
     uint32_t rto;                       // retransmission timeout
     uint32_t rto_recovery;
@@ -140,6 +141,7 @@ struct scp_stream {
 
     uint8_t fr_active;
     uint32_t last_gap_rexmit_ack;
+    uint16_t cong_q16;  
 };
 
 /*
