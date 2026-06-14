@@ -258,37 +258,47 @@ void scp_timer_process(void)
     }
 }
 
-#define SCP_TAU_Q16        ((int32_t)(0.50 * 65536))
-#define SCP_INV_MU_Q16  ((int32_t)3276800)
+#define Q16(x) ((int32_t)((x) * 65536))
+#define SCP_TAU_Q16 ((int32_t)(0.50 * 65536))
 
-static inline void scp_update_rtt_min(struct scp_stream *ss, uint32_t rtt_sample)
+static const int32_t ALPHA_Q16  = Q16(8.0);
+static const int32_t BETA_Q16   = Q16(4.0);
+static const int32_t GAMMA_Q16  = Q16(-3.0);
+
+static inline uint16_t logistic_q16(int32_t z_q16)
 {
-    if (ss->rtt_min == 0 || rtt_sample < ss->rtt_min)
-        ss->rtt_min = rtt_sample;
+    const int32_t Z_MIN = Q16(-4.0);
+    const int32_t Z_MAX = Q16(4.0);
+
+    if (z_q16 <= Z_MIN) return 0;
+    if (z_q16 >= Z_MAX) return 65535;
+
+    int64_t num = (int64_t)(z_q16 - Z_MIN) * 65535;
+    int64_t den = (int64_t)(Z_MAX - Z_MIN);
+
+    return (uint16_t)(num / den);
 }
 
-static inline uint16_t scp_copa_prob_q16(struct scp_stream *ss)
+static inline uint16_t scp_md_prob_q16(struct scp_stream *ss)
 {
-    if (ss->rtt_min == 0 || ss->srtt <= ss->rtt_min)
-        return 0;
+    if (ss->sent_cnt == 0) return 0;
 
-    int32_t dq = (int32_t)(ss->srtt - ss->rtt_min);
-    int32_t dq_q16 = dq << 16;
+    int32_t p_q16 = (int32_t)(((int64_t)ss->loss_cnt << 16) / ss->sent_cnt);
 
-    int64_t num = (int64_t)dq_q16 << 16;
-    int64_t den = (int64_t)dq_q16 + (int64_t)SCP_INV_MU_Q16;
-    if (den <= 0)
-        return 0;
+    int32_t d_q16 = 0;
+    if (ss->srtt > ss->rtt_min)
+        d_q16 = (int32_t)(((int64_t)(ss->srtt - ss->rtt_min) << 16) / ss->rtt_min);
 
-    int32_t p = (int32_t)(num / den);
-    if (p < 0) p = 0;
-    if (p > 65535) p = 65535;
-    return (uint16_t)p;
+    int32_t z_q16 = GAMMA_Q16
+                  + (int32_t)(((int64_t)ALPHA_Q16 * p_q16) >> 16)
+                  + (int32_t)(((int64_t)BETA_Q16  * d_q16) >> 16);
+
+    return logistic_q16(z_q16);
 }
 
 static inline int scp_loss_like_congestion(struct scp_stream *ss)
 {
-    ss->cong_q16 = scp_copa_prob_q16(ss);
+    ss->cong_q16 = scp_md_prob_q16(ss);
     return ss->cong_q16 > SCP_TAU_Q16;
 }
 
@@ -317,6 +327,8 @@ static void scp_timer_retrans_cb(void *arg)
 
     scp_retransmit(ss);
     scp_output_one(ss);
+
+    ss->loss_cnt++;
     ss->timeout_count++;
 
     if (ss->timeout_count > RETRANS_COUNT_MAX) {
@@ -460,6 +472,8 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .fr_active = 0,
             .packet_bytes = 0,
             .packet_count = 0,
+            .sent_cnt = 0,
+            .loss_cnt = 0,
             .cong_q16 = 0
     };
 
@@ -1067,6 +1081,12 @@ void scp_snd_buf_free(struct scp_stream *ss, uint32_t ack)
     }
 }
 
+static inline void scp_update_rtt_min(struct scp_stream *ss, uint32_t rtt_sample)
+{
+    if (ss->rtt_min == 0 || rtt_sample < ss->rtt_min)
+        ss->rtt_min = rtt_sample;
+}
+
 /* 
  * An ACK tells us the peer has received data.
  * We update RTT from this sample and free sent buffers.
@@ -1090,10 +1110,13 @@ static void scp_process_ack(struct scp_stream *ss,
 
         scp_update_rtt_min(ss, rtt);
         scp_update_rtt(ss, rtt);
-        ss->cong_q16 = scp_copa_prob_q16(ss);
+        ss->cong_q16 = scp_md_prob_q16(ss);
 
         ss->rtt_ts = 0;
         ss->rto_recovery = 0;
+
+        ss->sent_cnt = 0;
+        ss->loss_cnt = 0;
     }
 
     ss->snd_una = ack;
@@ -1173,6 +1196,7 @@ static void scp_process_ack(struct scp_stream *ss,
                 ss->fr_active = 1;
             }
 
+            ss->loss_cnt++;
             scp_retransmit_gap(ss, ack, sack); 
             ss->last_gap_rexmit_ack = ack; 
 
@@ -1266,6 +1290,7 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb,
 
     ss->packet_count++;
     ss->packet_bytes += frag_len;
+    ss->sent_cnt++;
     if (SEQ_GT(end_seq, ss->snd_nxt)) {
         ss->snd_nxt = end_seq;
     }

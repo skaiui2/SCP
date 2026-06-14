@@ -20,7 +20,6 @@ struct scp_timer {
 
 //Set by yourself.
 #define RETRANS_COUNT_MAX 12
-#define MIN_SEG 32
 #define SCP_RTO_MIN 100
 #define SCP_RTO_MAX 1000
 #define RETRANS_RECO_MAX 16
@@ -141,6 +140,9 @@ struct scp_stream {
 
     uint8_t fr_active;
     uint32_t last_gap_rexmit_ack;
+
+    uint32_t sent_cnt;
+    uint32_t loss_cnt;
     uint16_t cong_q16;  
 };
 
