@@ -9,8 +9,74 @@
 #include "scp.h"
 #include "scp_time.h"
 
+#define MSG_DATA 1
+#define MSG_DONE 2
+
 #define SEND_BUF 2048
-#define TEST_FILE_SIZE (100 * 1024 * 1024)   
+#define TEST_FILE_SIZE (100 * 1024 * 1024)
+
+struct app_state {
+    int local_done;
+    int peer_done;
+    size_t sent;
+    size_t received;
+};
+
+static int send_tlv(int fd, uint8_t type, const void *data, uint16_t len)
+{
+    uint16_t total = 3 + len;
+    uint8_t *p = malloc(total);
+    if (!p) return -1;
+    p[0] = type;
+    p[1] = len >> 8;
+    p[2] = len & 0xFF;
+    if (len) memcpy(p + 3, data, len);
+    int r = scp_send(fd, p, total);
+    free(p);
+    return r;
+}
+
+struct tlv_rx_state {
+    uint8_t hdr[3];
+    int hdr_have;
+    uint16_t len;
+    uint16_t have;
+};
+
+static void tlv_rx_init(struct tlv_rx_state *st)
+{
+    st->hdr_have = 0;
+    st->len = 0;
+    st->have = 0;
+}
+
+static int recv_tlv(int fd,
+                    struct tlv_rx_state *st,
+                    uint8_t *type,
+                    uint8_t *buf,
+                    uint16_t *len)
+{
+    if (st->hdr_have < 3) {
+        int n = scp_recv(fd, st->hdr + st->hdr_have, 3 - st->hdr_have);
+        if (n <= 0) return 0;
+        st->hdr_have += n;
+        if (st->hdr_have < 3) return 0;
+        *type = st->hdr[0];
+        st->len = ((uint16_t)st->hdr[1] << 8) | st->hdr[2];
+        *len = st->len;
+        st->have = 0;
+    }
+
+    if (st->have < st->len) {
+        int m = scp_recv(fd, buf + st->have, st->len - st->have);
+        if (m <= 0) return 0;
+        st->have += m;
+        if (st->have < st->len) return 0;
+    }
+
+    st->hdr_have = 0;
+    return 1;
+}
 
 struct scp_udp_user {
     cal_udp_ctx_t *udp;
@@ -25,7 +91,8 @@ static int scp_udp_send(void *user, const void *buf, size_t len)
 
 int main()
 {
-    printf("[A] generating %d bytes test.bin...\n", TEST_FILE_SIZE);
+    printf("[A] full-duplex TLV test, expecting %d bytes...\n", TEST_FILE_SIZE);
+
     if (access("testA.bin", F_OK) != 0) {
         int gen = open("testA.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
         for (size_t i = 0; i < TEST_FILE_SIZE; i++) {
@@ -37,25 +104,16 @@ int main()
         printf("[A] testA.bin exists, skip generating.\n");
     }
 
-    int fd_send = open("testA.bin", O_RDONLY); 
-    if (fd_send < 0) { 
-        perror("open testA.bin for read"); 
-        return 1; 
-    } 
-    
-    int fd_recv = open("outA.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644); 
-    if (fd_recv < 0) { 
-        perror("open outA.bin for write"); 
-        close(fd_send); 
-        return 1; 
-    }
+    int fd_send = open("testA.bin", O_RDONLY);
+    if (fd_send < 0) return 1;
+
+    int fd_recv = open("outA.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd_recv < 0) return 1;
 
     cal_udp_ctx_t udp;
     cal_udp_open(&udp, "127.0.0.1", 5000);
-
     int fl = fcntl(udp.sockfd, F_GETFL, 0);
     fcntl(udp.sockfd, F_SETFL, fl | O_NONBLOCK);
-    srand(time(NULL));
 
     scp_init(16);
     scp_time_init();
@@ -73,16 +131,13 @@ int main()
         .close = NULL
     };
 
-    uint8_t sendbuf[SEND_BUF];
-    uint8_t recvbuf[2048];
-    uint8_t rxbuf[2048];
+    uint8_t sendbuf[SEND_BUF], tlvbuf[SEND_BUF], rxbuf[SEND_BUF];
     struct sockaddr_in src;
 
-    size_t sent = 0;
-    size_t received = 0;
+    struct app_state app = {0};
+    struct tlv_rx_state tlvst; tlv_rx_init(&tlvst);
 
     struct scp_stream *ss = scp_stream_alloc(&st, 1, 1);
-
     scp_connect(1);
 
     printf("[A] waiting ESTABLISHED...\n");
@@ -93,7 +148,7 @@ int main()
         usleep(1000);
     }
 
-    printf("[A] ESTABLISHED, start full-duplex...\n");
+    printf("[A] ESTABLISHED, start full-duplex with TLV...\n");
 
     ssize_t cur_len = 0;
     size_t  cur_off = 0;
@@ -101,54 +156,64 @@ int main()
 
     while (1) {
         scp_timer_process();
-
         int rn = cal_udp_recv(&udp, rxbuf, sizeof(rxbuf), &src);
         if (rn > 0) scp_input(ss, rxbuf, rn);
 
-        if (!have_pending && sent < TEST_FILE_SIZE) {
+        if (!have_pending && app.sent < TEST_FILE_SIZE) {
             cur_len = read(fd_send, sendbuf, sizeof(sendbuf));
             if (cur_len > 0) {
                 cur_off = 0;
                 have_pending = 1;
-            } else {
-                have_pending = 0;
             }
         }
 
         if (have_pending) {
-            int ret = scp_send(1, sendbuf + cur_off, (size_t)cur_len - cur_off);
-            if (ret == 0) {
-                sent += (size_t)cur_len;
-                have_pending = 0;
-            } else if (ret == -2) {
-                
-            } else {
-                goto out;
+            uint16_t chunk = cur_len - cur_off;
+            int r = send_tlv(1, MSG_DATA, sendbuf + cur_off, chunk);
+            if (r == 0) {
+                app.sent += chunk;
+                cur_off += chunk;
+                if (cur_off >= cur_len) have_pending = 0;
+            } else if (r != -2) goto out;
+        }
+
+        uint8_t type; uint16_t len;
+        int r = recv_tlv(1, &tlvst, &type, tlvbuf, &len);
+        if (r < 0) goto out;
+        if (r > 0) {
+            if (type == MSG_DATA) {
+                write(fd_recv, tlvbuf, len);
+                app.received += len;
+            } else if (type == MSG_DONE) {
+                app.peer_done = 1;
+                printf("[A] peer DONE received.\n");
             }
         }
 
-        int n = scp_recv(1, recvbuf, sizeof(recvbuf));
-        if (n > 0) {
-            write(fd_recv, recvbuf, n);
-            received += (size_t)n;
+        if (!app.local_done && app.received == TEST_FILE_SIZE) {
+            int r2 = send_tlv(1, MSG_DONE, NULL, 0);
+            if (r2 == 0) {
+                app.local_done = 1;
+                printf("[A] local DONE sent.\n");
+            } else if (r2 != -2) goto out;
         }
 
-        if (sent == TEST_FILE_SIZE &&
-            ss->snd_una == ss->snd_nxt &&
-            received == TEST_FILE_SIZE) {
+        if (app.local_done && app.peer_done &&
+            app.sent == TEST_FILE_SIZE &&
+            app.received == TEST_FILE_SIZE) {
 
-            printf("[A] full-duplex done, sending FIN...\n");
+            printf("[A] both DONE, sending FIN...\n");
             scp_close(1);
 
-            int wait_ms = 0;
-            while (ss->state != SCP_CLOSED && wait_ms < 5000) {
+            int t = 0;
+            while (ss->state != SCP_CLOSED && t < 5000) {
                 scp_timer_process();
                 int rn2 = cal_udp_recv(&udp, rxbuf, sizeof(rxbuf), &src);
                 if (rn2 > 0) scp_input(ss, rxbuf, rn2);
                 usleep(1000);
-                wait_ms++;
+                t++;
             }
-            printf("[A] CLOSED or timeout, state=%d\n", ss->state);
+            printf("[A] CLOSED.\n");
             break;
         }
 
@@ -158,8 +223,7 @@ int main()
 out:
     close(fd_send);
     close(fd_recv);
-
-    printf("ALL down!!!");
+    printf("ALL down!!!\n");
     return 0;
 }
 
