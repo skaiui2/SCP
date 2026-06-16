@@ -22,8 +22,8 @@ struct scp_timer {
 #define RETRANS_COUNT_MAX 12
 #define SCP_RTO_MIN 100
 #define SCP_RTO_MAX 1000
-#define RETRANS_RECO_MAX 16
-#define RETRANS_GAP_MAX  8
+#define RETRANS_RECO_MAX 1
+#define RETRANS_GAP_MAX  1
 #define SCP_RECV_LIMIT 0xFFFF
 #define SEND_WIN_INIT 0xFFFF
 #define RECV_WIN_INIT     0xFFFF
@@ -108,7 +108,7 @@ struct scp_stream {
     uint32_t packet_count; 
 
     uint32_t srtt;                      // smoothed RTT
-    uint32_t rtt_min;
+    uint32_t rtt_base;
     uint32_t rttvar;                    // RTT variation
     uint32_t rto;                       // retransmission timeout
     uint32_t rto_recovery;
@@ -143,7 +143,11 @@ struct scp_stream {
 
     uint32_t sent_cnt;
     uint32_t loss_cnt;
-    uint16_t cong_q16;  
+
+    uint16_t p;
+    int32_t  d;
+    int32_t  z;
+    uint16_t cong_q; 
 };
 
 /*

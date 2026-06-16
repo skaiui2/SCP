@@ -120,7 +120,10 @@ static void scp_dump_hdr(struct scp_stream *ss,
            "\"sb_cc\":%u,"
            "\"packet_bytes\":%u,"
            "\"packet_count\":%u,"
-           "\"cong_q16\":%u"
+           "\"cong_q\":%u,"
+           "\"p\":%u,"
+           "\"d\":%d,"
+           "\"z\":%d"
            "}\n",
 
            scp_now_time(),
@@ -153,7 +156,10 @@ static void scp_dump_hdr(struct scp_stream *ss,
            ss->sb_cc,
            ss->packet_bytes,
            ss->packet_count,
-           ss->cong_q16
+           ss->cong_q,
+           ss->p,
+           ss->d,
+           ss->z
     );
 #endif
 }
@@ -258,48 +264,70 @@ void scp_timer_process(void)
     }
 }
 
-#define Q16(x) ((int32_t)((x) * 65536))
-#define SCP_TAU_Q16 ((int32_t)(0.50 * 65536))
+//if you want to know why, please see docs.
+#define Q16_ONE   (1 << 16)
+#define Q16_INT(x) ((int32_t)((x) << 16))
+#define Q16(x) ((int32_t)((x) << 16))
 
-static const int32_t ALPHA_Q16  = Q16(8.0);
-static const int32_t BETA_Q16   = Q16(4.0);
-static const int32_t GAMMA_Q16  = Q16(-3.0);
+#define CONFIG_P (1 << 15)
 
-static inline uint16_t logistic_q16(int32_t z_q16)
+#define NEG8       Q16(-8)
+#define POS8       Q16(8)
+
+static const uint16_t ALPHA = 8;
+static const uint16_t BETA  = 4;
+static const int32_t  GAMMA = Q16_INT(-3);
+
+//I think this is ok for [-8, 8].
+static inline int32_t exp_q16(int32_t z)
 {
-    const int32_t Z_MIN = Q16(-4.0);
-    const int32_t Z_MAX = Q16(4.0);
+    if (z < NEG8) z = NEG8;
+    if (z > POS8) z = POS8;
 
-    if (z_q16 <= Z_MIN) return 0;
-    if (z_q16 >= Z_MAX) return 65535;
-
-    int64_t num = (int64_t)(z_q16 - Z_MIN) * 65535;
-    int64_t den = (int64_t)(Z_MAX - Z_MIN);
-
-    return (uint16_t)(num / den);
+    int32_t z2 = (int32_t)(((int64_t)z * z) >> 17);
+    return Q16_ONE + z + z2;
 }
 
-static inline uint16_t scp_md_prob_q16(struct scp_stream *ss)
+static inline uint16_t logistic(int32_t z)
 {
-    if (ss->sent_cnt == 0) return 0;
+    if (z > Q16(20)) z = Q16(20);
+    if (z < Q16(-20)) z = Q16(-20);
 
-    int32_t p_q16 = (int32_t)(((int64_t)ss->loss_cnt << 16) / ss->sent_cnt);
+    int32_t e = exp_q16(-z);
+    int32_t d = 65536 + e;
+    int32_t q = (int32_t)(((int64_t)65536 << 16) / d);
 
-    int32_t d_q16 = 0;
-    if (ss->srtt > ss->rtt_min)
-        d_q16 = (int32_t)(((int64_t)(ss->srtt - ss->rtt_min) << 16) / ss->rtt_min);
+    if (q > 65535) q = 65535;
+    if (q < 0) q = 0;
+    return (uint16_t)q;
+}
 
-    int32_t z_q16 = GAMMA_Q16
-                  + (int32_t)(((int64_t)ALPHA_Q16 * p_q16) >> 16)
-                  + (int32_t)(((int64_t)BETA_Q16  * d_q16) >> 16);
+static inline void scp_md_prob(struct scp_stream *ss)
+{
+    if (ss->sent_cnt == 0)
+        return;
 
-    return logistic_q16(z_q16);
+    ss->p = (uint16_t)(((uint64_t)ss->loss_cnt << 16) / ss->sent_cnt);
+
+    if (ss->rtt_base > 0 && ss->srtt > 0) {
+        int32_t ratio = (int32_t)(((int64_t)ss->srtt << 16) / ss->rtt_base);
+        ss->d = ratio - Q16_ONE;
+        if (ss->d < 0) ss->d = 0;
+    } else {
+        ss->d = 0;
+    }
+
+    ss->z = GAMMA
+          + (int32_t)((int64_t)ALPHA * ss->p)
+          + (int32_t)((int64_t)BETA  * ss->d);
+
+    ss->cong_q = logistic(ss->z);
 }
 
 static inline int scp_loss_like_congestion(struct scp_stream *ss)
 {
-    ss->cong_q16 = scp_md_prob_q16(ss);
-    return ss->cong_q16 > SCP_TAU_Q16;
+    scp_md_prob(ss);
+    return ss->cong_q > CONFIG_P;
 }
 
 /*
@@ -328,7 +356,6 @@ static void scp_timer_retrans_cb(void *arg)
     scp_retransmit(ss);
     scp_output_one(ss);
 
-    ss->loss_cnt++;
     ss->timeout_count++;
 
     if (ss->timeout_count > RETRANS_COUNT_MAX) {
@@ -450,7 +477,6 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
     *ss = (struct scp_stream) {
             .src_fd   = src_fd,
             .dst_fd   = dst_fd,
-            .rtt_min = 0,
             .srtt = 0,
             .rttvar = 0,
             .rto = SCP_RTO_MIN,
@@ -474,7 +500,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .packet_count = 0,
             .sent_cnt = 0,
             .loss_cnt = 0,
-            .cong_q16 = 0
+            .cong_q = 0
     };
 
     scp_timer_node_init(&ss->t_retrans);
@@ -560,6 +586,22 @@ static void scp_update_rtt(struct scp_stream *s, uint32_t rtt_sample)
     s->rto = rto;
 }
 
+static inline void scp_update_rtt_base(struct scp_stream *ss, uint32_t rtt)
+{
+    if (rtt == 0)
+        return;
+
+    if (ss->rtt_base == 0) {
+        ss->rtt_base = rtt;
+        return;
+    }
+
+    if (rtt < ss->rtt_base) {
+        ss->rtt_base = rtt;
+    } else {
+        ss->rtt_base = (ss->rtt_base * 7 + rtt) / 8; 
+    }
+}
 
 /*
 * sb_hiwat is limit, and can't overout.
@@ -650,6 +692,7 @@ void scp_retransmit_gap(struct scp_stream *ss,
             if (frag == 0)
                 return;
 
+            ss->loss_cnt++;
             scp_output_data(ss, sb, start, frag); 
 
             start += frag;
@@ -703,6 +746,7 @@ static void scp_retransmit(struct scp_stream *ss)
         uint32_t remain = total - start;
         uint32_t frag   = (remain > mss) ? mss : remain;
 
+        ss->loss_cnt++;
         scp_output_data(ss, sb, start, frag);
         sent++;
     }
@@ -1081,12 +1125,6 @@ void scp_snd_buf_free(struct scp_stream *ss, uint32_t ack)
     }
 }
 
-static inline void scp_update_rtt_min(struct scp_stream *ss, uint32_t rtt_sample)
-{
-    if (ss->rtt_min == 0 || rtt_sample < ss->rtt_min)
-        ss->rtt_min = rtt_sample;
-}
-
 /* 
  * An ACK tells us the peer has received data.
  * We update RTT from this sample and free sent buffers.
@@ -1108,9 +1146,9 @@ static void scp_process_ack(struct scp_stream *ss,
         uint32_t rtt = scp_now_time() - ss->rtt_ts;
         if (!rtt) rtt = 1;
 
-        scp_update_rtt_min(ss, rtt);
+        scp_update_rtt_base(ss, rtt);
         scp_update_rtt(ss, rtt);
-        ss->cong_q16 = scp_md_prob_q16(ss);
+        scp_md_prob(ss);
 
         ss->rtt_ts = 0;
         ss->rto_recovery = 0;
@@ -1196,7 +1234,6 @@ static void scp_process_ack(struct scp_stream *ss,
                 ss->fr_active = 1;
             }
 
-            ss->loss_cnt++;
             scp_retransmit_gap(ss, ack, sack); 
             ss->last_gap_rexmit_ack = ack; 
 
@@ -1442,7 +1479,6 @@ int scp_send(int fd, void *buf, size_t len)
     uint8_t *pure_data = (uint8_t *)sb->data + sizeof(struct scp_hdr);
     memcpy(pure_data, buf, len);
     queue_enqueue(&ss->snd_q, &sb->list);
-
     scp_output(ss, SCP_FLAG_DATA);
 
     return 0;
