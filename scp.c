@@ -269,21 +269,20 @@ void scp_timer_process(void)
 #define Q16_INT(x) ((int32_t)((x) << 16))
 #define Q16(x) ((int32_t)((x) << 16))
 
-#define CONFIG_P (1 << 15)
+#define CONFIG_P ((uint32_t)((0.5)*65535))
 
-#define NEG8       Q16(-8)
-#define POS8       Q16(8)
+#define NEG16       Q16(-16)
+#define POS16       Q16(16)
 
-static const uint16_t ALPHA = 8;
-static const uint16_t BETA  = 4;
-static const int32_t  GAMMA = Q16_INT(-3);
+static const int32_t GAMMA_Q16 = Q16_INT(-6);
+static const int32_t ALPHA_Q16 = Q16_INT(50);
+static const int32_t BETA_Q16  = Q16_INT(16);
+static const int32_t ETA_Q16   = Q16_INT(1);
 
-//I think this is ok for [-8, 8].
 static inline int32_t exp_q16(int32_t z)
 {
-    if (z < NEG8) z = NEG8;
-    if (z > POS8) z = POS8;
-
+    if (z < NEG16) z = NEG16;
+    if (z > POS16) z = POS16;
     int32_t z2 = (int32_t)(((int64_t)z * z) >> 17);
     return Q16_ONE + z + z2;
 }
@@ -292,11 +291,9 @@ static inline uint16_t logistic(int32_t z)
 {
     if (z > Q16(20)) z = Q16(20);
     if (z < Q16(-20)) z = Q16(-20);
-
     int32_t e = exp_q16(-z);
     int32_t d = 65536 + e;
     int32_t q = (int32_t)(((int64_t)65536 << 16) / d);
-
     if (q > 65535) q = 65535;
     if (q < 0) q = 0;
     return (uint16_t)q;
@@ -307,7 +304,13 @@ static inline void scp_md_prob(struct scp_stream *ss)
     if (ss->sent_cnt == 0)
         return;
 
-    ss->p = (uint16_t)(((uint64_t)ss->loss_cnt << 16) / ss->sent_cnt);
+    uint32_t p_sample = (uint32_t)(((uint64_t)ss->loss_cnt << 16) / ss->sent_cnt);
+
+    ss->p     = (uint32_t)(((uint64_t)ss->p     * 7  + p_sample) >> 3);
+    ss->p_ema = (uint32_t)(((uint64_t)ss->p_ema * 31 + p_sample) >> 5);
+
+    int32_t p_dev = (int32_t)ss->p - (int32_t)ss->p_ema;
+    if (p_dev < 0) p_dev = 0;
 
     if (ss->rtt_base > 0 && ss->srtt > 0) {
         int32_t ratio = (int32_t)(((int64_t)ss->srtt << 16) / ss->rtt_base);
@@ -317,11 +320,13 @@ static inline void scp_md_prob(struct scp_stream *ss)
         ss->d = 0;
     }
 
-    ss->z = GAMMA
-          + (int32_t)((int64_t)ALPHA * ss->p)
-          + (int32_t)((int64_t)BETA  * ss->d);
+    int32_t z = GAMMA_Q16;
+    z += (int32_t)(((int64_t)ALPHA_Q16 * p_dev) >> 16);
+    z += (int32_t)(((int64_t)BETA_Q16  * ss->d) >> 16);
+    z += (int32_t)(((int64_t)ETA_Q16   * p_dev * ss->d) >> 32);
 
-    ss->cong_q = logistic(ss->z);
+    ss->z = z;
+    ss->cong_q = logistic(z);
 }
 
 static inline int scp_loss_like_congestion(struct scp_stream *ss)
@@ -500,6 +505,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .packet_count = 0,
             .sent_cnt = 0,
             .loss_cnt = 0,
+            .p_ema = 0,
             .cong_q = 0
     };
 
