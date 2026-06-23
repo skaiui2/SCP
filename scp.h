@@ -143,6 +143,7 @@ struct scp_stream {
 
     uint32_t sent_cnt;
     uint32_t loss_cnt;
+    uint32_t p_ema;  
 
     uint16_t p;
     int32_t  d;
