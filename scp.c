@@ -24,7 +24,7 @@ static struct list_node scp_stream_queue;
 #define SCP_DUMP 1
 #define SCP_RUN_DEBUG 1
 
-#ifdef SCP_RUN_DEBUG
+#if SCP_RUN_DEBUG
     #define SCP_PRINT(...) printf(__VA_ARGS__)
 #else
     #define SCP_PRINT(...) ((void)0)
