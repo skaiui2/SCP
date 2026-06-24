@@ -25,11 +25,18 @@ target_include_directories(nodeA PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../
     ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/include
+    /usr/local/include
 )
+
+link_directories(/usr/local/lib)
 
 find_package(Threads REQUIRED)
 
 target_link_libraries(nodeA PRIVATE
     Threads::Threads
     rt
+    noiseprotocol
+    noisekeys
+    noiseprotobufs
+    sodium
 )
