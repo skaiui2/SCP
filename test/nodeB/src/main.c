@@ -13,17 +13,15 @@
 
 #define MSG_DATA 1
 #define MSG_DONE 2
-
 #define RECV_BUF 2048
 #define NOISE_OVERHEAD 16
 #define TLV_BUF (RECV_BUF + NOISE_OVERHEAD)
-
 #define TEST_FILE_SIZE (100 * 1024 * 1024)
 
 #pragma pack(push, 1)
 struct obfs_hdr {
-    uint8_t  magic[2];
-    uint8_t  flags;
+    uint8_t magic[2];
+    uint8_t flags;
     uint16_t length;
 };
 #pragma pack(pop)
@@ -51,9 +49,7 @@ static void rand_bytes(uint8_t *p, size_t n)
 
 static void jitter_sleep(void)
 {
-    int base = 1000;
-    int j = rand() % 1000;
-    usleep(base + j);
+    usleep(1000 + rand() % 1000);
 }
 
 static int send_tlv(int fd, uint8_t type, const void *data, uint16_t len)
@@ -199,6 +195,7 @@ int main()
 {
     srand((unsigned)time(NULL));
     printf("[B] starting full-duplex encrypted transfer...\n");
+
     if (access("testB.bin", F_OK) != 0) {
         int gen = open("testB.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
         for (size_t i = 0; i < TEST_FILE_SIZE; i++) {
@@ -207,58 +204,80 @@ int main()
         }
         close(gen);
     }
+
     int fd_send = open("testB.bin", O_RDONLY);
     int fd_recv = open("outB.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
     cal_udp_ctx_t udp;
     cal_udp_open(&udp, "0.0.0.0", 443);
+
     int fl = fcntl(udp.sockfd, F_GETFL, 0);
     fcntl(udp.sockfd, F_SETFL, fl | O_NONBLOCK);
+
     scp_init(16);
     scp_time_init();
+
     struct scp_udp_user user;
     memset(&user, 0, sizeof(user));
     user.udp = &udp;
+
     struct scp_transport_class st = {
-        .user  = &user,
-        .send  = scp_udp_send,
-        .recv  = NULL,
+        .user = &user,
+        .send = scp_udp_send,
+        .recv = NULL,
         .close = NULL
     };
+
     uint8_t sendbuf[RECV_BUF], tlvbuf[TLV_BUF], rxbuf[OBFS_MAX_PACKET];
     struct sockaddr_in src;
     memset(&src, 0, sizeof(src));
+
     int peer_inited = 0;
     struct app_state app = {0};
-    struct tlv_rx_state tlvst; tlv_rx_init(&tlvst);
+    struct tlv_rx_state tlvst;
+    tlv_rx_init(&tlvst);
+
     struct scp_stream *ss = scp_stream_alloc(&st, 1, 1);
+
     printf("[B] waiting for SCP ESTABLISHED...\n");
+
     while (ss->state != SCP_ESTABLISHED) {
         scp_timer_process();
         udp_recv_and_feed_scp(&udp, ss, &src, rxbuf, sizeof(rxbuf));
+
         if (!peer_inited && src.sin_port != 0) {
             user.peer = src;
             peer_inited = 1;
         }
+
         jitter_sleep();
     }
+
     printf("[B] SCP established, doing Noise handshake...\n");
+
     NoiseCipherState *send_cs, *recv_cs;
     noise_scp_handshake_nodeB(1, &send_cs, &recv_cs, &udp, ss, &src);
+
     printf("[B] Noise handshake OK, starting encrypted transfer...\n");
+
     ssize_t cur_len = 0;
-    size_t  cur_off = 0;
-    int     have_plain = 0;
-    static uint8_t  pending_cipher[TLV_BUF];
+    size_t cur_off = 0;
+    int have_plain = 0;
+
+    static uint8_t pending_cipher[TLV_BUF];
     static uint16_t pending_cipher_len = 0;
-    static uint16_t pending_plain_len  = 0;
-    int             pending_valid      = 0;
+    static uint16_t pending_plain_len = 0;
+    int pending_valid = 0;
+
     while (1) {
         scp_timer_process();
         udp_recv_and_feed_scp(&udp, ss, &src, rxbuf, sizeof(rxbuf));
+
         if (!peer_inited && src.sin_port != 0) {
             user.peer = src;
             peer_inited = 1;
         }
+
         if (!pending_valid && app.sent < TEST_FILE_SIZE) {
             if (!have_plain) {
                 cur_len = read(fd_send, sendbuf, sizeof(sendbuf));
@@ -270,36 +289,39 @@ int main()
                     goto out;
                 }
             }
+
             if (have_plain) {
                 uint16_t remain = (uint16_t)(cur_len - cur_off);
                 if (remain == 0) {
                     have_plain = 0;
                 } else {
-                    uint16_t plain_chunk;
-                    if (remain <= 128)
-                        plain_chunk = remain;
-                    else
-                        plain_chunk = (uint16_t)rand_range(128, remain);
+                    uint16_t plain_chunk =
+                        (remain <= 128) ? remain : rand_range(128, remain);
+
                     memcpy(pending_cipher, sendbuf + cur_off, plain_chunk);
+
                     NoiseBuffer enc;
                     noise_buffer_set_inout(enc, pending_cipher,
                                            plain_chunk, sizeof(pending_cipher));
+
                     int err = noise_cipherstate_encrypt(send_cs, &enc);
                     if (err != NOISE_ERROR_NONE) {
                         printf("[B] encrypt error=%d\n", err);
                         goto out;
                     }
+
                     pending_cipher_len = (uint16_t)enc.size;
-                    pending_plain_len  = plain_chunk;
-                    pending_valid      = 1;
+                    pending_plain_len = plain_chunk;
+                    pending_valid = 1;
                 }
             }
         }
+
         if (pending_valid) {
             int r = send_tlv(1, MSG_DATA, pending_cipher, pending_cipher_len);
             if (r == 0) {
                 app.sent += pending_plain_len;
-                cur_off  += pending_plain_len;
+                cur_off += pending_plain_len;
                 if (cur_off >= cur_len) have_plain = 0;
                 pending_valid = 0;
             } else if (r != -2) {
@@ -307,49 +329,63 @@ int main()
                 goto out;
             }
         }
-        uint8_t type; uint16_t len;
+
+        uint8_t type;
+        uint16_t len;
         int r = recv_tlv(1, &tlvst, &type, tlvbuf, &len);
+
         if (r < 0) {
             printf("[B] recv_tlv error\n");
             goto out;
         }
+
         if (r > 0) {
             if (type == MSG_DATA) {
                 uint8_t plain[TLV_BUF];
                 memcpy(plain, tlvbuf, len);
+
                 NoiseBuffer dec;
                 noise_buffer_set_inout(dec, plain, len, sizeof(plain));
+
                 int err = noise_cipherstate_decrypt(recv_cs, &dec);
                 if (err != NOISE_ERROR_NONE) {
                     printf("[B] decrypt error=%d\n", err);
                     goto out;
                 }
+
                 write(fd_recv, plain, dec.size);
                 app.received += dec.size;
             } else if (type == MSG_DONE) {
                 app.peer_done = 1;
             }
         }
+
         if (!app.local_done && app.received == TEST_FILE_SIZE) {
             int r2 = send_tlv(1, MSG_DONE, NULL, 0);
             if (r2 == 0) app.local_done = 1;
             else if (r2 != -2) goto out;
         }
+
         if (app.local_done && app.peer_done &&
             app.sent == TEST_FILE_SIZE &&
             app.received == TEST_FILE_SIZE) {
+
             printf("[B] transfer complete, closing SCP...\n");
             scp_close(1);
+
             while (ss->state != SCP_CLOSED) {
                 scp_timer_process();
                 udp_recv_and_feed_scp(&udp, ss, &src, rxbuf, sizeof(rxbuf));
                 jitter_sleep();
             }
+
             printf("[B] CLOSED.\n");
             break;
         }
+
         jitter_sleep();
     }
+
 out:
     printf("[B] ALL down. sent=%zu recv=%zu\n", app.sent, app.received);
     close(fd_send);
