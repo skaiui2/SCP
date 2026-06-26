@@ -53,7 +53,7 @@ static int a = 0;
 static void scp_debug_dump_tx(const char *reason,
                               const void *buf, size_t len)
 {
-#ifndef SCP_DEBUG
+#if SCP_DEBUG
     printf("\n[SCP TX] %s, a:%d\n", reason, a++);
     scp_debug_hex("TX Packet", buf, len);
 #endif
@@ -62,7 +62,7 @@ static void scp_debug_dump_tx(const char *reason,
 static int b = 0;
 static void scp_debug_dump_rx(const void *buf, size_t len)
 {
-#ifndef SCP_DEBUG
+#if SCP_DEBUG
     printf("\n[SCP RX] %d\n", b++);
     scp_debug_hex("RX Packet", buf, len);
 #endif
@@ -269,7 +269,7 @@ void scp_timer_process(void)
 #define Q16_INT(x) ((int32_t)((x) << 16))
 #define Q16(x) ((int32_t)((x) << 16))
 
-#define CONFIG_P ((uint32_t)((0.5)*65535))
+#define CONFIG_P ((uint32_t)((0.1)*65535))
 
 #define NEG16       Q16(-16)
 #define POS16       Q16(16)
@@ -301,29 +301,25 @@ static inline uint16_t logistic(int32_t z)
 
 static inline void scp_md_prob(struct scp_stream *ss)
 {
-    if (ss->sent_cnt == 0)
-        return;
+    int32_t p_dev = 0;
+    if (ss->p > 0) {
+        int32_t ratio = (int32_t)(((int64_t)ss->p_ema << 16) / ss->p);
+        p_dev = ratio - Q16_ONE;
+        if (p_dev < 0) p_dev = 0;
+    }
 
-    uint32_t p_sample = (uint32_t)(((uint64_t)ss->loss_cnt << 16) / ss->sent_cnt);
-
-    ss->p     = (uint32_t)(((uint64_t)ss->p     * 7  + p_sample) >> 3);
-    ss->p_ema = (uint32_t)(((uint64_t)ss->p_ema * 31 + p_sample) >> 5);
-
-    int32_t p_dev = (int32_t)ss->p - (int32_t)ss->p_ema;
-    if (p_dev < 0) p_dev = 0;
-
+    int32_t d = 0;
     if (ss->rtt_base > 0 && ss->srtt > 0) {
         int32_t ratio = (int32_t)(((int64_t)ss->srtt << 16) / ss->rtt_base);
-        ss->d = ratio - Q16_ONE;
-        if (ss->d < 0) ss->d = 0;
-    } else {
-        ss->d = 0;
+        d = ratio - Q16_ONE;
+        if (d < 0) d = 0;
     }
+    ss->d = d;
 
     int32_t z = GAMMA_Q16;
     z += (int32_t)(((int64_t)ALPHA_Q16 * p_dev) >> 16);
-    z += (int32_t)(((int64_t)BETA_Q16  * ss->d) >> 16);
-    z += (int32_t)(((int64_t)ETA_Q16   * p_dev * ss->d) >> 32);
+    z += (int32_t)(((int64_t)BETA_Q16  * d)     >> 16);
+    z += (int32_t)(((int64_t)ETA_Q16   * p_dev * d) >> 32);
 
     ss->z = z;
     ss->cong_q = logistic(z);
@@ -347,19 +343,16 @@ static void scp_timer_retrans_cb(void *arg)
 
     if (scp_loss_like_congestion(ss)) {
         uint32_t flight = ss->snd_nxt - ss->snd_una;
-        uint32_t mss = MTU - sizeof(struct scp_hdr);
-        if (mss == 0) mss = 1;
         uint32_t half = flight / 2;
-        uint32_t min_thresh = 2 * mss;
+        uint32_t min_thresh = 2 * MSS;
         ss->ssthresh = (half > min_thresh) ? half : min_thresh;
-        ss->cwnd = mss;
+        ss->cwnd = MSS;
     }
 
     ss->dup_acks = 0;
     ss->fr_active = 0;
 
     scp_retransmit(ss);
-    scp_output_one(ss);
 
     ss->timeout_count++;
 
@@ -411,7 +404,8 @@ static void scp_timer_persist_cb(void *arg)
         }
     }
 
-    if (!list_empty(&ss->snd_q) && ss->snd_wnd <= MTU) {
+    if ((!list_empty(&ss->snd_q) && ss->snd_wnd <= (2*MTU)) || 
+        ss->cwnd <= (2*MTU)) {
         need_probe = 1;
     }
 
@@ -653,10 +647,6 @@ void scp_retransmit_gap(struct scp_stream *ss,
 {
     struct list_node *n;
 
-    uint32_t mss = MTU - sizeof(struct scp_hdr);
-    if (mss == 0)
-        mss = 1;
-
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
 
         struct scp_buf *sb = container_of(n, struct scp_buf, list);
@@ -684,7 +674,7 @@ void scp_retransmit_gap(struct scp_stream *ss,
 
         while (start < total && sent_frags < RETRANS_GAP_MAX) { 
             uint32_t remain = total - start;
-            uint32_t frag   = (remain > mss) ? mss : remain;
+            uint32_t frag   = (remain > MSS) ? MSS : remain;
 
             uint32_t frag_seq = seg_start + start;
             uint32_t frag_end = frag_seq + frag;
@@ -714,9 +704,6 @@ void scp_retransmit_gap(struct scp_stream *ss,
  */
 static void scp_retransmit(struct scp_stream *ss)
 {
-    uint32_t mss = MTU - sizeof(struct scp_hdr);
-    if (mss == 0) mss = 1;
-
     uint32_t max_frags = 1 << ss->rto_recovery;
 
     if (max_frags > RETRANS_RECO_MAX)
@@ -750,7 +737,7 @@ static void scp_retransmit(struct scp_stream *ss)
         }
 
         uint32_t remain = total - start;
-        uint32_t frag   = (remain > mss) ? mss : remain;
+        uint32_t frag   = (remain > MSS) ? MSS : remain;
 
         ss->loss_cnt++;
         scp_output_data(ss, sb, start, frag);
@@ -1131,6 +1118,25 @@ void scp_snd_buf_free(struct scp_stream *ss, uint32_t ack)
     }
 }
 
+static inline void scp_update_loss(struct scp_stream *ss)
+{
+    if (ss->sent_cnt == 0)
+        return;
+
+    uint32_t p_sample =
+        (uint32_t)(((uint64_t)ss->loss_cnt << 16) / ss->sent_cnt);
+
+    if (ss->p == 0)
+        ss->p = p_sample;
+    else {
+        uint32_t min_p = (p_sample < ss->p) ? p_sample : ss->p;
+        int32_t delta = (int32_t)min_p - (int32_t)ss->p;
+        ss->p = ss->p + (delta >> 3);   // p += (min_p - p)/8
+    }
+
+    ss->p_ema = (ss->p_ema * 31 + ss->p) >> 5;
+}
+
 /* 
  * An ACK tells us the peer has received data.
  * We update RTT from this sample and free sent buffers.
@@ -1154,6 +1160,7 @@ static void scp_process_ack(struct scp_stream *ss,
 
         scp_update_rtt_base(ss, rtt);
         scp_update_rtt(ss, rtt);
+        scp_update_loss(ss);
         scp_md_prob(ss);
 
         ss->rtt_ts = 0;
@@ -1183,13 +1190,11 @@ static void scp_process_ack(struct scp_stream *ss,
     if (SEQ_GT(ss->snd_una, old_una)) {
 
         uint32_t acked = ss->snd_una - old_una;
-        uint32_t mss   = MTU - sizeof(struct scp_hdr);
-        if (!mss) mss = 1;
 
         // Exit Fast Recovery 
         if (ss->fr_active) {
             ss->fr_active = 0;
-            ss->cwnd = ss->ssthresh + mss;
+            ss->cwnd = ss->ssthresh + MSS;
         }
 
         ss->timeout_count = 0;
@@ -1198,13 +1203,10 @@ static void scp_process_ack(struct scp_stream *ss,
         // Normal Reno growth (SS/CA) 
         if (!ss->fr_active) {
             if (ss->cwnd < ss->ssthresh) {
-                uint32_t inc = acked;
-                if (inc < mss)  inc = mss;
-                if (inc > 2*mss) inc = 2*mss;
-                ss->cwnd += inc;
+                ss->cwnd += MSS;
             } else {
                 uint32_t base = ss->cwnd ? ss->cwnd : 1;
-                uint32_t inc  = (mss*mss)/base;
+                uint32_t inc  = (MSS * MSS) / base;
                 if (!inc) inc = 1;
                 ss->cwnd += inc;
             }
@@ -1225,18 +1227,15 @@ static void scp_process_ack(struct scp_stream *ss,
     if (SEQ_LT(ss->snd_una, ss->snd_nxt)) {
         ss->dup_acks++;
 
-        uint32_t mss = MTU - sizeof(struct scp_hdr);
-        if (!mss) mss = 1;
-
         // Enter Fast Recovery 
         if (ss->dup_acks == 3 && !ss->fr_active) {
             if (scp_loss_like_congestion(ss)) {
                 uint32_t flight = ss->snd_nxt - ss->snd_una;
                 uint32_t half = flight / 2;
-                uint32_t min_th = 2*mss;
+                uint32_t min_th = 2*MSS;
 
                 ss->ssthresh = (half > min_th) ? half : min_th;
-                ss->cwnd = ss->ssthresh + 3*mss;
+                ss->cwnd = ss->ssthresh + 3*MSS;
                 ss->fr_active = 1;
             }
 
@@ -1251,11 +1250,11 @@ static void scp_process_ack(struct scp_stream *ss,
         }
         // FR ongoing: inflate cwnd 
         else if (ss->fr_active && ss->dup_acks > 3) {
-            ss->cwnd += mss;
+            ss->cwnd += MSS;
         }
     }
+
 out:
-    //ack dirver, must output
     if (!list_empty(&ss->snd_q)) {
         scp_output(ss, SCP_FLAG_DATA);
     }
@@ -1345,10 +1344,8 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb,
 static int scp_output_one(struct scp_stream *ss)
 {
     uint32_t now = scp_now_time();
-    uint32_t mss = MTU - sizeof(struct scp_hdr);
-    if (mss == 0) mss = 1;
+    struct list_node *n = NULL;
 
-    struct list_node *n;
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
         struct scp_buf *sb = container_of(n, struct scp_buf, list);
         uint32_t total = sb->len - sizeof(struct scp_hdr);
@@ -1358,7 +1355,7 @@ static int scp_output_one(struct scp_stream *ss)
             continue;
 
         uint32_t remain   = total - sent;
-        uint32_t frag_len = (remain > mss) ? mss : remain;
+        uint32_t frag_len = (remain > MSS) ? MSS : remain;
 
         if (frag_len == 0)
             continue;
