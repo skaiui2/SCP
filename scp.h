@@ -19,9 +19,9 @@ struct scp_timer {
 };
 
 //Set by yourself.
-#define RETRANS_COUNT_MAX 12
-#define SCP_RTO_MIN 100
-#define SCP_RTO_MAX 1000
+#define RETRANS_COUNT_MAX 1000
+#define SCP_RTO_MIN 200
+#define SCP_RTO_MAX 2000
 #define RETRANS_RECO_MAX 1
 #define RETRANS_GAP_MAX  1
 #define SCP_RECV_LIMIT 0xFFFF
@@ -32,6 +32,7 @@ struct scp_timer {
 #define PERSIST_INTERVAL 200
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
+#define MSS (MTU - sizeof(struct scp_hdr))
 
 struct scp_transport_class {
     int (*send)(void *user, const void *buf, size_t len);
@@ -144,8 +145,8 @@ struct scp_stream {
     uint32_t sent_cnt;
     uint32_t loss_cnt;
     uint32_t p_ema;  
-
-    uint16_t p;
+    uint32_t p;
+    
     int32_t  d;
     int32_t  z;
     uint16_t cong_q; 

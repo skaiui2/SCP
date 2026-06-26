@@ -1,16 +1,18 @@
+import sys
 import ujson as json
 import matplotlib.pyplot as plt
 import pandas as pd
 
 FIELDS = [
-    "t", "seq", "ack", "len", "wnd", "flags",
-    "snd_una", "snd_nxt", "snd_sent", "rcv_nxt",
+    "t", "seq", "ack", "sack", "len", "wnd", "flags",
+    "snd_una", "snd_seq_q", "snd_nxt", "rcv_nxt",
     "snd_wnd", "rcv_wnd",
     "snd_q", "rcv_q",
     "cwnd", "ssthresh", "flight",
     "srtt", "rto", "dup_acks", "sb_cc",
     "packet_bytes", "packet_count",
-    "cong_q16"
+    "cong_q",
+    "p", "d", "z"
 ]
 
 DOWNSAMPLE = 50
@@ -41,7 +43,7 @@ def plot_curve_json(logfile, field, title, filename):
     plt.figure(figsize=(12, 5))
     for df in stream_to_df(logfile):
         y = df[field]
-        if field == "cong_q16":
+        if field == "cong_q":
             y = y / 65535.0
         plt.plot(df["t"], y, linewidth=0.5)
     plt.title(title)
@@ -56,9 +58,10 @@ def scatter_json(logfile, x, y, title, filename, step=200):
     plt.figure(figsize=(12, 5))
     for df in stream_to_df(logfile):
         df = df.iloc[::step]
-        if y == "cong_q16":
-            df[y] = df[y] / 65535.0
-        plt.scatter(df[x], df[y], s=2)
+        yy = df[y]
+        if y == "cong_q":
+            yy = yy / 65535.0
+        plt.scatter(df[x], yy, s=2)
     plt.title(title)
     plt.xlabel(x)
     plt.ylabel(y)
@@ -68,41 +71,48 @@ def scatter_json(logfile, x, y, title, filename, step=200):
     plt.close()
 
 def main():
+    if len(sys.argv) < 2:
+        print("Usage: python3 analyze_scp.py <logfile>")
+        return
+
+    logfile = sys.argv[1]
+
     FLOW_FIELDS = ["snd_wnd", "rcv_wnd", "snd_q", "rcv_q", "sb_cc"]
     CONGEST_FIELDS = ["cwnd", "ssthresh", "flight", "dup_acks"]
     RTT_FIELDS = ["srtt", "rto"]
     CORE_FIELDS = ["seq", "ack", "snd_una", "snd_nxt", "rcv_nxt"]
     THROUGHPUT_FIELDS = ["packet_bytes", "packet_count"]
-    CONG_PROB_FIELDS = ["cong_q16"]
+    CONG_PROB_FIELDS = ["cong_q"]
+    DEBUG_FIELDS = ["p", "d", "z"]
 
-    for prefix in ["A", "B"]:
-        logfile = f"node{prefix}.log"
+    for f in CORE_FIELDS:
+        plot_curve_json(logfile, f, f"{f}", f"{f}.png")
 
-        for f in CORE_FIELDS:
-            plot_curve_json(logfile, f, f"{prefix} {f}", f"{prefix}_{f}.png")
+    for f in FLOW_FIELDS:
+        plot_curve_json(logfile, f, f"{f}", f"{f}.png")
 
-        for f in FLOW_FIELDS:
-            plot_curve_json(logfile, f, f"{prefix} {f}", f"{prefix}_{f}.png")
+    for f in CONGEST_FIELDS:
+        plot_curve_json(logfile, f, f"{f}", f"{f}.png")
 
-        for f in CONGEST_FIELDS:
-            plot_curve_json(logfile, f, f"{prefix} {f}", f"{prefix}_{f}.png")
+    for f in RTT_FIELDS:
+        plot_curve_json(logfile, f, f"{f}", f"{f}.png")
 
-        for f in RTT_FIELDS:
-            plot_curve_json(logfile, f, f"{prefix} {f}", f"{prefix}_{f}.png")
+    for f in THROUGHPUT_FIELDS:
+        plot_curve_json(logfile, f, f"{f}", f"{f}.png")
 
-        for f in THROUGHPUT_FIELDS:
-            plot_curve_json(logfile, f, f"{prefix} {f}", f"{prefix}_{f}.png")
+    for f in CONG_PROB_FIELDS:
+        plot_curve_json(logfile, f, f"{f}", f"{f}.png")
 
-        for f in CONG_PROB_FIELDS:
-            plot_curve_json(logfile, f, f"{prefix} {f}", f"{prefix}_{f}.png")
+    for f in DEBUG_FIELDS:
+        plot_curve_json(logfile, f, f"{f}", f"{f}.png")
 
-        scatter_json(logfile, "t", "seq",
-                     f"{prefix} retransmission scatter",
-                     f"{prefix}_retx.png")
+    scatter_json(logfile, "t", "seq",
+                 "retransmission scatter",
+                 "retx.png")
 
-        scatter_json(logfile, "srtt", "cong_q16",
-                     f"{prefix} srtt vs cong_q16",
-                     f"{prefix}_srtt_cong.png")
+    scatter_json(logfile, "srtt", "cong_q",
+                 "srtt vs cong_q",
+                 "srtt_cong.png")
 
 if __name__ == "__main__":
     main()
