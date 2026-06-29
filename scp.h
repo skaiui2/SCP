@@ -19,6 +19,11 @@ struct scp_timer {
 };
 
 //Set by yourself.
+#define SCP_SB  0
+#define SCP_DEBUG 0
+#define SCP_DUMP 1
+#define SCP_RUN_DEBUG 1
+
 #define RETRANS_COUNT_MAX 1000
 #define SCP_RTO_MIN 200
 #define SCP_RTO_MAX 2000
