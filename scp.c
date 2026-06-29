@@ -122,6 +122,7 @@ static void scp_dump_hdr(struct scp_stream *ss,
            "\"packet_count\":%u,"
            "\"cong_q\":%u,"
            "\"p\":%u,"
+           "\"p_ema\":%u,"
            "\"d\":%d,"
            "\"z\":%d"
            "}\n",
@@ -158,6 +159,7 @@ static void scp_dump_hdr(struct scp_stream *ss,
            ss->packet_count,
            ss->cong_q,
            ss->p,
+           ss->p_ema,
            ss->d,
            ss->z
     );
@@ -598,8 +600,6 @@ static inline void scp_update_rtt_base(struct scp_stream *ss, uint32_t rtt)
 
     if (rtt < ss->rtt_base) {
         ss->rtt_base = rtt;
-    } else {
-        ss->rtt_base = (ss->rtt_base * 7 + rtt) / 8; 
     }
 }
 
@@ -1128,13 +1128,13 @@ static inline void scp_update_loss(struct scp_stream *ss)
 
     if (ss->p == 0)
         ss->p = p_sample;
-    else {
-        uint32_t min_p = (p_sample < ss->p) ? p_sample : ss->p;
-        int32_t delta = (int32_t)min_p - (int32_t)ss->p;
-        ss->p = ss->p + (delta >> 3);   // p += (min_p - p)/8
-    }
+    else
+        ss->p = (p_sample < ss->p) ? p_sample : ss->p;
 
-    ss->p_ema = (ss->p_ema * 31 + ss->p) >> 5;
+    if (ss->p_ema == 0)
+        ss->p_ema = p_sample;              
+    else
+        ss->p_ema = (ss->p_ema * 31 + p_sample) >> 5;
 }
 
 /* 

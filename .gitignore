@@ -1,9 +1,6 @@
 **/build/
 **/build*/
 
-**/output/
-**/output*/
-
 # Prerequisites
 *.d
 
