@@ -20,10 +20,6 @@ static struct rb_root scp_timer_tree;
 static struct hashmap scp_stream_map;
 static struct list_node scp_stream_queue;
 
-#define SCP_DEBUG 0
-#define SCP_DUMP 1
-#define SCP_RUN_DEBUG 1
-
 #if SCP_RUN_DEBUG
     #define SCP_PRINT(...) printf(__VA_ARGS__)
 #else
@@ -330,7 +326,11 @@ static inline void scp_md_prob(struct scp_stream *ss)
 static inline int scp_loss_like_congestion(struct scp_stream *ss)
 {
     scp_md_prob(ss);
+#if SCP_SB
     return ss->cong_q > CONFIG_P;
+#else
+    return 1;
+#endif
 }
 
 /*
