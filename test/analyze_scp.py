@@ -15,7 +15,7 @@ FIELDS = [
     "cwnd","ssthresh","flight",
     "srtt","rto","dup_acks","sb_cc",
     "packet_bytes","packet_count",
-    "cong_q","p","p_ema","d","z"
+    "cong_q","cong_q_ema","p","p_ema","d","z"
 ]
 
 DOWNSAMPLE = 50
@@ -45,7 +45,7 @@ def plot_field(logfile, field):
     plt.figure(figsize=(12,5))
     for df in stream_to_df(logfile):
         y = df[field]
-        if field == "cong_q":
+        if field == "cong_q" or field == "cong_q_ema":
             y = y / 65535.0
         plt.plot(df["t"], y, linewidth=0.5)
     plt.title(field)
@@ -61,7 +61,7 @@ def scatter(logfile, x, y, filename, step=200):
     for df in stream_to_df(logfile):
         df = df.iloc[::step]
         yy = df[y]
-        if y == "cong_q":
+        if y == "cong_q" or y == "cong_q_ema":
             yy = yy / 65535.0
         plt.scatter(df[x], yy, s=2)
     plt.title(f"{x} vs {y}")
@@ -85,7 +85,7 @@ def main():
 
     scatter(logfile, "t", "seq", "retx.png")
     scatter(logfile, "srtt", "cong_q", "srtt_cong.png")
+    scatter(logfile, "srtt", "cong_q_ema", "srtt_cong_ema.png")
 
 if __name__ == "__main__":
     main()
-

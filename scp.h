@@ -19,7 +19,7 @@ struct scp_timer {
 };
 
 //Set by yourself.
-#define SCP_SB  0
+#define SCP_SB  1
 #define SCP_DEBUG 0
 #define SCP_DUMP 1
 #define SCP_RUN_DEBUG 1
@@ -38,6 +38,7 @@ struct scp_timer {
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
+#define P_WND  512
 
 struct scp_transport_class {
     int (*send)(void *user, const void *buf, size_t len);
@@ -154,7 +155,8 @@ struct scp_stream {
     
     int32_t  d;
     int32_t  z;
-    uint16_t cong_q; 
+    uint16_t cong_q;
+    uint16_t cong_q_ema; 
 };
 
 /*
