@@ -117,6 +117,7 @@ static void scp_dump_hdr(struct scp_stream *ss,
            "\"packet_bytes\":%u,"
            "\"packet_count\":%u,"
            "\"cong_q\":%u,"
+           "\"cong_q_ema\":%u,"
            "\"p\":%u,"
            "\"p_ema\":%u,"
            "\"d\":%d,"
@@ -154,6 +155,7 @@ static void scp_dump_hdr(struct scp_stream *ss,
            ss->packet_bytes,
            ss->packet_count,
            ss->cong_q,
+           ss->cong_q_ema,
            ss->p,
            ss->p_ema,
            ss->d,
@@ -267,15 +269,8 @@ void scp_timer_process(void)
 #define Q16_INT(x) ((int32_t)((x) << 16))
 #define Q16(x) ((int32_t)((x) << 16))
 
-#define CONFIG_P ((uint32_t)((0.1)*65535))
-
 #define NEG16       Q16(-16)
 #define POS16       Q16(16)
-
-static const int32_t GAMMA_Q16 = Q16_INT(-6);
-static const int32_t ALPHA_Q16 = Q16_INT(50);
-static const int32_t BETA_Q16  = Q16_INT(16);
-static const int32_t ETA_Q16   = Q16_INT(1);
 
 static inline int32_t exp_q16(int32_t z)
 {
@@ -300,10 +295,12 @@ static inline uint16_t logistic(int32_t z)
 static inline void scp_md_prob(struct scp_stream *ss)
 {
     int32_t p_dev = 0;
-    if (ss->p > 0) {
-        int32_t ratio = (int32_t)(((int64_t)ss->p_ema << 16) / ss->p);
+
+    if (ss->p > 0 && ss->p_ema > 0) {
+        int32_t ratio = (int32_t)(((int64_t)ss->p << 16) / ss->p_ema);
         p_dev = ratio - Q16_ONE;
-        if (p_dev < 0) p_dev = 0;
+        if (p_dev < 0)
+            p_dev = 0;
     }
 
     int32_t d = 0;
@@ -314,20 +311,24 @@ static inline void scp_md_prob(struct scp_stream *ss)
     }
     ss->d = d;
 
-    int32_t z = GAMMA_Q16;
-    z += (int32_t)(((int64_t)ALPHA_Q16 * p_dev) >> 16);
-    z += (int32_t)(((int64_t)BETA_Q16  * d)     >> 16);
-    z += (int32_t)(((int64_t)ETA_Q16   * p_dev * d) >> 32);
+    int32_t z = p_dev;
+    z += d;
+    z += (int32_t)(((int64_t)p_dev * d) >> 16);
 
     ss->z = z;
     ss->cong_q = logistic(z);
+
+    if (ss->cong_q_ema == 0)
+        ss->cong_q_ema = ss->cong_q;
+    else
+        ss->cong_q_ema = (uint16_t)(((uint32_t)ss->cong_q_ema * 31 + ss->cong_q) >> 5);
 }
 
 static inline int scp_loss_like_congestion(struct scp_stream *ss)
 {
     scp_md_prob(ss);
 #if SCP_SB
-    return ss->cong_q > CONFIG_P;
+    return ss->cong_q > ss->cong_q_ema;
 #else
     return 1;
 #endif
@@ -1120,7 +1121,7 @@ void scp_snd_buf_free(struct scp_stream *ss, uint32_t ack)
 
 static inline void scp_update_loss(struct scp_stream *ss)
 {
-    if (ss->sent_cnt == 0)
+    if (ss->sent_cnt < P_WND)
         return;
 
     uint32_t p_sample =
@@ -1129,12 +1130,15 @@ static inline void scp_update_loss(struct scp_stream *ss)
     if (ss->p == 0)
         ss->p = p_sample;
     else
-        ss->p = (p_sample < ss->p) ? p_sample : ss->p;
+        ss->p = (ss->p * 7 + p_sample) >> 3;
 
     if (ss->p_ema == 0)
-        ss->p_ema = p_sample;              
+        ss->p_ema = p_sample;
     else
         ss->p_ema = (ss->p_ema * 31 + p_sample) >> 5;
+
+    ss->sent_cnt = 0;
+    ss->loss_cnt = 0;
 }
 
 /* 
@@ -1165,9 +1169,6 @@ static void scp_process_ack(struct scp_stream *ss,
 
         ss->rtt_ts = 0;
         ss->rto_recovery = 0;
-
-        ss->sent_cnt = 0;
-        ss->loss_cnt = 0;
     }
 
     ss->snd_una = ack;
