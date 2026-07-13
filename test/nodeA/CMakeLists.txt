@@ -36,6 +36,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(nodeA PRIVATE
     Threads::Threads
     rt
+    m
     noiseprotocol
     noisekeys
     noiseprotobufs

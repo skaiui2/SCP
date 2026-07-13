@@ -9,10 +9,10 @@
 
 static void scp_send_window_probe(struct scp_stream *ss);
 static void scp_retransmit(struct scp_stream *ss);
-static int scp_output(struct scp_stream *ss, int flags);
+static int scp_output(struct scp_stream *ss);
 static int scp_output_one(struct scp_stream *ss);
-void scp_output_data(struct scp_stream *ss, struct scp_buf *sb,
-                     uint32_t offset, uint32_t frag_len);
+void scp_output_data(struct scp_stream *ss, struct scp_buf *sb);
+void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh);
 
 extern uint32_t scp_now_time(void);
 
@@ -64,12 +64,17 @@ static void scp_debug_dump_rx(const void *buf, size_t len)
 #endif
 }
 
-
+int a1 = 0;
 static void scp_dump_hdr(struct scp_stream *ss,
                          const char *dir,
                          const struct scp_hdr *h)
 {
 #if SCP_DUMP
+    a1++;
+    
+    if (a1 % 1000) {
+        return;
+    }
     uint32_t seq = ntohl(h->seq);
     uint32_t ack = ntohl(h->ack);
     uint32_t wnd = ntohs(h->wnd);
@@ -107,9 +112,7 @@ static void scp_dump_hdr(struct scp_stream *ss,
            "\"rcv_q\":%d,"
 
            "\"cwnd\":%u,"
-           "\"ssthresh\":%u,"
            "\"flight\":%u,"
-
            "\"srtt\":%u,"
            "\"rto\":%u,"
            "\"dup_acks\":%u,"
@@ -118,6 +121,8 @@ static void scp_dump_hdr(struct scp_stream *ss,
            "\"packet_count\":%u,"
            "\"cong_q\":%u,"
            "\"cong_q_ema\":%u,"
+           "\"loss_cnt\":%u,"
+           "\"sent_cnt\":%u,"
            "\"p\":%u,"
            "\"p_ema\":%u,"
            "\"d\":%d,"
@@ -145,7 +150,6 @@ static void scp_dump_hdr(struct scp_stream *ss,
            rcvq,
 
            ss->cwnd,
-           ss->ssthresh,
            flight,
 
            ss->srtt,
@@ -156,6 +160,8 @@ static void scp_dump_hdr(struct scp_stream *ss,
            ss->packet_count,
            ss->cong_q,
            ss->cong_q_ema,
+           ss->loss_cnt,
+           ss->sent_cnt,
            ss->p,
            ss->p_ema,
            ss->d,
@@ -264,43 +270,44 @@ void scp_timer_process(void)
     }
 }
 
+#include <math.h>
 //if you want to know why, please see docs.
+#define SCP_CONG_Q_TARGET   ((uint16_t)(0.50 * 65535))
+#define CONG_K              100
+
 #define Q16_ONE   (1 << 16)
 #define Q16_INT(x) ((int32_t)((x) << 16))
 #define Q16(x) ((int32_t)((x) << 16))
 
-#define NEG16       Q16(-16)
-#define POS16       Q16(16)
+#define NEG20       Q16(-20)
+#define POS20       Q16(20)
 
-static inline int32_t exp_q16(int32_t z)
-{
-    if (z < NEG16) z = NEG16;
-    if (z > POS16) z = POS16;
-    int32_t z2 = (int32_t)(((int64_t)z * z) >> 17);
-    return Q16_ONE + z + z2;
-}
+static const int32_t GAMMA_Q16 = Q16_INT(-6);
+static const int32_t ALPHA_Q16 = Q16_INT(0);
+static const int32_t BETA_Q16  = ((int32_t)(0.20 * 65535));
+static const int32_t ETA_Q16   = Q16_INT(0);
 
 static inline uint16_t logistic(int32_t z)
 {
-    if (z > Q16(20)) z = Q16(20);
-    if (z < Q16(-20)) z = Q16(-20);
-    int32_t e = exp_q16(-z);
-    int32_t d = 65536 + e;
-    int32_t q = (int32_t)(((int64_t)65536 << 16) / d);
-    if (q > 65535) q = 65535;
-    if (q < 0) q = 0;
-    return (uint16_t)q;
+    float zf = (float)z / 65536.0f;
+
+    if (zf > 20.0f) zf = 20.0f;
+    if (zf < -20.0f) zf = -20.0f;
+
+    float qf = 1.0f / (1.0f + expf(-zf));
+
+    uint16_t q = (uint16_t)(qf * 65535.0f);
+
+    return q;
 }
 
 static inline void scp_md_prob(struct scp_stream *ss)
 {
     int32_t p_dev = 0;
-
     if (ss->p > 0 && ss->p_ema > 0) {
         int32_t ratio = (int32_t)(((int64_t)ss->p << 16) / ss->p_ema);
         p_dev = ratio - Q16_ONE;
-        if (p_dev < 0)
-            p_dev = 0;
+        if (p_dev < 0) p_dev = 0;
     }
 
     int32_t d = 0;
@@ -311,28 +318,63 @@ static inline void scp_md_prob(struct scp_stream *ss)
     }
     ss->d = d;
 
-    int32_t z = p_dev;
-    z += d;
-    z += (int32_t)(((int64_t)p_dev * d) >> 16);
+    int32_t z = GAMMA_Q16;
+    z += (int32_t)(((int64_t)ALPHA_Q16 * p_dev) >> 16);
+    z += (int32_t)(((int64_t)BETA_Q16  * d)     >> 16);
+    z += (int32_t)(((int64_t)ETA_Q16   * p_dev * d) >> 32);
 
     ss->z = z;
     ss->cong_q = logistic(z);
-
-    if (ss->cong_q_ema == 0)
+    if (ss->cong_q_ema == 0) {
         ss->cong_q_ema = ss->cong_q;
-    else
-        ss->cong_q_ema = (uint16_t)(((uint32_t)ss->cong_q_ema * 31 + ss->cong_q) >> 5);
+    } else {
+        ss->cong_q_ema = (ss->cong_q_ema * 7  + ss->cong_q) >> 3;
+    }
 }
 
-static inline int scp_loss_like_congestion(struct scp_stream *ss)
+static void scp_update_cwnd_fast(struct scp_stream *ss)
 {
-    scp_md_prob(ss);
-#if SCP_SB
-    return ss->cong_q > ss->cong_q_ema;
-#else
-    return 1;
-#endif
+    uint32_t q        = ss->cong_q_ema;
+    uint32_t q_target = SCP_CONG_Q_TARGET;
+
+    int32_t diff = (int32_t)q - (int32_t)q_target;
+    int32_t r_q16 = (diff << 16) / (int32_t)q_target;
+    int32_t delta = (int32_t)((int64_t)(CONG_K * r_q16)) >> 16;
+    int32_t new_cwnd = (int32_t)ss->cwnd - delta;
+
+    if (new_cwnd < MSS) {
+        new_cwnd = MSS;
+    } else if (new_cwnd > CWND_WIN_MAX) {
+        new_cwnd = CWND_WIN_MAX;
+    }
+
+    ss->cwnd = (uint32_t)new_cwnd;
 }
+
+/*
+static void scp_update_cwnd_fast(struct scp_stream *ss)
+{
+    if (ss->srtt == 0 || ss->rtt_base == 0)
+        return;
+
+    int32_t q = (int32_t)ss->srtt - (int32_t)ss->rtt_base;
+    if (q < 0) q = 0;
+
+    int32_t q_target = 100;  
+
+    int32_t err = q_target - q;
+
+    int32_t gamma = 1;
+    int32_t delta = gamma * err;
+
+    int32_t new_cwnd = (int32_t)ss->cwnd + delta;
+
+    if (new_cwnd < MSS)
+        new_cwnd = MSS;
+
+    ss->cwnd = (uint32_t)new_cwnd;
+}
+*/
 
 /*
  *Update cwnd
@@ -343,14 +385,6 @@ static void scp_timer_retrans_cb(void *arg)
 {
     struct scp_stream *ss = arg;
     if (!ss || ss->state == SCP_CLOSED) return;
-
-    if (scp_loss_like_congestion(ss)) {
-        uint32_t flight = ss->snd_nxt - ss->snd_una;
-        uint32_t half = flight / 2;
-        uint32_t min_thresh = 2 * MSS;
-        ss->ssthresh = (half > min_thresh) ? half : min_thresh;
-        ss->cwnd = MSS;
-    }
 
     ss->dup_acks = 0;
     ss->fr_active = 0;
@@ -494,7 +528,6 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .snd_nxt = 0,
             .snd_una = 0,
             .cwnd = MTU, 
-            .ssthresh = SSTHRESH_INIT,
             .dup_acks = 0,
             .last_gap_rexmit_ack = 0,
             .fr_active = 0,
@@ -559,8 +592,10 @@ int scp_init(size_t max_streams)
  * All intermediate calculations use signed 32‑bit integers to avoid
  * wrap‑around when (abs_delta - rttvar) becomes negative.
  */
-static void scp_update_rtt(struct scp_stream *s, uint32_t rtt_sample)
+static void scp_update_rtt(struct scp_stream *s)
 {
+    uint32_t rtt_sample = s->rtt_sample;
+
     if (s->srtt == 0) {
         s->srtt   = rtt_sample;
         s->rttvar = rtt_sample >> 1;
@@ -572,13 +607,13 @@ static void scp_update_rtt(struct scp_stream *s, uint32_t rtt_sample)
 
     int32_t delta = (int32_t)rtt_sample - (int32_t)s->srtt;
 
-    s->srtt = s->srtt + (delta >> 3);  // srtt += delta/8
+    s->srtt = s->srtt + (delta >> 3);  
 
     int32_t abs_delta = delta >= 0 ? delta : -delta;
     int32_t rttvar_i  = (int32_t)s->rttvar;
     int32_t diff      = abs_delta - rttvar_i;
 
-    rttvar_i = rttvar_i + (diff >> 2); // rttvar += (|delta|-rttvar)/4
+    rttvar_i = rttvar_i + (diff >> 2); 
     if (rttvar_i < 1) rttvar_i = 1;   
 
     s->rttvar = (uint32_t)rttvar_i;
@@ -589,8 +624,9 @@ static void scp_update_rtt(struct scp_stream *s, uint32_t rtt_sample)
     s->rto = rto;
 }
 
-static inline void scp_update_rtt_base(struct scp_stream *ss, uint32_t rtt)
+static inline void scp_update_rtt_base(struct scp_stream *ss)
 {
+    uint32_t rtt = ss->rtt_sample;
     if (rtt == 0)
         return;
 
@@ -647,13 +683,12 @@ void scp_retransmit_gap(struct scp_stream *ss,
                         uint32_t gap_end)
 {
     struct list_node *n;
+    int sent_frags = 0;
 
+    ss->rtt_updated = 0;
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
-
         struct scp_buf *sb = container_of(n, struct scp_buf, list);
         uint32_t total = sb->len - sizeof(struct scp_hdr);
-        if (total == 0)
-            continue;
 
         uint32_t seg_start = sb->seq;
         uint32_t seg_end   = sb->seq + total;
@@ -666,35 +701,13 @@ void scp_retransmit_gap(struct scp_stream *ss,
         if (SEQ_GEQ(seg_start, gap_end))
             return;
 
-        // segment overlaps gap
-        uint32_t start = 0;
-        if (SEQ_GT(gap_start, seg_start))
-            start = gap_start - seg_start;
+        ss->loss_cnt++;
+        scp_output_data(ss, sb); 
+        sent_frags++;
 
-        int sent_frags = 0;
+        if (sent_frags >= RETRANS_GAP_MAX)
+            return;
 
-        while (start < total && sent_frags < RETRANS_GAP_MAX) { 
-            uint32_t remain = total - start;
-            uint32_t frag   = (remain > MSS) ? MSS : remain;
-
-            uint32_t frag_seq = seg_start + start;
-            uint32_t frag_end = frag_seq + frag;
-
-            // stop if beyond gap
-            if (SEQ_GEQ(frag_seq, gap_end))
-                return;
-            if (SEQ_GT(frag_end, gap_end))
-                frag = gap_end - frag_seq;
-
-            if (frag == 0)
-                return;
-
-            ss->loss_cnt++;
-            scp_output_data(ss, sb, start, frag); 
-
-            start += frag;
-            sent_frags++;
-        }
     }
 }
 
@@ -705,6 +718,7 @@ void scp_retransmit_gap(struct scp_stream *ss,
  */
 static void scp_retransmit(struct scp_stream *ss)
 {
+    ss->rtt_updated = 0;
     uint32_t max_frags = 1 << ss->rto_recovery;
 
     if (max_frags > RETRANS_RECO_MAX)
@@ -714,14 +728,8 @@ static void scp_retransmit(struct scp_stream *ss)
 
     struct list_node *n;
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
-
-        if (sent >= max_frags)
-            break;
-
         struct scp_buf *sb = container_of(n, struct scp_buf, list);
         uint32_t total = sb->len - sizeof(struct scp_hdr);
-        if (total == 0)
-            continue;
 
         uint32_t seg_start = sb->seq;
         uint32_t seg_end   = sb->seq + total;
@@ -729,20 +737,12 @@ static void scp_retransmit(struct scp_stream *ss)
         if (SEQ_LEQ(seg_end, ss->snd_una))
             continue;
 
-        uint32_t start = 0;
-        if (SEQ_LT(seg_start, ss->snd_una)) {
-            uint32_t trim = ss->snd_una - seg_start;
-            if (trim >= total)
-                continue;
-            start = trim;
-        }
-
-        uint32_t remain = total - start;
-        uint32_t frag   = (remain > MSS) ? MSS : remain;
-
         ss->loss_cnt++;
-        scp_output_data(ss, sb, start, frag);
+        scp_output_data(ss, sb);
         sent++;
+
+        if (sent >= max_frags)
+            return;
     }
 }
 
@@ -892,19 +892,16 @@ static void scp_handle_fin_timeout(void *arg)
     scp_stream_free(ss);
 }
 
-/* Trim or drop, this is a question.
- * A data segment may arrive in order, out of order, or overlapping.
- * We trim or drop anything already consumed and buffer future data.
- * When a segment fills the next gap, we deliver it and advance rcv_nxt.
- * Every update reflects the receiver’s ability to accept more data.
- */
+/*
+* Now we are segment, don't need to trim or others.
+*/
 static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
 {
     struct scp_hdr *sh = (struct scp_hdr *)sb->data;
     uint32_t seq         = ntohl(sh->seq);
     uint32_t payload_len = ntohs(sh->len);
 
-    // if no payload, drop
+    // zero-length segment, nothing to deliver
     if (payload_len == 0) {
         scp_buf_free(sb);
         return;
@@ -913,7 +910,7 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
     sb->seq = seq;
     uint32_t end = seq + payload_len;
 
-    // if buffered segments fully behind rcv_nxt, drop them
+    // remove obsolete out-of-order segments already covered by rcv_nxt
     {
         struct rb_node *n = rb_first(&s->rcv_buf_q);
         while (n) {
@@ -922,9 +919,6 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
 
             uint32_t b_end = b->seq + (b->len - sizeof(struct scp_hdr));
             if (SEQ_LEQ(b_end, s->rcv_nxt)) {
-                uint32_t plen = b->len - sizeof(struct scp_hdr);
-                s->sb_cc = (s->sb_cc >= plen) ? (s->sb_cc - plen) : 0;
-
                 rb_remove_node(&s->rcv_buf_q, &b->rb);
                 scp_buf_free(b);
                 n = next;
@@ -934,39 +928,21 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
         }
     }
 
-    // if segment fully before rcv_nxt, drop it
+    // fully duplicate segment (already consumed)
     if (SEQ_LEQ(end, s->rcv_nxt)) {
-        scp_output(s, SCP_FLAG_ACK);
+        scp_output_ack(s, sh);
         scp_buf_free(sb);
         return;
     }
 
-    // if segment overlaps left edge, trim to rcv_nxt
-    if (SEQ_LT(seq, s->rcv_nxt)) {
-        uint32_t trim = s->rcv_nxt - seq;
-        seq         += trim;
-        payload_len -= trim;
-
-        uint8_t *payload = sb->data + sizeof(struct scp_hdr);
-        memmove(payload, payload + trim, payload_len);
-
-        sh->seq = htonl(seq);
-        sh->len = htons((uint16_t)payload_len);
-
-        sb->seq = seq;
-        sb->len = sizeof(struct scp_hdr) + payload_len;
-
-        end = seq + payload_len;
-    }
-
-    // if segment exactly matches rcv_nxt, deliver in-order
+    // in-order segment
     if (SEQ_EQ(seq, s->rcv_nxt)) {
         s->rcv_nxt += payload_len;
         queue_enqueue(&s->rcv_data_q, &sb->list);
         s->sb_cc += payload_len;
         scp_update_rcv_wnd(s);
 
-        // pull next in-order buffered segments
+        // consume any buffered contiguous out-of-order segments
         for (;;) {
             struct rb_node *n = rb_first(&s->rcv_buf_q);
             if (!n)
@@ -976,122 +952,50 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
             uint32_t b_seq  = b->seq;
             uint32_t b_plen = b->len - sizeof(struct scp_hdr);
 
-            // if next buffered is not exactly rcv_nxt, stop
             if (!SEQ_EQ(b_seq, s->rcv_nxt))
                 break;
 
             rb_remove_node(&s->rcv_buf_q, &b->rb);
             queue_enqueue(&s->rcv_data_q, &b->list);
             s->rcv_nxt += b_plen;
+            s->sb_cc += b_plen;
             scp_update_rcv_wnd(s);
         }
 
-        scp_output(s, SCP_FLAG_ACK);
+        scp_output_ack(s, sh);
         return;
     }
 
-    // find insertion point for out-of-order segment
-    struct rb_node *pos = rb_first_greater(&s->rcv_buf_q, seq);
-    struct scp_buf *b;
+    // out-of-order segment: check duplicate before inserting
+    {
+        struct rb_node *pos = rb_first_greater(&s->rcv_buf_q, seq);
+        struct rb_node *prev = NULL;
 
-    // if overlaps previous segment, trim left overlap
-    if (pos) {
-        struct rb_node *prev_n = rb_prev(pos);
-        if (prev_n) {
-            struct scp_buf *prev = container_of(prev_n, struct scp_buf, rb);
-            uint32_t p_seq = prev->seq;
-            uint32_t p_end = p_seq + (prev->len - sizeof(struct scp_hdr));
+        if (pos)
+            prev = rb_prev(pos);
+        else
+            prev = rb_last(&s->rcv_buf_q);
 
-            // if fully covered by previous, drop
-            if (SEQ_GT(p_end, seq)) {
-                if (SEQ_GEQ(p_end, end)) {
-                    scp_buf_free(sb);
-                    return;
-                }
+        // duplicate out-of-order segment
+        if (prev) {
+            struct scp_buf *pb = container_of(prev, struct scp_buf, rb);
+            uint32_t p_seq = pb->seq;
+            uint32_t p_end = p_seq + (pb->len - sizeof(struct scp_hdr));
 
-                uint32_t trim = p_end - seq;
-                seq         += trim;
-                payload_len -= trim;
-
-                uint8_t *payload = sb->data + sizeof(struct scp_hdr);
-                memmove(payload, payload + trim, payload_len);
-
-                sh->seq = htonl(seq);
-                sh->len = htons((uint16_t)payload_len);
-
-                sb->seq = seq;
-                sb->len = sizeof(struct scp_hdr) + payload_len;
-
-                end = seq + payload_len;
-            }
-        }
-    } else {
-        // if overlaps last segment, trim left overlap
-        struct rb_node *last = rb_last(&s->rcv_buf_q);
-        if (last) {
-            struct scp_buf *prev = container_of(last, struct scp_buf, rb);
-            uint32_t p_seq = prev->seq;
-            uint32_t p_end = p_seq + (prev->len - sizeof(struct scp_hdr));
-
-            if (SEQ_GT(p_end, seq)) {
-                if (SEQ_GEQ(p_end, end)) {
-                    scp_buf_free(sb);
-                    return;
-                }
-
-                uint32_t trim = p_end - seq;
-                seq         += trim;
-                payload_len -= trim;
-
-                uint8_t *payload = sb->data + sizeof(struct scp_hdr);
-                memmove(payload, payload + trim, payload_len);
-
-                sh->seq = htonl(seq);
-                sh->len = htons((uint16_t)payload_len);
-
-                sb->seq = seq;
-                sb->len = sizeof(struct scp_hdr) + payload_len;
-
-                end = seq + payload_len;
-            }
-        }
-    }
-
-    // if overlaps next segment, trim right overlap
-    if (pos) {
-        b = container_of(pos, struct scp_buf, rb);
-        uint32_t b_seq = b->seq;
-        uint32_t b_end = b_seq + (b->len - sizeof(struct scp_hdr));
-
-        if (SEQ_GT(b_seq, seq) && SEQ_GT(end, b_seq)) {
-            uint32_t new_len = b_seq - seq;
-            if (new_len == 0) {
+            // full coverage: drop
+            if (SEQ_GT(p_end, seq) && SEQ_GEQ(p_end, end)) {
+                scp_output_ack(s, sh);
                 scp_buf_free(sb);
                 return;
             }
-
-            payload_len = new_len;
-            sh->len     = htons((uint16_t)payload_len);
-            sb->len     = sizeof(struct scp_hdr) + payload_len;
-            end         = seq + payload_len;
         }
     }
 
-    // if nothing left, drop
-    if (payload_len == 0) {
-        scp_buf_free(sb);
-        return;
-    }
-
-    // insert as out-of-order segment
+    // new out-of-order segment
     rb_node_init(&sb->rb);
     sb->rb.value = sb->seq;
     rb_insert_node(&s->rcv_buf_q, &sb->rb);
-
-    s->sb_cc += payload_len;
-    scp_update_rcv_wnd(s);
-
-    scp_output(s, SCP_FLAG_ACK);
+    scp_output_ack(s, sh);
 }
 
 /*
@@ -1145,7 +1049,7 @@ static inline void scp_update_loss(struct scp_stream *ss)
  * An ACK tells us the peer has received data.
  * We update RTT from this sample and free sent buffers.
  * The ACK also reflects the peer’s congestion state.
- * Handle ACK: update RTT, free buffers, run Reno + FR  
+ * Handle ACK: update RTT, free buffers, run SB.
  */
 static void scp_process_ack(struct scp_stream *ss,
                             uint32_t ack,
@@ -1157,17 +1061,14 @@ static void scp_process_ack(struct scp_stream *ss,
 
     uint32_t old_una = ss->snd_una;
 
-    // RTT Karn
-    if (ss->rtt_ts && SEQ_GT(ack, old_una)) {
-        uint32_t rtt = scp_now_time() - ss->rtt_ts;
-        if (!rtt) rtt = 1;
-
-        scp_update_rtt_base(ss, rtt);
-        scp_update_rtt(ss, rtt);
+    if (ss->rtt_updated && SEQ_GT(ack, old_una)) {
+        scp_update_rtt_base(ss);
+        scp_update_rtt(ss);
         scp_update_loss(ss);
         scp_md_prob(ss);
+        scp_update_cwnd_fast(ss);
 
-        ss->rtt_ts = 0;
+        ss->rtt_updated = 0;
         ss->rto_recovery = 0;
     }
 
@@ -1189,29 +1090,8 @@ static void scp_process_ack(struct scp_stream *ss,
 
     // New data ACKed
     if (SEQ_GT(ss->snd_una, old_una)) {
-
-        uint32_t acked = ss->snd_una - old_una;
-
-        // Exit Fast Recovery 
-        if (ss->fr_active) {
-            ss->fr_active = 0;
-            ss->cwnd = ss->ssthresh + MSS;
-        }
-
         ss->timeout_count = 0;
         ss->dup_acks = 0;
-
-        // Normal Reno growth (SS/CA) 
-        if (!ss->fr_active) {
-            if (ss->cwnd < ss->ssthresh) {
-                ss->cwnd += MSS;
-            } else {
-                uint32_t base = ss->cwnd ? ss->cwnd : 1;
-                uint32_t inc  = (MSS * MSS) / base;
-                if (!inc) inc = 1;
-                ss->cwnd += inc;
-            }
-        }
 
         scp_timer_delete(&ss->t_retrans);
         if (ss->snd_una != ss->snd_nxt) {
@@ -1229,16 +1109,8 @@ static void scp_process_ack(struct scp_stream *ss,
         ss->dup_acks++;
 
         // Enter Fast Recovery 
-        if (ss->dup_acks == 3 && !ss->fr_active) {
-            if (scp_loss_like_congestion(ss)) {
-                uint32_t flight = ss->snd_nxt - ss->snd_una;
-                uint32_t half = flight / 2;
-                uint32_t min_th = 2*MSS;
-
-                ss->ssthresh = (half > min_th) ? half : min_th;
-                ss->cwnd = ss->ssthresh + 3*MSS;
-                ss->fr_active = 1;
-            }
+        if (ss->dup_acks >= 3 && !ss->fr_active) {
+            ss->fr_active = 1;
 
             scp_retransmit_gap(ss, ack, sack); 
             ss->last_gap_rexmit_ack = ack; 
@@ -1249,22 +1121,18 @@ static void scp_process_ack(struct scp_stream *ss,
                              ss,
                              ss->rto);
         }
-        // FR ongoing: inflate cwnd 
-        else if (ss->fr_active && ss->dup_acks > 3) {
-            ss->cwnd += MSS;
-        }
     }
 
 out:
     if (!list_empty(&ss->snd_q)) {
-        scp_output(ss, SCP_FLAG_DATA);
+        scp_output(ss);
     }
 }
 
 /*
  *If we send data or ping, return ack.
  */
-void scp_output_ack(struct scp_stream *ss)
+void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh)
 {
     struct scp_hdr sh;
     memset(&sh, 0, sizeof(sh));
@@ -1276,6 +1144,9 @@ void scp_output_ack(struct scp_stream *ss)
     sh.len   = 0;
     sh.flags = SCP_FLAG_ACK;
     sh.fd    = ss->dst_fd;
+    if (data_sh && data_sh->time_val) {
+        sh.time_val = data_sh->time_val;
+    }
 
     sh.cksum = 0;
     sh.cksum = in_checksum(&sh, sizeof(struct scp_hdr));
@@ -1290,56 +1161,29 @@ void scp_output_ack(struct scp_stream *ss)
  * Fragments may start at any offset, so we must assemble [hdr][payload].
  * sb->data is persistent state and must not be modified in-place.
  */
-void scp_output_data(struct scp_stream *ss, struct scp_buf *sb,
-                     uint32_t offset, uint32_t frag_len)
+void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
 {
-    uint32_t pkt_len = sizeof(struct scp_hdr) + frag_len;
+    struct scp_hdr *hdr = (struct scp_hdr *)sb->data;
 
-    uint8_t small_buf[64];
-    uint8_t *pkt;
+    hdr->seq   = htonl(sb->seq);
+    hdr->ack   = htonl(ss->rcv_nxt);
+    hdr->sack  = htonl(scp_calc_sack(ss));
+    hdr->wnd   = htons((uint16_t)ss->rcv_wnd);
+    hdr->len   = htons((uint16_t)sb->len - sizeof(struct scp_hdr));
+    hdr->flags = SCP_FLAG_DATA;
+    hdr->fd    = ss->dst_fd;
+    hdr->time_val  = htonl(scp_now_time());
 
-    if (pkt_len <= sizeof(small_buf)) {
-        pkt = small_buf;
-    } else {
-        pkt = scp_malloc(pkt_len);
-        if (!pkt) return;
-    }
+    hdr->cksum = 0;
+    hdr->cksum = in_checksum(sb->data, sb->len);
 
-    uint32_t seq = sb->seq + offset;   
-    uint32_t end_seq = seq + frag_len;
-
-    struct scp_hdr hdr;
-    uint8_t *payload_base = sb->data + sizeof(struct scp_hdr);
-    uint8_t *frag_payload = payload_base + offset;
-
-    hdr.seq   = htonl(seq);
-    hdr.ack   = htonl(ss->rcv_nxt);
-    hdr.sack  = htonl(scp_calc_sack(ss));
-    hdr.wnd   = htons((uint16_t)ss->rcv_wnd);
-    hdr.len   = htons((uint16_t)frag_len);
-    hdr.cksum = 0;
-    hdr.flags = SCP_FLAG_DATA;
-    hdr.fd    = ss->dst_fd;
-
-    memcpy(pkt, &hdr, sizeof(struct scp_hdr));
-    memcpy(pkt + sizeof(struct scp_hdr), frag_payload, frag_len);
-
-    hdr.cksum = in_checksum(pkt, pkt_len);
-    memcpy(pkt, &hdr, sizeof(struct scp_hdr));
-
-    scp_debug_dump_tx("DATA", pkt, pkt_len);
-    scp_dump_hdr(ss, "DATA", &hdr);
-    ss->st_class->send(ss->st_class->user, pkt, pkt_len);
+    scp_debug_dump_tx("DATA", sb->data, sb->len);
+    scp_dump_hdr(ss, "DATA", hdr);
+    ss->st_class->send(ss->st_class->user, sb->data, sb->len);
 
     ss->packet_count++;
-    ss->packet_bytes += frag_len;
+    ss->packet_bytes += sb->len - sizeof(struct scp_hdr);
     ss->sent_cnt++;
-    if (SEQ_GT(end_seq, ss->snd_nxt)) {
-        ss->snd_nxt = end_seq;
-    }
-
-    if (pkt != small_buf)
-        scp_free(pkt);
 }
 
 static int scp_output_one(struct scp_stream *ss)
@@ -1349,29 +1193,17 @@ static int scp_output_one(struct scp_stream *ss)
 
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
         struct scp_buf *sb = container_of(n, struct scp_buf, list);
-        uint32_t total = sb->len - sizeof(struct scp_hdr);
-        uint32_t sent  = sb->sent_off;
 
-        if (sent >= total)
+        if (sb->sent)
             continue;
 
-        uint32_t remain   = total - sent;
-        uint32_t frag_len = (remain > MSS) ? MSS : remain;
+        uint32_t frag_len = sb->len - sizeof(struct scp_hdr);
+        uint32_t end_seq = sb->seq + frag_len;
 
-        if (frag_len == 0)
-            continue;
+        scp_output_data(ss, sb);
 
-        uint32_t seg_seq = sb->seq + sent;
-        uint32_t end_seq = seg_seq + frag_len;
-
-        if (ss->rtt_ts == 0 && SEQ_EQ(seg_seq, ss->snd_una)) {
-            ss->rtt_ts  = now;
-            ss->rtt_seq = end_seq;
-        }
-
-        scp_output_data(ss, sb, sent, frag_len);
-
-        sb->sent_off += frag_len;
+        sb->sent = 1;
+        ss->rtt_updated = 1;
 
         if (SEQ_GT(end_seq, ss->snd_nxt))
             ss->snd_nxt = end_seq;
@@ -1382,28 +1214,16 @@ static int scp_output_one(struct scp_stream *ss)
     return 0;
 }
 
-static int scp_output(struct scp_stream *ss, int flags)
+static int scp_output(struct scp_stream *ss)
 {
-    if (flags == SCP_FLAG_ACK) {
-        scp_output_ack(ss);
+    uint32_t flight = ss->snd_nxt - ss->snd_una;
+
+    uint32_t effective_win = min(ss->snd_wnd, ss->cwnd);
+    if (effective_win == 0 || flight >= effective_win)
         return 0;
-    }
-
-    uint32_t flight_before = ss->snd_nxt - ss->snd_una;
-
-    uint32_t effective_win = ss->snd_wnd;
-    if (ss->cwnd < effective_win)
-        effective_win = ss->cwnd;
-
-    if (effective_win == 0 || flight_before >= effective_win)
-        return 0;
-
-    uint32_t flight = flight_before;
 
     for (;;) {
-        uint32_t win = ss->snd_wnd;
-        if (ss->cwnd < win)
-            win = ss->cwnd;
+        uint32_t win = min(ss->snd_wnd, ss->cwnd);
 
         int32_t swnd = (int32_t)win - (int32_t)flight;
         if (swnd <= 0)
@@ -1416,13 +1236,11 @@ static int scp_output(struct scp_stream *ss, int flags)
         flight += (uint32_t)frag;
     }
 
-    if (flight_before == 0 && flight > 0) {
-        scp_timer_create(&ss->t_retrans,
-                         scp_timer_retrans_cb,
-                         ss,
-                         ss->rto);
-        ss->timeout_count = 0;
-    }
+    scp_timer_create(&ss->t_retrans,
+                     scp_timer_retrans_cb,
+                     ss,
+                     ss->rto);
+    ss->timeout_count = 0;
 
     return 0;
 }
@@ -1466,25 +1284,31 @@ int scp_send(int fd, void *buf, size_t len)
     if (ss->state != SCP_ESTABLISHED) return -1;
 
     uint32_t flight = ss->snd_nxt - ss->snd_una;
-
     uint32_t win = ss->snd_wnd;
     if (flight >= win) return -2;
 
-    uint32_t seq_base = ss->snd_seq_q;
-    ss->snd_seq_q += len;
+    uint32_t off = 0;
+    while (off < len) {
+        uint32_t frag = (len - off > MSS) ? MSS : (uint32_t)(len - off);
 
-    struct scp_buf *sb = scp_buf_alloc(sizeof(struct scp_buf) + sizeof(struct scp_hdr) + len);
-    if (!sb) return -1;
+        struct scp_buf *sb = scp_buf_alloc(sizeof(struct scp_buf) +
+                          sizeof(struct scp_hdr) + frag);
+        if (!sb) return -1;
 
-    sb->data = (uint8_t *)sb + sizeof(struct scp_buf);
-    sb->len  = sizeof(struct scp_hdr) + len;
-    sb->seq  = seq_base;
+        sb->data = (uint8_t *)sb + sizeof(struct scp_buf);
+        sb->len  = sizeof(struct scp_hdr) + frag;
+        sb->seq  = ss->snd_seq_q;
 
-    uint8_t *pure_data = (uint8_t *)sb->data + sizeof(struct scp_hdr);
-    memcpy(pure_data, buf, len);
-    queue_enqueue(&ss->snd_q, &sb->list);
-    scp_output(ss, SCP_FLAG_DATA);
+        ss->snd_seq_q += frag;
 
+        uint8_t *pure = sb->data + sizeof(struct scp_hdr);
+        memcpy(pure, (uint8_t *)buf + off, frag);
+        queue_enqueue(&ss->snd_q, &sb->list);
+
+        off      += frag;
+    }
+
+    scp_output(ss);
     return 0;
 }
 
@@ -1492,11 +1316,11 @@ int scp_send(int fd, void *buf, size_t len)
 *To swap iss, respond syn+ack.
 */
 static void scp_listen_like_process(struct scp_stream *ss,
-                              struct scp_hdr *sh,
                               struct scp_buf *sb,
                               uint32_t ack,
                               uint32_t wnd)
 {
+    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
     if (sh->flags & SCP_FLAG_CONNECT) {
 
         ss->state = SCP_SYN_RECV;
@@ -1529,17 +1353,17 @@ static void scp_listen_like_process(struct scp_stream *ss,
 * start persist for zeor wnd and keeplive.
 */
 static void scp_syn_sent_process(struct scp_stream *ss,
-                                 struct scp_hdr *sh,
                                  struct scp_buf *sb,
                                  uint32_t ack,
                                  uint32_t wnd)
 {
+    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
     if (sh->flags & SCP_FLAG_CONNECT_ACK) {
 
         ss->irs = ntohl(sh->seq);
         ss->rcv_nxt = ss->irs;
 
-        scp_output_ack(ss);
+        scp_output_ack(ss, NULL);
 
         ss->state = SCP_ESTABLISHED;
 
@@ -1556,11 +1380,11 @@ static void scp_syn_sent_process(struct scp_stream *ss,
 }
 
 static void scp_syn_recv_process(struct scp_stream *ss,
-                                 struct scp_hdr *sh,
                                  struct scp_buf *sb,
                                  uint32_t ack,
                                  uint32_t wnd)
 {
+    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
     if (sh->flags & SCP_FLAG_ACK) {
         ss->state = SCP_ESTABLISHED;
 
@@ -1590,31 +1414,42 @@ static void scp_syn_recv_process(struct scp_stream *ss,
  * Any unhandled packet is freed after state‑specific processing.
  */
 static void scp_est_process(struct scp_stream *ss,
-                            struct scp_hdr *sh,
                             struct scp_buf *sb,
                             uint32_t ack,
                             uint32_t wnd,
                             uint32_t sack)
 {
+    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
     if (sh->flags & SCP_FLAG_ACK) {
+        uint32_t time_val = ntohl(sh->time_val);
+        if (time_val) {
+            ss->rtt_sample = scp_now_time() - time_val;
+            if (!ss->rtt_sample) ss->rtt_sample = 1;
+        }
+
         scp_process_ack(ss, ack, wnd, sack);
     }
 
+    if (sh->flags & SCP_FLAG_DATA) {
+        scp_process_data(ss, sb);
+        return;
+    }
+
     if (sh->flags & SCP_FLAG_PING) {
-        scp_output_ack(ss);
+        scp_output_ack(ss, NULL);
     }
 
     if (sh->flags & SCP_FLAG_FIN) {
         uint32_t seq = ntohl(sh->seq);
 
         if (SEQ_LT(seq, ss->rcv_nxt)) {
-            scp_output_ack(ss);
+            scp_output_ack(ss, NULL);
             scp_buf_free(sb);
             return;
         }
 
         ss->rcv_nxt = seq + 1;
-        scp_output_ack(ss);
+        scp_output_ack(ss, NULL);
 
         ss->state = SCP_LAST_ACK;
         ss->retry = 0;
@@ -1630,31 +1465,26 @@ static void scp_est_process(struct scp_stream *ss,
         return;
     }
 
-    if (sh->flags & SCP_FLAG_DATA) {
-        scp_process_data(ss, sb);
-        return;
-    }
-
     scp_buf_free(sb);
 }
 
 static void scp_fin_wait_process(struct scp_stream *ss,
-                                 struct scp_hdr *sh,
                                  struct scp_buf *sb,
                                  uint32_t ack,
                                  uint32_t wnd,
                                  uint32_t sack)
 {
+    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
     if (sh->flags & SCP_FLAG_ACK) {
         scp_process_ack(ss, ack, wnd, sack);
     }
 
     if (sh->flags & SCP_FLAG_PING) {
-        scp_output_ack(ss);
+        scp_output_ack(ss, NULL);
     }
 
     if (sh->flags & SCP_FLAG_DATA) {
-        scp_output_ack(ss);
+        scp_output_ack(ss, sh);
         scp_buf_free(sb);
         return;
     }
@@ -1665,7 +1495,7 @@ static void scp_fin_wait_process(struct scp_stream *ss,
             ss->rcv_nxt = seq + 1;
         }
 
-        scp_output_ack(ss);
+        scp_output_ack(ss, NULL);
 
         scp_timer_delete(&ss->t_fin);
 
@@ -1679,18 +1509,18 @@ static void scp_fin_wait_process(struct scp_stream *ss,
 }
 
 static void scp_last_ack_process(struct scp_stream *ss,
-                                 struct scp_hdr *sh,
                                  struct scp_buf *sb,
                                  uint32_t ack,
                                  uint32_t wnd,
                                  uint32_t sack)
 {
+    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
     if (sh->flags & SCP_FLAG_PING) {
-        scp_output_ack(ss);
+        scp_output_ack(ss, NULL);
     }
 
     if (sh->flags & SCP_FLAG_FIN) {
-        scp_output_ack(ss);
+        scp_output_ack(ss, NULL);
         scp_buf_free(sb);
         return;
     }
@@ -1748,22 +1578,22 @@ int scp_input(void *ctx, void *buf, size_t len)
 
     switch (ss->state) {
     case SCP_CLOSED:
-        scp_listen_like_process(ss, sh, sb, ack, wnd);
+        scp_listen_like_process(ss, sb, ack, wnd);
         break;
     case SCP_SYN_SENT:
-        scp_syn_sent_process(ss, sh, sb, ack, wnd);
+        scp_syn_sent_process(ss, sb, ack, wnd);
         break;
     case SCP_SYN_RECV:
-        scp_syn_recv_process(ss, sh, sb, ack, wnd);
+        scp_syn_recv_process(ss, sb, ack, wnd);
         break;
     case SCP_ESTABLISHED:
-        scp_est_process(ss, sh, sb, ack, wnd, sack);
+        scp_est_process(ss, sb, ack, wnd, sack);
         break;
     case SCP_FIN_WAIT:
-        scp_fin_wait_process(ss, sh, sb, ack, wnd, sack);
+        scp_fin_wait_process(ss, sb, ack, wnd, sack);
         break;
     case SCP_LAST_ACK:
-        scp_last_ack_process(ss, sh, sb, ack, wnd, sack);
+        scp_last_ack_process(ss, sb, ack, wnd, sack);
         break;
     default:
         scp_buf_free(sb);
@@ -1858,7 +1688,7 @@ int scp_recv(int fd, void *buf, size_t len)
     scp_update_rcv_wnd(s);
 
     if (old_wnd == 0 && s->rcv_wnd > 0) {
-        scp_output(s, SCP_FLAG_ACK);
+        scp_output_ack(s, NULL);
     }
 
     return copied;
