@@ -28,11 +28,11 @@ struct scp_timer {
 #define SCP_RTO_MIN 200
 #define SCP_RTO_MAX 2000
 #define RETRANS_RECO_MAX 1
-#define RETRANS_GAP_MAX  1
+#define RETRANS_GAP_MAX  4
 #define SCP_RECV_LIMIT 0xFFFF
 #define SEND_WIN_INIT 0xFFFF
 #define RECV_WIN_INIT     0xFFFF
-#define SSTHRESH_INIT 0xFFFF
+#define CWND_WIN_MAX     0xFFFF
 #define MTU 1460
 #define PERSIST_INTERVAL 200
 #define MAX_IDLE_FAIL  3
@@ -54,7 +54,7 @@ struct scp_buf {
     };
     size_t len;
     uint32_t seq; // save it from hdr.
-    uint32_t sent_off;
+    uint8_t sent;
     uint8_t *data;
     uint32_t payload_off;
 };
@@ -68,6 +68,7 @@ struct scp_hdr {
     uint16_t len;
     uint16_t cksum;
     uint16_t flags;
+    uint32_t time_val;
 } __attribute__((packed));
 
 #define SCP_FLAG_DATA  0x01
@@ -114,14 +115,13 @@ struct scp_stream {
     uint32_t packet_bytes;              //output bytes
     uint32_t packet_count; 
 
+    uint8_t  rtt_updated;
+    uint32_t rtt_sample;
     uint32_t srtt;                      // smoothed RTT
     uint32_t rtt_base;
     uint32_t rttvar;                    // RTT variation
     uint32_t rto;                       // retransmission timeout
     uint32_t rto_recovery;
-
-    uint32_t rtt_ts;                    // timestamp of RTT measurement
-    uint32_t rtt_seq;                   // seq being timed
 
     uint8_t  timeout_count;             // consecutive timeout counter
 
@@ -142,7 +142,6 @@ struct scp_stream {
     uint8_t retry;                      // handshake/FIN retry count
 
     uint32_t cwnd;                      // congestion window
-    uint32_t ssthresh;                  // slow start threshold
     uint8_t dup_acks;                   // duplicate ACK counter
 
     uint8_t fr_active;

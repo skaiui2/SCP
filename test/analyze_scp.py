@@ -12,13 +12,13 @@ FIELDS = [
     "snd_una","snd_seq_q","snd_nxt","rcv_nxt",
     "snd_wnd","rcv_wnd",
     "snd_q","rcv_q",
-    "cwnd","ssthresh","flight",
+    "cwnd","flight",
     "srtt","rto","dup_acks","sb_cc",
     "packet_bytes","packet_count",
     "cong_q","cong_q_ema","p","p_ema","d","z"
 ]
 
-DOWNSAMPLE = 50
+DOWNSAMPLE = 1
 
 def stream_to_df(path, chunksize=200000):
     rows = []
