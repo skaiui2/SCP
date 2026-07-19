@@ -72,12 +72,12 @@ static void scp_dump_hdr(struct scp_stream *ss,
 #if SCP_DUMP
     a1++;
     
-    if (a1 % 1000) {
+    if (a1 % 100) {
         return;
     }
     uint32_t seq = ntohl(h->seq);
     uint32_t ack = ntohl(h->ack);
-    uint32_t wnd = ntohs(h->wnd);
+    uint32_t wnd = ntohl(h->wnd);
     uint32_t len = ntohs(h->len);
     uint32_t sack = ntohl(h->sack);
 
@@ -273,19 +273,17 @@ void scp_timer_process(void)
 #include <math.h>
 //if you want to know why, please see docs.
 #define SCP_CONG_Q_TARGET   ((uint16_t)(0.50 * 65535))
-#define CONG_K              100
 
 #define Q16_ONE   (1 << 16)
 #define Q16_INT(x) ((int32_t)((x) << 16))
+#define Q16_FLOAT(x) ((int32_t)((x) * 65536.0f))
 #define Q16(x) ((int32_t)((x) << 16))
 
 #define NEG20       Q16(-20)
 #define POS20       Q16(20)
 
-static const int32_t GAMMA_Q16 = Q16_INT(-6);
-static const int32_t ALPHA_Q16 = Q16_INT(0);
-static const int32_t BETA_Q16  = ((int32_t)(0.20 * 65535));
-static const int32_t ETA_Q16   = Q16_INT(0);
+static const int32_t GAMMA_Q16 = -129761;
+static const int32_t BETA_Q16  = 3000;
 
 static inline uint16_t logistic(int32_t z)
 {
@@ -303,25 +301,15 @@ static inline uint16_t logistic(int32_t z)
 
 static inline void scp_md_prob(struct scp_stream *ss)
 {
-    int32_t p_dev = 0;
-    if (ss->p > 0 && ss->p_ema > 0) {
-        int32_t ratio = (int32_t)(((int64_t)ss->p << 16) / ss->p_ema);
-        p_dev = ratio - Q16_ONE;
-        if (p_dev < 0) p_dev = 0;
-    }
-
     int32_t d = 0;
     if (ss->rtt_base > 0 && ss->srtt > 0) {
-        int32_t ratio = (int32_t)(((int64_t)ss->srtt << 16) / ss->rtt_base);
-        d = ratio - Q16_ONE;
+        d = (int32_t)(ss->srtt - ss->rtt_base) << 16;
         if (d < 0) d = 0;
     }
     ss->d = d;
 
     int32_t z = GAMMA_Q16;
-    z += (int32_t)(((int64_t)ALPHA_Q16 * p_dev) >> 16);
     z += (int32_t)(((int64_t)BETA_Q16  * d)     >> 16);
-    z += (int32_t)(((int64_t)ETA_Q16   * p_dev * d) >> 32);
 
     ss->z = z;
     ss->cong_q = logistic(z);
@@ -334,47 +322,58 @@ static inline void scp_md_prob(struct scp_stream *ss)
 
 static void scp_update_cwnd_fast(struct scp_stream *ss)
 {
-    uint32_t q        = ss->cong_q_ema;
-    uint32_t q_target = SCP_CONG_Q_TARGET;
+    float q_inst = (float)ss->cong_q     / 65535.0f;
+    float q_ema  = (float)ss->cong_q_ema / 65535.0f;
 
-    int32_t diff = (int32_t)q - (int32_t)q_target;
-    int32_t r_q16 = (diff << 16) / (int32_t)q_target;
-    int32_t delta = (int32_t)((int64_t)(CONG_K * r_q16)) >> 16;
-    int32_t new_cwnd = (int32_t)ss->cwnd - delta;
+    const float q_inc_star = 0.6f;  
+    const float q_dec_star = 0.4f; 
 
-    if (new_cwnd < MSS) {
-        new_cwnd = MSS;
-    } else if (new_cwnd > CWND_WIN_MAX) {
-        new_cwnd = CWND_WIN_MAX;
+    float w = (float)ss->cwnd;
+
+    if (q_inst < q_inc_star) {
+        float x = q_inst / q_inc_star;    
+        if (x < 0.0f) x = 0.0f;
+        if (x > 1.0f) x = 1.0f;
+
+        float weight = 1.0f - x * x;
+
+        float denom = w;
+        if (denom < 1.0f) denom = 1.0f;
+
+        float add = weight * ((float)(MSS * MSS) / denom);
+        if (add < 1.0f) add = 1.0f;
+
+        w += add;
     }
 
-    ss->cwnd = (uint32_t)new_cwnd;
+    if (q_ema > q_dec_star || q_inst > q_inc_star) {
+        float q_dec = q_ema;
+        if (q_dec < q_dec_star && q_inst > q_inc_star)
+            q_dec = q_inst;
+
+        float x = (q_dec - q_dec_star) / (1.0f - q_dec_star);
+        if (x < 0.0f) x = 0.0f;
+        if (x > 1.0f) x = 1.0f;
+
+        float g = x * x;
+
+        float excess = w - (float)MSS;
+        if (excess < 0.0f) excess = 0.0f;
+
+        float k_dec = 0.3f;
+        float dec = k_dec * g * excess;
+
+        if (dec < 0.0f) dec = 0.0f;
+        if (dec > excess) dec = excess;
+
+        w -= dec;
+    }
+
+    if (w < MSS) w = MSS;
+    if (w > CWND_WIN_MAX) w = CWND_WIN_MAX;
+
+    ss->cwnd = (uint32_t)w;
 }
-
-/*
-static void scp_update_cwnd_fast(struct scp_stream *ss)
-{
-    if (ss->srtt == 0 || ss->rtt_base == 0)
-        return;
-
-    int32_t q = (int32_t)ss->srtt - (int32_t)ss->rtt_base;
-    if (q < 0) q = 0;
-
-    int32_t q_target = 100;  
-
-    int32_t err = q_target - q;
-
-    int32_t gamma = 1;
-    int32_t delta = gamma * err;
-
-    int32_t new_cwnd = (int32_t)ss->cwnd + delta;
-
-    if (new_cwnd < MSS)
-        new_cwnd = MSS;
-
-    ss->cwnd = (uint32_t)new_cwnd;
-}
-*/
 
 /*
  *Update cwnd
@@ -594,7 +593,8 @@ int scp_init(size_t max_streams)
  */
 static void scp_update_rtt(struct scp_stream *s)
 {
-    uint32_t rtt_sample = s->rtt_sample;
+    uint32_t loss_rtt = (s->p_ema * SCP_RTO_MIN) >> 16;
+    uint32_t rtt_sample = s->rtt_sample + loss_rtt;
 
     if (s->srtt == 0) {
         s->srtt   = rtt_sample;
@@ -607,13 +607,13 @@ static void scp_update_rtt(struct scp_stream *s)
 
     int32_t delta = (int32_t)rtt_sample - (int32_t)s->srtt;
 
-    s->srtt = s->srtt + (delta >> 3);  
+    s->srtt = s->srtt + (delta >> 5);  
 
     int32_t abs_delta = delta >= 0 ? delta : -delta;
     int32_t rttvar_i  = (int32_t)s->rttvar;
     int32_t diff      = abs_delta - rttvar_i;
 
-    rttvar_i = rttvar_i + (diff >> 2); 
+    rttvar_i = rttvar_i + (diff >> 4); 
     if (rttvar_i < 1) rttvar_i = 1;   
 
     s->rttvar = (uint32_t)rttvar_i;
@@ -661,7 +661,7 @@ static void scp_send_window_probe(struct scp_stream *ss)
             .seq   = htonl(ss->snd_nxt),
             .ack   = htonl(ss->rcv_nxt),
             .sack  = htonl(scp_calc_sack(ss)),
-            .wnd   = htons((uint16_t)ss->rcv_wnd),
+            .wnd   = htonl(ss->rcv_wnd),
             .len   = 0,
             .cksum = 0,
             .flags = SCP_FLAG_PING,
@@ -755,7 +755,7 @@ static void scp_output_connect(struct scp_stream *ss)
         .seq = htonl(ss->iss),
         .ack = 0,
         .sack = htonl(scp_calc_sack(ss)),
-        .wnd = htons((uint16_t)ss->rcv_wnd),
+        .wnd = htonl(ss->rcv_wnd),
         .len = 0,
         .flags = SCP_FLAG_CONNECT,
         .fd = ss->dst_fd,
@@ -775,7 +775,7 @@ static void scp_output_connect_ack(struct scp_stream *ss)
         .seq = htonl(ss->snd_nxt),
         .ack = htonl(ss->rcv_nxt),
         .sack = htonl(scp_calc_sack(ss)),
-        .wnd = htons((uint16_t)ss->rcv_wnd),
+        .wnd = htonl(ss->rcv_wnd),
         .len = 0,
         .flags = SCP_FLAG_CONNECT_ACK,
         .fd = ss->dst_fd,
@@ -794,7 +794,7 @@ static void scp_output_fin_first(struct scp_stream *ss)
     hdr.seq  = htonl(ss->snd_nxt);
     hdr.ack  = htonl(ss->rcv_nxt);
     hdr.sack = htonl(scp_calc_sack(ss));
-    hdr.wnd  = htons((uint16_t)ss->rcv_wnd);
+    hdr.wnd  = htonl(ss->rcv_wnd);
     hdr.len  = 0;
     hdr.flags = SCP_FLAG_FIN | SCP_FLAG_ACK;
     hdr.fd   = ss->dst_fd;
@@ -815,7 +815,7 @@ static void scp_output_fin_retrans(struct scp_stream *ss)
     hdr.seq  = htonl(ss->snd_nxt - 1);  
     hdr.ack  = htonl(ss->rcv_nxt);
     hdr.sack = htonl(scp_calc_sack(ss));
-    hdr.wnd  = htons((uint16_t)ss->rcv_wnd);
+    hdr.wnd  = htonl(ss->rcv_wnd);
     hdr.len  = 0;
     hdr.flags = SCP_FLAG_FIN | SCP_FLAG_ACK;
     hdr.fd   = ss->dst_fd;
@@ -1061,7 +1061,7 @@ static void scp_process_ack(struct scp_stream *ss,
 
     uint32_t old_una = ss->snd_una;
 
-    if (ss->rtt_updated && SEQ_GT(ack, old_una)) {
+    if (SEQ_GT(ack, old_una)) {
         scp_update_rtt_base(ss);
         scp_update_rtt(ss);
         scp_update_loss(ss);
@@ -1140,7 +1140,7 @@ void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh)
     sh.seq = htonl(ss->snd_nxt);
     sh.ack = htonl(ss->rcv_nxt);
     sh.sack = htonl(scp_calc_sack(ss));
-    sh.wnd   = htons((uint16_t)ss->rcv_wnd);
+    sh.wnd   = htonl(ss->rcv_wnd);
     sh.len   = 0;
     sh.flags = SCP_FLAG_ACK;
     sh.fd    = ss->dst_fd;
@@ -1168,7 +1168,7 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
     hdr->seq   = htonl(sb->seq);
     hdr->ack   = htonl(ss->rcv_nxt);
     hdr->sack  = htonl(scp_calc_sack(ss));
-    hdr->wnd   = htons((uint16_t)ss->rcv_wnd);
+    hdr->wnd   = htonl(ss->rcv_wnd);
     hdr->len   = htons((uint16_t)sb->len - sizeof(struct scp_hdr));
     hdr->flags = SCP_FLAG_DATA;
     hdr->fd    = ss->dst_fd;
@@ -1188,7 +1188,6 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
 
 static int scp_output_one(struct scp_stream *ss)
 {
-    uint32_t now = scp_now_time();
     struct list_node *n = NULL;
 
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
@@ -1564,7 +1563,7 @@ int scp_input(void *ctx, void *buf, size_t len)
     }
 
     uint32_t ack = ntohl(sh->ack);
-    uint32_t wnd = ntohs(sh->wnd);
+    uint32_t wnd = ntohl(sh->wnd);
     uint32_t sack = ntohl(sh->sack);
 
     ss = hashmap_get(&scp_stream_map, (void *)(uintptr_t)sh->fd);

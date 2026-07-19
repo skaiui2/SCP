@@ -29,16 +29,16 @@ struct scp_timer {
 #define SCP_RTO_MAX 2000
 #define RETRANS_RECO_MAX 1
 #define RETRANS_GAP_MAX  4
-#define SCP_RECV_LIMIT 0xFFFF
-#define SEND_WIN_INIT 0xFFFF
-#define RECV_WIN_INIT     0xFFFF
-#define CWND_WIN_MAX     0xFFFF
+#define SCP_RECV_LIMIT (1 << 24)
+#define SEND_WIN_INIT (1 << 24)
+#define RECV_WIN_INIT (1 << 24)
+#define CWND_WIN_MAX  (1 << 17)
 #define MTU 1460
 #define PERSIST_INTERVAL 200
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
-#define P_WND  512
+#define P_WND  32
 
 struct scp_transport_class {
     int (*send)(void *user, const void *buf, size_t len);
@@ -64,7 +64,7 @@ struct scp_hdr {
     uint32_t ack;
     uint32_t sack; //first hollow
     uint32_t fd;
-    uint16_t wnd;
+    uint32_t wnd;
     uint16_t len;
     uint16_t cksum;
     uint16_t flags;
