@@ -39,8 +39,8 @@ struct scp_timer {
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
 #define P_WND  32
-#define SEND_MEM_MAX  (1 << 20)
-#define RECV_MEM_MAX  (1 << 20)
+#define SEND_MEM_MAX  (1 << 30)
+#define RECV_MEM_MAX  (1 << 30)
 
 struct scp_transport_class {
     int (*send)(void *user, const void *buf, size_t len);
