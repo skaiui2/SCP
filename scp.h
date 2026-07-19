@@ -39,6 +39,8 @@ struct scp_timer {
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
 #define P_WND  32
+#define SEND_MEM_MAX  (1 << 20)
+#define RECV_MEM_MAX  (1 << 20)
 
 struct scp_transport_class {
     int (*send)(void *user, const void *buf, size_t len);
@@ -54,7 +56,8 @@ struct scp_buf {
     };
     size_t len;
     uint32_t seq; // save it from hdr.
-    uint8_t sent;
+    uint8_t sent:1;
+    uint8_t dir:1;
     uint8_t *data;
     uint32_t payload_off;
 };
@@ -79,6 +82,14 @@ struct scp_hdr {
 #define SCP_FLAG_RESEND 0x20
 #define SCP_FLAG_CONNECT_ACK 0x40
 #define SCP_FLAG_FIN         0x80 
+
+#define SCP_DIR_INPUT 1
+#define SCP_DIR_SEND 0
+
+#define SCP_ERR_GENERIC   -1 
+#define SCP_ERR_NOBUF     -2  
+#define SCP_ERR_NOMEM     -3 
+
 
 enum {
     SCP_CLOSED,
@@ -155,7 +166,12 @@ struct scp_stream {
     int32_t  d;
     int32_t  z;
     uint16_t cong_q;
-    uint16_t cong_q_ema; 
+    uint16_t cong_q_ema;
+    
+    void (*cc_init)(struct scp_stream *ss);
+    void (*cc_on_ack)(struct scp_stream *ss);
+    void (*cc_on_loss)(struct scp_stream *ss);
+    void (*cc_on_timeout)(struct scp_stream *ss);
 };
 
 /*

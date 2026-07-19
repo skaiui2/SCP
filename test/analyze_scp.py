@@ -10,7 +10,7 @@ import pandas as pd
 FIELDS = [
     "t","seq","ack","sack","len","wnd","flags",
     "snd_una","snd_seq_q","snd_nxt","rcv_nxt",
-    "snd_wnd","rcv_wnd",
+    "snd_wnd","rcv_wnd","snd_wmem","rcv_wmem",
     "snd_q","rcv_q",
     "cwnd","flight",
     "srtt","rto","dup_acks","sb_cc",
