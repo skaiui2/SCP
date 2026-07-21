@@ -2,9 +2,9 @@
 
 [中文介绍](./docs/中文/README中文.md)
 
-SCP is a lightweight and predictable stream‑oriented protocol built on top of UDP or any unreliable transport. It focuses on clarity, controllability, and a small, easy‑to‑understand state machine suitable for user‑space networking, embedded systems, and internal service communication.
+SCP is a lightweight and predictable stream‑oriented reliable transport protocol built on top of UDP or any unreliable medium. It focuses on clarity, controllability, and a compact state machine suitable for embedded systems, MCU‑class devices, and user‑space networking.
 
-It provides reliable byte‑stream delivery with sequence numbers, ACK/SACK, retransmission, flow control, congestion control, connection setup, and graceful shutdown, all implemented with a compact and readable codebase.
+Its core innovation is a nonlinear congestion‑control algorithm (SB) that combines loss deviation, RTT deviation, and their interaction into a single logistic‑mapped probability signal. This allows SCP to distinguish random loss from congestion, achieving stable throughput in high‑loss or wireless environments while keeping the implementation small, readable, and easy to extend.
 
 ## Features
 
@@ -14,6 +14,7 @@ It provides reliable byte‑stream delivery with sequence numbers, ACK/SACK, ret
 - Full connection lifecycle (CONNECT / FIN)
 - Tunable behavior for different environments
 - Efficient reordering and timer management using red‑black trees
+- **Nonlinear AIMD‑style congestion control** — uses loss deviation, RTT deviation, and their interaction to produce a logistic‑mapped congestion signal that drives a smooth, probability‑based window increase/decrease
 
 ## Design
 
@@ -89,15 +90,25 @@ graph LR
 
 ## Performance
 
-In a realistic weak‑network test environment with delay, jitter, light packet loss, reordering, and bandwidth limits (20 ms ± 5 ms latency, 0.5% loss, 5% reordering, 50 Mbps rate, 500‑packet queue), ,a test was written to send 100MB files bidirectionally. Each round of the loop had a certain delay, taking more than 700 seconds, with bandwidth wasted at around 10%.
-
 **nodeB:**
 
-![SCP B_seq](test/output/B_seq.png)
+![SCP B_seq](test/nodeB/output/seq.png)
 
 **Transmitted bytes for nodeB**
 
-![SCP B_packet_bytes](test/output/B_packet_bytes.png)
+![SCP B_packet_bytes](test/nodeB/output/packet_bytes.png)
+
+**cwnd for nodeB**
+
+![SCP B_cwnd](test/nodeB/output/cwnd.png)
+
+**RTT for nodeB**
+
+![SCP B_srtt](test/nodeB/output/srtt.png)
+
+**cong_q for nodeB**
+
+![SCP B_cong_q](test/nodeB/output/cong_q.png)
 
 
 
@@ -191,18 +202,8 @@ md5sum testA.bin testB.bin outA.bin outB.bin
 
 ### Generate analysis plots
 
-Inside the `test` directory, create an output folder:
-
-```bash
-mkdir output
 ```
-
-Copy the analysis script and logs into it:
-
-```
-cp analyze_scp.py nodeA.log nodeB.log output/
-cd output
-python3 analyze_scp.py
+python3 analyze_scp.py nodeX.log
 ```
 
 The script will generate several plots, including:
@@ -211,19 +212,19 @@ The script will generate several plots, including:
 - Total transmitted bytes and bandwidth usage
 - Congestion window dynamics
 
-Example outputs (included in the repository under `test/output/`):
+Example outputs (included in the repository under `test/nodeX/output/`):
 
 **Sequence evolution**
 
-![SCP A_seq](test/output/A_seq.png)
+![SCP A_seq](test/nodeA/output/seq.png)
 
 **Transmitted bytes**
 
-![SCP A_packet_bytes](test/output/A_packet_bytes.png)
+![SCP A_packet_bytes](test/nodeA/output/packet_bytes.png)
 
 **Congestion window**
 
-![SCP A_cwnd](test/output/A_cwnd.png)
+![SCP A_cwnd](test/nodeA/output/cwnd.png)
 
 These figures illustrate SCP’s behavior under delay, jitter, packet loss, and reordering, including visible cwnd drops caused by timeout‑driven retransmissions.
 
