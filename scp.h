@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "link_list.h"
+#include "hashmap.h"
+#include "queue.h"
+#include "in_cksum.h"
 #include "rbtree.h"
 
 typedef void (*scp_timer_cb_t)(void *arg);

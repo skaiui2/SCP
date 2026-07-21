@@ -1,7 +1,4 @@
 #include "scp.h"
-#include "hashmap.h"
-#include "queue.h"
-#include "in_cksum.h"
 #include <stdlib.h>
 #include <arpa/inet.h>
 #include <string.h>
