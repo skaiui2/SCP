@@ -41,7 +41,7 @@ struct scp_timer {
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
-#define P_WND  32
+#define P_WND  64
 #define SEND_MEM_MAX  (1 << 30)
 #define RECV_MEM_MAX  (1 << 30)
 

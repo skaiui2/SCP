@@ -286,7 +286,7 @@ void scp_timer_process(void)
 #define POS20       Q16(20)
 
 static const int32_t GAMMA_Q16 = -129761;
-static const int32_t BETA_Q16  = 3000;
+static const int32_t BETA_Q16  = 1500;
 
 static inline uint16_t logistic(int32_t z)
 {
@@ -507,9 +507,6 @@ static void scp_buf_free(struct scp_stream *ss, struct scp_buf *b)
     } else if (b->dir == SCP_DIR_SEND) {
         ss->snd_wmem -= total;
     }
-    printf("ss->rcv_wmem: %u\r\n", ss->rcv_wmem);
-    printf("ss->snd_wmem: %u\r\n", ss->snd_wmem);
-
     scp_free(b);
 }
 
