@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <limits.h>
 #include "link_list.h"
 #include "hashmap.h"
 #include "queue.h"
@@ -24,8 +25,9 @@ struct scp_timer {
 //Set by yourself.
 #define SCP_SB  1
 #define SCP_DEBUG 0
-#define SCP_DUMP 1
+#define SCP_DUMP_SS 1
 #define SCP_RUN_DEBUG 1
+#define SCP_DUMP_HDR  0
 
 #define RETRANS_COUNT_MAX 1000
 #define SCP_RTO_MIN 200
@@ -41,7 +43,7 @@ struct scp_timer {
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
-#define P_WND  64
+#define P_WND  32
 #define SEND_MEM_MAX  (1 << 30)
 #define RECV_MEM_MAX  (1 << 30)
 
@@ -103,6 +105,11 @@ enum {
     SCP_LAST_ACK,
 };
 
+enum scp_cc_phase {
+    SCP_CC_PHASE_INC = 0,
+    SCP_CC_PHASE_DEC = 1
+};
+
 struct scp_stream {
     struct list_node node;              // linked into global stream list
     struct scp_transport_class *st_class; // transport callbacks (send/recv)
@@ -137,9 +144,10 @@ struct scp_stream {
     uint32_t rto;                       // retransmission timeout
     uint32_t rto_recovery;
 
-    uint8_t  timeout_count;             // consecutive timeout counter
+    uint16_t  timeout_count;             // consecutive timeout counter
 
     struct list_node snd_q;             // send queue (in-order)
+    uint32_t snd_q_count;
 
     struct rb_root rcv_buf_q;           // out-of-order receive tree
     struct list_node rcv_data_q;        // in-order delivered data
@@ -170,6 +178,8 @@ struct scp_stream {
     int32_t  z;
     uint16_t cong_q;
     uint16_t cong_q_ema;
+
+    uint8_t cc_phase;
     
     void (*cc_init)(struct scp_stream *ss);
     void (*cc_on_ack)(struct scp_stream *ss);
@@ -204,6 +214,7 @@ int scp_input(void *ctx, void *buf, size_t len);
 int scp_send(int fd, void *buf, size_t len);
 int scp_recv(int fd, void *buf, size_t len);
 void scp_close(int fd);
+int scp_is_closed(int fd);
 
 void scp_timer_process(void);
 

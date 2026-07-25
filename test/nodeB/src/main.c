@@ -1,400 +1,549 @@
+#define _DEFAULT_SOURCE
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdint.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <arpa/inet.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <time.h>
-#include <noise/protocol.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+
+#ifndef TEST_USE_TCP
+#define TEST_USE_TCP 0
+#endif
+
+#define TEST_OUTPUT_PATH    "outB.bin"
+#define TEST_FILE_SIZE      (100ULL * 1024ULL * 1024ULL)
+#define IO_BUF_SIZE         (64U * 1024U)
+
+#define TEST_BIND_IP        "0.0.0.0"
+#define TEST_B_PORT         6000
+
+#define IDLE_SLEEP_US       100
+#define TEST_TIMEOUT_SEC    1800
+#define CLOSE_TIMEOUT_SEC   120
+
+#if TEST_USE_TCP
+
+#include <netinet/tcp.h>
+
+#else
+
 #include "cal_udp.h"
 #include "scp.h"
 #include "scp_time.h"
 
-#define MSG_DATA 1
-#define MSG_DONE 2
-
-#define RECV_BUF 2048
-#define NOISE_OVERHEAD 16
-#define TLV_BUF (RECV_BUF + NOISE_OVERHEAD)
-
-#define TEST_FILE_SIZE (100 * 1024 * 1024)
-
-#pragma pack(push, 1)
-struct tls_record_hdr {
-    uint8_t  content_type;
-    uint16_t version;
-    uint16_t length;
-};
-#pragma pack(pop)
-
-#define TLS_CONTENT_TYPE_APP 0x17
-#define TLS_VERSION_12       0x0303
-#define TLS_MAX_RECORD       1500
-
-struct app_state {
-    int local_done;
-    int peer_done;
-    size_t sent;
-    size_t received;
-};
-
-static inline int rand_range(int a, int b)
-{
-    if (b <= a) return a;
-    return a + rand() % (b - a + 1);
-}
-
-static int send_tlv(int fd, uint8_t type, const void *data, uint16_t len)
-{
-    uint16_t total = 3 + len;
-    uint8_t *p = malloc(total);
-    if (!p) return -1;
-
-    p[0] = type;
-    p[1] = len >> 8;
-    p[2] = len & 0xFF;
-    if (len) memcpy(p + 3, data, len);
-
-    int r = scp_send(fd, p, total);
-    free(p);
-    return r;
-}
-
-struct tlv_rx_state {
-    uint8_t hdr[3];
-    int hdr_have;
-    uint16_t len;
-    uint16_t have;
-};
-
-static void tlv_rx_init(struct tlv_rx_state *st)
-{
-    st->hdr_have = 0;
-    st->len = 0;
-    st->have = 0;
-}
-
-static int recv_tlv(int fd,
-                    struct tlv_rx_state *st,
-                    uint8_t *type,
-                    uint8_t *buf,
-                    uint16_t *len)
-{
-    if (st->hdr_have < 3) {
-        int n = scp_recv(fd, st->hdr + st->hdr_have, 3 - st->hdr_have);
-        if (n <= 0) return 0;
-        st->hdr_have += n;
-        if (st->hdr_have < 3) return 0;
-
-        *type = st->hdr[0];
-        st->len = ((uint16_t)st->hdr[1] << 8) | st->hdr[2];
-        *len = st->len;
-        st->have = 0;
-
-        if (st->len > TLV_BUF) return -1;
-    }
-
-    if (st->have < st->len) {
-        int m = scp_recv(fd, buf + st->have, st->len - st->have);
-        if (m <= 0) return 0;
-        st->have += m;
-        if (st->have < st->len) return 0;
-    }
-
-    st->hdr_have = 0;
-    return 1;
-}
+#define SCP_TEST_FD 1
 
 struct scp_udp_user {
     cal_udp_ctx_t *udp;
     struct sockaddr_in peer;
+    int peer_ready;
 };
+
+static cal_udp_ctx_t g_udp;
+static struct scp_udp_user g_user;
+static uint8_t g_packet_buf[2048];
 
 static int scp_udp_send(void *user, const void *buf, size_t len)
 {
-    struct scp_udp_user *u = user;
-    uint8_t out[TLS_MAX_RECORD];
-    struct tls_record_hdr *h = (struct tls_record_hdr *)out;
+    struct scp_udp_user *u = (struct scp_udp_user *)user;
 
-    if (len > TLS_MAX_RECORD - sizeof(*h))
-        len = TLS_MAX_RECORD - sizeof(*h);
+    if (!u->peer_ready)
+        return -1;
 
-    h->content_type = TLS_CONTENT_TYPE_APP;
-    h->version      = htons(TLS_VERSION_12);
-    h->length       = htons((uint16_t)len);
-
-    memcpy(out + sizeof(*h), buf, len);
-    size_t total = sizeof(*h) + len;
-
-    return cal_udp_send(u->udp, out, total, &u->peer);
+    return cal_udp_send(u->udp, buf, len, &u->peer);
 }
 
-static void udp_recv_and_feed_scp(cal_udp_ctx_t *udp,
-                                  struct scp_stream *ss,
-                                  struct sockaddr_in *src,
-                                  uint8_t *rxbuf,
-                                  size_t rxbuf_sz)
+static int scp_test_progress(void)
 {
-    int rn = cal_udp_recv(udp, rxbuf, rxbuf_sz, src);
-    if (rn > 0) {
-        if (rn <= (int)sizeof(struct tls_record_hdr))
-            return;
+    int progressed = 0;
 
-        struct tls_record_hdr *h = (struct tls_record_hdr *)rxbuf;
-        if (h->content_type != TLS_CONTENT_TYPE_APP)
-            return;
+    scp_timer_process();
 
-        uint16_t plen = ntohs(h->length);
-        if (plen + sizeof(*h) > (uint16_t)rn)
-            return;
+    /*
+     * Timer callback may have completed the FIN handshake
+     * and removed the stream.
+     */
+    if (scp_is_closed(SCP_TEST_FD))
+        return 1;
 
-        uint8_t *payload = rxbuf + sizeof(*h);
-        scp_input(ss, payload, plen);
-    }
-}
-
-int noise_scp_handshake_nodeB(int fd,
-                              NoiseCipherState **send_cs,
-                              NoiseCipherState **recv_cs,
-                              cal_udp_ctx_t *udp,
-                              struct scp_stream *ss,
-                              struct sockaddr_in *src)
-{
-    NoiseHandshakeState *hs;
-    NoiseCipherState *cs1, *cs2;
-
-    NoiseProtocolId pid;
-    noise_protocol_name_to_id(&pid,
-        "Noise_NN_25519_ChaChaPoly_BLAKE2b",
-        strlen("Noise_NN_25519_ChaChaPoly_BLAKE2b"));
-
-    noise_handshakestate_new_by_id(&hs, &pid, NOISE_ROLE_RESPONDER);
-    noise_handshakestate_start(hs);
-
-    uint8_t in[256], out[256], rxbuf[TLS_MAX_RECORD];
-    NoiseBuffer buf;
-
-    int n;
     for (;;) {
-        scp_timer_process();
-        udp_recv_and_feed_scp(udp, ss, src, rxbuf, sizeof(rxbuf));
+        struct sockaddr_in src;
 
-        n = scp_recv(fd, in, sizeof(in));
-        if (n > 0) break;
+        int n = cal_udp_recv(&g_udp,
+                             g_packet_buf,
+                             sizeof(g_packet_buf),
+                             &src);
 
-        usleep(1000);
+        if (n <= 0)
+            break;
+
+        if (!g_user.peer_ready) {
+            g_user.peer = src;
+            g_user.peer_ready = 1;
+        }
+
+        int ret = scp_input(NULL,
+                            g_packet_buf,
+                            (size_t)n);
+
+        if (ret < 0) {
+            /*
+             * The previous datagram may have completed the close
+             * and freed the stream. A duplicate/late datagram was
+             * already queued in the UDP socket.
+             */
+            if (scp_is_closed(SCP_TEST_FD)) {
+                progressed = 1;
+                break;
+            }
+
+            fprintf(stderr,
+                    "scp_input failed before stream close: %d\n",
+                    ret);
+            return -1;
+        }
+
+        progressed = 1;
+
+        /*
+         * scp_input() may have processed the final ACK and
+         * freed the stream.
+         */
+        if (scp_is_closed(SCP_TEST_FD))
+            break;
     }
 
-    noise_buffer_set_input(buf, in, n);
-    noise_handshakestate_read_message(hs, &buf, NULL);
+    return progressed;
+}
 
-    noise_buffer_set_output(buf, out, sizeof(out));
-    noise_handshakestate_write_message(hs, &buf, NULL);
-    scp_send(fd, out, buf.size);
+#endif
 
-    noise_handshakestate_split(hs, &cs1, &cs2);
-    noise_handshakestate_free(hs);
+#if !TEST_USE_TCP
+static uint64_t monotonic_ms(void)
+{
+    struct timespec ts;
 
-    *recv_cs = cs1;
-    *send_cs = cs2;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+
+    return (uint64_t)ts.tv_sec * 1000ULL +
+           (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+#endif
+
+static double elapsed_seconds(const struct timespec *start,
+                              const struct timespec *end)
+{
+    return (double)(end->tv_sec - start->tv_sec) +
+           (double)(end->tv_nsec - start->tv_nsec) / 1000000000.0;
+}
+
+static int write_all(int fd, const void *buf, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+
+        if (n > 0) {
+            p += (size_t)n;
+            len -= (size_t)n;
+            continue;
+        }
+
+        if (n < 0 && errno == EINTR)
+            continue;
+
+        return -1;
+    }
+
     return 0;
 }
 
-int main()
+#if TEST_USE_TCP
+
+static int tcp_listen_and_accept(void)
 {
-    srand((unsigned)time(NULL));
+    int listen_fd = -1;
+    int conn_fd = -1;
+    int one = 1;
+    struct sockaddr_in addr;
 
-    printf("[B] starting full-duplex encrypted transfer...\n");
-
-    if (access("testB.bin", F_OK) != 0) {
-        int gen = open("testB.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        for (size_t i = 0; i < TEST_FILE_SIZE; i++) {
-            uint8_t b = i % 256;
-            write(gen, &b, 1);
-        }
-        close(gen);
+    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0) {
+        perror("socket");
+        return -1;
     }
 
-    int fd_send = open("testB.bin", O_RDONLY);
-    int fd_recv = open("outB.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (setsockopt(listen_fd,
+                   SOL_SOCKET,
+                   SO_REUSEADDR,
+                   &one,
+                   sizeof(one)) != 0) {
+        perror("setsockopt(SO_REUSEADDR)");
+        close(listen_fd);
+        return -1;
+    }
 
-    cal_udp_ctx_t udp;
-    cal_udp_open(&udp, "0.0.0.0", 6000);
-    int fl = fcntl(udp.sockfd, F_GETFL, 0);
-    fcntl(udp.sockfd, F_SETFL, fl | O_NONBLOCK);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(TEST_B_PORT);
 
-    scp_init(16);
+    if (inet_pton(AF_INET, TEST_BIND_IP, &addr.sin_addr) != 1) {
+        fprintf(stderr, "invalid TEST_BIND_IP: %s\n", TEST_BIND_IP);
+        close(listen_fd);
+        return -1;
+    }
+
+    if (bind(listen_fd,
+             (struct sockaddr *)&addr,
+             sizeof(addr)) != 0) {
+        perror("bind");
+        close(listen_fd);
+        return -1;
+    }
+
+    if (listen(listen_fd, 1) != 0) {
+        perror("listen");
+        close(listen_fd);
+        return -1;
+    }
+
+    printf("[B][TCP] listening on %s:%d\n",
+           TEST_BIND_IP,
+           TEST_B_PORT);
+
+    conn_fd = accept(listen_fd, NULL, NULL);
+    if (conn_fd < 0) {
+        perror("accept");
+        close(listen_fd);
+        return -1;
+    }
+
+    close(listen_fd);
+    return conn_fd;
+}
+
+#endif
+
+int main(void)
+{
+    int fd_recv = -1;
+    uint8_t *buf = NULL;
+    uint64_t received = 0;
+    int rc = 1;
+    struct timespec start;
+    struct timespec end;
+
+    fd_recv = open(TEST_OUTPUT_PATH,
+                   O_WRONLY | O_CREAT | O_TRUNC,
+                   0644);
+    if (fd_recv < 0) {
+        perror("open output");
+        goto out;
+    }
+
+    buf = (uint8_t *)malloc(IO_BUF_SIZE);
+    if (!buf) {
+        perror("malloc");
+        goto out;
+    }
+
+#if TEST_USE_TCP
+
+    int sock = tcp_listen_and_accept();
+    if (sock < 0)
+        goto out;
+
+    printf("[B][TCP] connected; receiving %llu bytes into %s\n",
+           (unsigned long long)TEST_FILE_SIZE,
+           TEST_OUTPUT_PATH);
+
+    if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
+        perror("clock_gettime");
+        close(sock);
+        goto out;
+    }
+
+    while (received < TEST_FILE_SIZE) {
+        size_t want = IO_BUF_SIZE;
+        uint64_t remaining = TEST_FILE_SIZE - received;
+
+        if (remaining < want)
+            want = (size_t)remaining;
+
+        ssize_t n = recv(sock, buf, want, 0);
+
+        if (n > 0) {
+            if (write_all(fd_recv, buf, (size_t)n) != 0) {
+                perror("write");
+                close(sock);
+                goto out;
+            }
+
+            received += (uint64_t)n;
+            continue;
+        }
+
+        if (n == 0) {
+            fprintf(stderr,
+                    "sender closed early at %llu/%llu bytes\n",
+                    (unsigned long long)received,
+                    (unsigned long long)TEST_FILE_SIZE);
+            close(sock);
+            goto out;
+        }
+
+        if (errno == EINTR)
+            continue;
+
+        perror("recv");
+        close(sock);
+        goto out;
+    }
+
+    if (clock_gettime(CLOCK_MONOTONIC, &end) != 0) {
+        perror("clock_gettime");
+        close(sock);
+        goto out;
+    }
+
+    if (shutdown(sock, SHUT_WR) != 0) {
+        perror("shutdown(SHUT_WR)");
+        close(sock);
+        goto out;
+    }
+
+    for (;;) {
+        uint8_t extra;
+        ssize_t n = recv(sock, &extra, sizeof(extra), 0);
+
+        if (n == 0)
+            break;
+
+        if (n > 0) {
+            fprintf(stderr, "received data beyond the expected file size\n");
+            close(sock);
+            goto out;
+        }
+
+        if (errno == EINTR)
+            continue;
+
+        perror("recv waiting for sender FIN");
+        close(sock);
+        goto out;
+    }
+
+    close(sock);
+
+#else
+
+    cal_udp_open(&g_udp, TEST_BIND_IP, TEST_B_PORT);
+    if (g_udp.sockfd < 0) {
+        fprintf(stderr, "cal_udp_open failed\n");
+        goto out;
+    }
+
+    int flags = fcntl(g_udp.sockfd, F_GETFL, 0);
+    if (flags < 0 ||
+        fcntl(g_udp.sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        perror("fcntl(O_NONBLOCK)");
+        goto out;
+    }
+
+    srand(1);
+
+    if (scp_init(16) != 0) {
+        fprintf(stderr, "scp_init failed\n");
+        goto out;
+    }
+
     scp_time_init();
 
-    struct scp_udp_user user;
-    memset(&user, 0, sizeof(user));
-    user.udp = &udp;
+    memset(&g_user, 0, sizeof(g_user));
+    g_user.udp = &g_udp;
 
-    struct scp_transport_class st = {
-        .user  = &user,
-        .send  = scp_udp_send,
-        .recv  = NULL,
+    struct scp_transport_class transport = {
+        .user = &g_user,
+        .send = scp_udp_send,
+        .recv = NULL,
         .close = NULL
     };
 
-    uint8_t sendbuf[RECV_BUF], tlvbuf[TLV_BUF], rxbuf[TLS_MAX_RECORD];
-    struct sockaddr_in src;
-    memset(&src, 0, sizeof(src));
+    struct scp_stream *ss =
+        scp_stream_alloc(&transport, SCP_TEST_FD, SCP_TEST_FD);
 
-    int peer_inited = 0;
-
-    struct app_state app = {0};
-    struct tlv_rx_state tlvst; tlv_rx_init(&tlvst);
-
-    struct scp_stream *ss = scp_stream_alloc(&st, 1, 1);
-
-    printf("[B] waiting for SCP ESTABLISHED...\n");
-    while (ss->state != SCP_ESTABLISHED) {
-        scp_timer_process();
-        udp_recv_and_feed_scp(&udp, ss, &src, rxbuf, sizeof(rxbuf));
-        if (!peer_inited && src.sin_port != 0) {
-            user.peer = src;
-            peer_inited = 1;
-        }
-        usleep(1000);
+    if (!ss) {
+        fprintf(stderr, "scp_stream_alloc failed\n");
+        goto out;
     }
 
-    printf("[B] SCP established, doing Noise handshake...\n");
+    printf("[B][SCP] waiting for ESTABLISHED on %s:%d\n",
+           TEST_BIND_IP,
+           TEST_B_PORT);
 
-    NoiseCipherState *send_cs, *recv_cs;
-    noise_scp_handshake_nodeB(1, &send_cs, &recv_cs, &udp, ss, &src);
+    uint64_t deadline = monotonic_ms() + TEST_TIMEOUT_SEC * 1000ULL;
 
-    printf("[B] Noise handshake OK, starting encrypted transfer...\n");
+    while (ss->state != SCP_ESTABLISHED) {
+        int progressed = scp_test_progress();
 
-    ssize_t cur_len = 0;
-    size_t  cur_off = 0;
-    int     have_plain = 0;
-
-    static uint8_t  pending_cipher[TLV_BUF];
-    static uint16_t pending_cipher_len = 0;
-    static uint16_t pending_plain_len  = 0;
-    int             pending_valid      = 0;
-
-    while (1) {
-        scp_timer_process();
-        udp_recv_and_feed_scp(&udp, ss, &src, rxbuf, sizeof(rxbuf));
-        if (!peer_inited && src.sin_port != 0) {
-            user.peer = src;
-            peer_inited = 1;
-        }
-
-        if (!pending_valid && app.sent < TEST_FILE_SIZE) {
-            if (!have_plain) {
-                cur_len = read(fd_send, sendbuf, sizeof(sendbuf));
-                if (cur_len > 0) {
-                    cur_off = 0;
-                    have_plain = 1;
-                } else if (cur_len < 0) {
-                    perror("[B] read");
-                    goto out;
-                }
-            }
-
-            if (have_plain) {
-                uint16_t remain = (uint16_t)(cur_len - cur_off);
-                if (remain == 0) {
-                    have_plain = 0;
-                } else {
-                    uint16_t plain_chunk;
-                    if (remain <= 128)
-                        plain_chunk = remain;
-                    else
-                        plain_chunk = (uint16_t)rand_range(128, remain);
-
-                    memcpy(pending_cipher, sendbuf + cur_off, plain_chunk);
-
-                    NoiseBuffer enc;
-                    noise_buffer_set_inout(enc, pending_cipher,
-                                           plain_chunk, sizeof(pending_cipher));
-                    int err = noise_cipherstate_encrypt(send_cs, &enc);
-                    if (err != NOISE_ERROR_NONE) {
-                        printf("[B] encrypt error=%d\n", err);
-                        goto out;
-                    }
-
-                    pending_cipher_len = (uint16_t)enc.size;
-                    pending_plain_len  = plain_chunk;
-                    pending_valid      = 1;
-                }
-            }
-        }
-
-        if (pending_valid) {
-            int r = send_tlv(1, MSG_DATA, pending_cipher, pending_cipher_len);
-            if (r == 0) {
-                app.sent += pending_plain_len;
-                cur_off  += pending_plain_len;
-
-                if (cur_off >= cur_len) have_plain = 0;
-
-                pending_valid = 0;
-            } else if (r != -2) {
-                printf("[B] send_tlv error=%d\n", r);
-                goto out;
-            }
-        }
-
-        uint8_t type; uint16_t len;
-        int r = recv_tlv(1, &tlvst, &type, tlvbuf, &len);
-        if (r < 0) {
-            printf("[B] recv_tlv error\n");
+        if (progressed < 0) {
+            fprintf(stderr, "SCP progress failed during handshake\n");
             goto out;
         }
-        if (r > 0) {
-            if (type == MSG_DATA) {
-                uint8_t plain[TLV_BUF];
-                memcpy(plain, tlvbuf, len);
 
-                NoiseBuffer dec;
-                noise_buffer_set_inout(dec, plain, len, sizeof(plain));
-                int err = noise_cipherstate_decrypt(recv_cs, &dec);
-                if (err != NOISE_ERROR_NONE) {
-                    printf("[B] decrypt error=%d\n", err);
+        if (scp_is_closed(SCP_TEST_FD)) {
+            fprintf(stderr, "SCP closed during handshake\n");
+            goto out;
+        }
+
+        if (monotonic_ms() > deadline) {
+            fprintf(stderr, "SCP handshake timeout\n");
+            goto out;
+        }
+
+        if (!progressed)
+            usleep(IDLE_SLEEP_US);
+    }
+
+    printf("[B][SCP] established; receiving %llu bytes into %s\n",
+           (unsigned long long)TEST_FILE_SIZE,
+           TEST_OUTPUT_PATH);
+
+    if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
+        perror("clock_gettime");
+        goto out;
+    }
+
+    deadline = monotonic_ms() + TEST_TIMEOUT_SEC * 1000ULL;
+
+    while (received < TEST_FILE_SIZE) {
+        int progressed = scp_test_progress();
+
+        if (progressed < 0) {
+            fprintf(stderr, "SCP progress failed during transfer\n");
+            goto out;
+        }
+
+        for (;;) {
+            size_t want = IO_BUF_SIZE;
+            uint64_t remaining = TEST_FILE_SIZE - received;
+
+            if (remaining < want)
+                want = (size_t)remaining;
+
+            if (want == 0)
+                break;
+
+            int n = scp_recv(SCP_TEST_FD, buf, want);
+
+            if (n > 0) {
+                if (write_all(fd_recv, buf, (size_t)n) != 0) {
+                    perror("write");
                     goto out;
                 }
 
-                write(fd_recv, plain, dec.size);
-                app.received += dec.size;
-            } else if (type == MSG_DONE) {
-                app.peer_done = 1;
-            }
-        }
-
-        if (!app.local_done && app.received == TEST_FILE_SIZE) {
-            int r2 = send_tlv(1, MSG_DONE, NULL, 0);
-            if (r2 == 0) app.local_done = 1;
-            else if (r2 != -2) goto out;
-        }
-
-        if (app.local_done && app.peer_done &&
-            app.sent == TEST_FILE_SIZE &&
-            app.received == TEST_FILE_SIZE) {
-
-            printf("[B] transfer complete, closing SCP...\n");
-            scp_close(1);
-
-            while (ss->state != SCP_CLOSED) {
-                scp_timer_process();
-                udp_recv_and_feed_scp(&udp, ss, &src, rxbuf, sizeof(rxbuf));
-                usleep(1000);
+                received += (uint64_t)n;
+                progressed = 1;
+                continue;
             }
 
-            printf("[B] CLOSED.\n");
+            if (n < 0) {
+                fprintf(stderr, "scp_recv failed: %d\n", n);
+                goto out;
+            }
+
             break;
         }
 
-        usleep(1000);
+        if (scp_is_closed(SCP_TEST_FD)) {
+            fprintf(stderr,
+                    "sender closed early at %llu/%llu bytes\n",
+                    (unsigned long long)received,
+                    (unsigned long long)TEST_FILE_SIZE);
+            goto out;
+        }
+
+        if (monotonic_ms() > deadline) {
+            fprintf(stderr, "SCP transfer timeout\n");
+            goto out;
+        }
+
+        if (!progressed)
+            usleep(IDLE_SLEEP_US);
     }
 
+    if (clock_gettime(CLOCK_MONOTONIC, &end) != 0) {
+        perror("clock_gettime");
+        goto out;
+    }
+
+    scp_close(SCP_TEST_FD);
+
+    deadline = monotonic_ms() + CLOSE_TIMEOUT_SEC * 1000ULL;
+
+    while (!scp_is_closed(SCP_TEST_FD)) {
+        int progressed = scp_test_progress();
+
+        if (progressed < 0) {
+            fprintf(stderr, "SCP progress failed during close\n");
+            goto out;
+        }
+
+        if (monotonic_ms() > deadline) {
+            fprintf(stderr, "SCP close timeout\n");
+            goto out;
+        }
+
+        if (!progressed)
+            usleep(IDLE_SLEEP_US);
+    }
+
+#endif
+
+    {
+        double seconds = elapsed_seconds(&start, &end);
+        double mbps = ((double)TEST_FILE_SIZE * 8.0) /
+                      seconds /
+                      1000000.0;
+
+        printf("{\"transport\":\"%s\","
+               "\"role\":\"receiver\","
+               "\"bytes\":%llu,"
+               "\"seconds\":%.6f,"
+               "\"goodput_mbps\":%.6f,"
+               "\"output\":\"%s\","
+               "\"status\":\"success\"}\n",
+#if TEST_USE_TCP
+               "tcp",
+#else
+               "scp",
+#endif
+               (unsigned long long)received,
+               seconds,
+               mbps,
+               TEST_OUTPUT_PATH);
+    }
+
+    rc = 0;
+
 out:
-    printf("[B] ALL down. sent=%zu recv=%zu\n", app.sent, app.received);
-    close(fd_send);
-    close(fd_recv);
-    return 0;
+    if (fd_recv >= 0)
+        close(fd_recv);
+
+#if !TEST_USE_TCP
+    if (g_udp.sockfd >= 0)
+        close(g_udp.sockfd);
+#endif
+
+    free(buf);
+    return rc;
 }

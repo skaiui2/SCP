@@ -61,43 +61,11 @@ static void scp_debug_dump_rx(const void *buf, size_t len)
 #endif
 }
 
-int a1 = 0;
-static void scp_dump_hdr(struct scp_stream *ss,
-                         const char *dir,
-                         const struct scp_hdr *h)
+static void scp_dump_ss_fields(struct scp_stream *ss)
 {
-#if SCP_DUMP
-    a1++;
-    
-    if (a1 % 100) {
-        return;
-    }
-    uint32_t seq = ntohl(h->seq);
-    uint32_t ack = ntohl(h->ack);
-    uint32_t wnd = ntohl(h->wnd);
-    uint32_t len = ntohs(h->len);
-    uint32_t sack = ntohl(h->sack);
-
-    int sndq = 0, rcvq = 0;
-
-    struct list_node *n;
-    for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) sndq++;
-
-    struct rb_node *rn;
-    for (rn = rb_first(&ss->rcv_buf_q); rn != NULL; rn = rb_next(rn)) rcvq++;
-
     uint32_t flight = ss->snd_nxt - ss->snd_una;
 
-    printf("{\"t\":%u,"
-           "\"dir\":\"%s\","
-           "\"seq\":%u,"
-           "\"ack\":%u,"
-           "\"sack\":%u,"
-           "\"len\":%u,"
-           "\"wnd\":%u,"
-           "\"flags\":%u,"
-
-           "\"snd_una\":%u,"
+    printf("\"snd_una\":%u,"
            "\"snd_seq_q\":%u,"
            "\"snd_nxt\":%u,"
            "\"rcv_nxt\":%u,"
@@ -126,17 +94,8 @@ static void scp_dump_hdr(struct scp_stream *ss,
            "\"p\":%u,"
            "\"p_ema\":%u,"
            "\"d\":%d,"
-           "\"z\":%d"
-           "}\n",
-
-           scp_now_time(),
-           dir,
-           seq,
-           ack,
-           sack,
-           len,
-           wnd,
-           h->flags,
+           "\"z\":%d,"
+           "\"cc_phase\":%d",
 
            ss->snd_una,
            ss->snd_seq_q,
@@ -149,8 +108,8 @@ static void scp_dump_hdr(struct scp_stream *ss,
            ss->snd_wmem,
            ss->rcv_wmem,
 
-           sndq,
-           rcvq,
+           ss->snd_q_count,
+           ss->rcv_buf_q.count,
 
            ss->cwnd,
            flight,
@@ -168,8 +127,53 @@ static void scp_dump_hdr(struct scp_stream *ss,
            ss->p,
            ss->p_ema,
            ss->d,
-           ss->z
+           ss->z,
+           ss->cc_phase
     );
+}
+
+static void scp_dump_ss_state(struct scp_stream *ss)
+{
+#if SCP_DUMP_SS
+    printf("{\"t\":%u,\"type\":\"ss\",", scp_now_time());
+    scp_dump_ss_fields(ss);
+    printf("}\n");
+#endif
+}
+
+static void scp_dump_hdr(struct scp_stream *ss,
+                         const char *dir,
+                         const struct scp_hdr *h)
+{
+#if SCP_DUMP_HDR
+    uint32_t seq  = ntohl(h->seq);
+    uint32_t ack  = ntohl(h->ack);
+    uint32_t sack = ntohl(h->sack);
+    uint32_t wnd  = ntohl(h->wnd);
+    uint32_t len  = ntohs(h->len);
+
+    printf("{\"t\":%u,"
+           "\"type\":\"hdr\","
+           "\"dir\":\"%s\","
+           "\"seq\":%u,"
+           "\"ack\":%u,"
+           "\"sack\":%u,"
+           "\"len\":%u,"
+           "\"wnd\":%u,"
+           "\"flags\":%u,",
+           scp_now_time(),
+           dir,
+           seq,
+           ack,
+           sack,
+           len,
+           wnd,
+           h->flags
+    );
+
+    scp_dump_ss_fields(ss);
+
+    printf("}\n");
 #endif
 }
 
@@ -275,7 +279,26 @@ void scp_timer_process(void)
 
 #include <math.h>
 //if you want to know why, please see docs.
-#define SCP_CONG_Q_TARGET   ((uint16_t)(0.50 * 65535))
+
+/*
+ * Hysteresis boundaries:
+ *
+ * q_low  = 2/5 = 0.4
+ * q_high = 3/5 = 0.6
+ *
+ * 65535 is exactly divisible by 5.
+ */
+#define SCP_Q_LOW_U16   ((uint16_t)26214U)
+#define SCP_Q_HIGH_U16  ((uint16_t)39321U)
+
+/*
+ * Lambda = 2 expansion in logit space:
+ *
+ * q_dec_star = 4/13 ≈ 0.307692
+ * q_inc_star = 9/13 ≈ 0.692308
+ */
+#define SCP_Q_DEC_STAR  (4.0f / 13.0f)
+#define SCP_Q_INC_STAR  (9.0f / 13.0f)
 
 #define Q16_ONE   (1 << 16)
 #define Q16_INT(x) ((int32_t)((x) << 16))
@@ -285,8 +308,8 @@ void scp_timer_process(void)
 #define NEG20       Q16(-20)
 #define POS20       Q16(20)
 
-static const int32_t GAMMA_Q16 = -129761;
-static const int32_t BETA_Q16  = 1500;
+static const int32_t GAMMA_Q16 = -40000;
+static const int32_t BETA_Q16  = 1000;
 
 static inline uint16_t logistic(int32_t z)
 {
@@ -304,76 +327,168 @@ static inline uint16_t logistic(int32_t z)
 
 static inline void scp_md_prob(struct scp_stream *ss)
 {
-    int32_t d = 0;
+    int64_t d_ms = 0;
+
     if (ss->rtt_base > 0 && ss->srtt > 0) {
-        d = (int32_t)(ss->srtt - ss->rtt_base) << 16;
-        if (d < 0) d = 0;
+        d_ms =
+            (int64_t)ss->srtt -
+            (int64_t)ss->rtt_base;
+
+        if (d_ms < 0)
+            d_ms = 0;
     }
+
+    /*
+     * d is signed Q16.16, so its largest integral part
+     * is 32767 ms.
+     */
+    if (d_ms > (INT32_MAX >> 16))
+        d_ms = INT32_MAX >> 16;
+
+    int32_t d = (int32_t)(d_ms * 65536LL);
     ss->d = d;
 
-    int32_t z = GAMMA_Q16;
-    z += (int32_t)(((int64_t)BETA_Q16  * d)     >> 16);
+    int64_t z64 =
+        (int64_t)GAMMA_Q16 +
+        (((int64_t)BETA_Q16 * d) >> 16);
 
-    ss->z = z;
-    ss->cong_q = logistic(z);
+    if (z64 > INT32_MAX)
+        z64 = INT32_MAX;
+    if (z64 < INT32_MIN)
+        z64 = INT32_MIN;
+
+    ss->z = (int32_t)z64;
+    ss->cong_q = logistic(ss->z);
+
     if (ss->cong_q_ema == 0) {
         ss->cong_q_ema = ss->cong_q;
     } else {
-        ss->cong_q_ema = (ss->cong_q_ema * 7  + ss->cong_q) >> 3;
+        ss->cong_q_ema =
+            (uint16_t)(
+                ((uint32_t)ss->cong_q_ema * 7U +
+                 (uint32_t)ss->cong_q) >> 3
+            );
     }
 }
 
-static void scp_update_cwnd_fast(struct scp_stream *ss)
+static void scp_update_cwnd_fast(struct scp_stream *ss,
+                                 uint32_t acked)
 {
-    float q_inst = (float)ss->cong_q     / 65535.0f;
-    float q_ema  = (float)ss->cong_q_ema / 65535.0f;
+    const float q_inc_star = SCP_Q_INC_STAR;
+    const float q_dec_star = SCP_Q_DEC_STAR;
+    const float k_dec = 0.3f;
 
-    const float q_inc_star = 0.6f;  
-    const float q_dec_star = 0.4f; 
+    float q_inst =
+        (float)ss->cong_q / 65535.0f;
+
+    float q_ema =
+        (float)ss->cong_q_ema / 65535.0f;
 
     float w = (float)ss->cwnd;
 
-    if (q_inst < q_inc_star) {
-        float x = q_inst / q_inc_star;    
-        if (x < 0.0f) x = 0.0f;
-        if (x > 1.0f) x = 1.0f;
-
-        float weight = 1.0f - x * x;
-
-        float denom = w;
-        if (denom < 1.0f) denom = 1.0f;
-
-        float add = weight * ((float)(MSS * MSS) / denom);
-        if (add < 1.0f) add = 1.0f;
-
-        w += add;
+    /*
+     * Schmitt-trigger hysteresis:
+     *
+     * INC continues until instantaneous q reaches 0.6.
+     * DEC continues until instantaneous q falls to 0.4.
+     *
+     * Inside (0.4, 0.6), retain the previous phase.
+     */
+    if (ss->cc_phase == SCP_CC_PHASE_INC) {
+        if (ss->cong_q >= SCP_Q_HIGH_U16)
+            ss->cc_phase = SCP_CC_PHASE_DEC;
+    } else {
+        if (ss->cong_q <= SCP_Q_LOW_U16)
+            ss->cc_phase = SCP_CC_PHASE_INC;
     }
 
-    if (q_ema > q_dec_star || q_inst > q_inc_star) {
+    if (ss->cc_phase == SCP_CC_PHASE_INC) {
+        /*
+         * Increase-branch virtual zero:
+         *
+         * q_inc_star = 9/13 ≈ 0.6923 > q_high.
+         *
+         * Therefore the increase force remains positive
+         * when q reaches the upper switching boundary 0.6.
+         */
+        float x = q_inst / q_inc_star;
+
+        if (x < 0.0f)
+            x = 0.0f;
+        if (x > 1.0f)
+            x = 1.0f;
+
+        float weight = 1.0f - x * x;
+        float denom = w > 1.0f ? w : 1.0f;
+
+        float add =
+            weight *
+            ((float)MSS * (float)acked / denom);
+
+        if (add < 1.0f)
+            add = 1.0f;
+
+        w += add;
+    } else {
+        /*
+         * Decrease-branch virtual zero:
+         *
+         * q_dec_star = 4/13 ≈ 0.3077 < q_low.
+         *
+         * Therefore the decrease force remains positive
+         * immediately above the lower switching boundary 0.4.
+         */
         float q_dec = q_ema;
-        if (q_dec < q_dec_star && q_inst > q_inc_star)
+
+        /*
+         * A lagging EMA must not weaken a currently high
+         * instantaneous congestion signal.
+         */
+        if (q_dec < q_inst)
             q_dec = q_inst;
 
-        float x = (q_dec - q_dec_star) / (1.0f - q_dec_star);
-        if (x < 0.0f) x = 0.0f;
-        if (x > 1.0f) x = 1.0f;
+        float x =
+            (q_dec - q_dec_star) /
+            (1.0f - q_dec_star);
+
+        if (x < 0.0f)
+            x = 0.0f;
+        if (x > 1.0f)
+            x = 1.0f;
 
         float g = x * x;
 
         float excess = w - (float)MSS;
-        if (excess < 0.0f) excess = 0.0f;
+        if (excess < 0.0f)
+            excess = 0.0f;
 
-        float k_dec = 0.3f;
-        float dec = k_dec * g * excess;
+        float acked_ratio =
+            (w > 0.0f) ? ((float)acked / w) : 0.0f;
 
-        if (dec < 0.0f) dec = 0.0f;
-        if (dec > excess) dec = excess;
+        /*
+         * One cumulative ACK should not apply more than
+         * one window's worth of control in a single update.
+         */
+        if (acked_ratio > 1.0f)
+            acked_ratio = 1.0f;
+
+        float dec =
+            k_dec *
+            g *
+            excess *
+            acked_ratio;
+
+        if (dec > excess)
+            dec = excess;
 
         w -= dec;
     }
 
-    if (w < MSS) w = MSS;
-    if (w > CWND_WIN_MAX) w = CWND_WIN_MAX;
+    if (w < (float)MSS)
+        w = (float)MSS;
+
+    if (w > (float)CWND_WIN_MAX)
+        w = (float)CWND_WIN_MAX;
 
     ss->cwnd = (uint32_t)w;
 }
@@ -546,7 +661,8 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .sent_cnt = 0,
             .loss_cnt = 0,
             .p_ema = 0,
-            .cong_q = 0
+            .cong_q = 0,
+            .cc_phase = SCP_CC_PHASE_INC
     };
 
     scp_timer_node_init(&ss->t_retrans);
@@ -618,13 +734,13 @@ static void scp_update_rtt(struct scp_stream *s)
 
     int32_t delta = (int32_t)rtt_sample - (int32_t)s->srtt;
 
-    s->srtt = s->srtt + (delta >> 5);  
+    s->srtt = s->srtt + (delta >> 3);  
 
     int32_t abs_delta = delta >= 0 ? delta : -delta;
     int32_t rttvar_i  = (int32_t)s->rttvar;
     int32_t diff      = abs_delta - rttvar_i;
 
-    rttvar_i = rttvar_i + (diff >> 4); 
+    rttvar_i = rttvar_i + (diff >> 2); 
     if (rttvar_i < 1) rttvar_i = 1;   
 
     s->rttvar = (uint32_t)rttvar_i;
@@ -1026,6 +1142,7 @@ void scp_snd_buf_free(struct scp_stream *ss, uint32_t ack)
         if (SEQ_LEQ(end_seq, ack)) {
             list_remove(cur);
             scp_buf_free(ss, sb);
+            ss->snd_q_count--;
             cur = next;
             continue;
         }
@@ -1067,17 +1184,22 @@ static void scp_process_ack(struct scp_stream *ss,
                             uint32_t wnd,
                             uint32_t sack)
 {
+    uint32_t old_una;
     if (SEQ_LT(ack, ss->snd_una) || SEQ_GT(ack, ss->snd_nxt))
         goto out;
 
-    uint32_t old_una = ss->snd_una;
+    old_una = ss->snd_una;
 
     if (SEQ_GT(ack, old_una)) {
+        uint32_t acked;
+        acked = ack - old_una;
+
         scp_update_rtt_base(ss);
         scp_update_rtt(ss);
         scp_update_loss(ss);
         scp_md_prob(ss);
-        scp_update_cwnd_fast(ss);
+        scp_update_cwnd_fast(ss, acked);
+        scp_dump_ss_state(ss);
 
         ss->rtt_updated = 0;
         ss->rto_recovery = 0;
@@ -1318,6 +1440,7 @@ int scp_send(int fd, void *buf, size_t len)
         uint8_t *pure = sb->data + sizeof(struct scp_hdr);
         memcpy(pure, (uint8_t *)buf + off, frag);
         queue_enqueue(&ss->snd_q, &sb->list);
+        ss->snd_q_count++;
 
         off      += frag;
     }
@@ -1707,4 +1830,13 @@ int scp_recv(int fd, void *buf, size_t len)
     }
 
     return copied;
+}
+
+int scp_is_closed(int fd)
+{
+    struct scp_stream *ss =
+        hashmap_get(&scp_stream_map,
+                    (void *)(uintptr_t)fd);
+
+    return ss == NULL;
 }
