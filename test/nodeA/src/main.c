@@ -23,7 +23,7 @@
 #define IO_BUF_SIZE         (64U * 1024U)
 
 #define TEST_LOCAL_IP       "0.0.0.0"
-#define TEST_PEER_IP        "127.0.0.1"
+#define TEST_PEER_IP        "10.0.2.1"
 #define TEST_A_PORT         5000
 #define TEST_B_PORT         6000
 
