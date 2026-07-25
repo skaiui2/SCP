@@ -1,2 +1,0 @@
-[A][TCP/cubic] connected; sending 104857600 bytes from testA.bin
-{"transport":"tcp","role":"sender","bytes":104857600,"seconds_including_receiver_close":175.710036,"goodput_mbps":4.774120,"status":"success"}

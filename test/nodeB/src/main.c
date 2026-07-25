@@ -13,8 +13,10 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
+#define TEST_SCP_CC 1
+
 #ifndef TEST_USE_TCP
-#define TEST_USE_TCP 1
+#define TEST_USE_TCP 0
 #endif
 
 #define TEST_OUTPUT_PATH    "outB.bin"
@@ -383,6 +385,14 @@ int main(void)
 
     if (!ss) {
         fprintf(stderr, "scp_stream_alloc failed\n");
+        goto out;
+    }
+
+    if (scp_set_cc(SCP_TEST_FD,
+                   TEST_SCP_CC) != 0) {
+        fprintf(stderr,
+                "scp_set_cc failed: %d\n",
+                TEST_SCP_CC);
         goto out;
     }
 
