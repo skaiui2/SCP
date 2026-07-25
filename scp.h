@@ -23,7 +23,6 @@ struct scp_timer {
 };
 
 //Set by yourself.
-#define SCP_SB  1
 #define SCP_DEBUG 0
 #define SCP_DUMP_SS 1
 #define SCP_RUN_DEBUG 1
@@ -110,6 +109,11 @@ enum scp_cc_phase {
     SCP_CC_PHASE_DEC = 1
 };
 
+enum scp_cc_id {
+    SCP_CC_PROB = 0,
+    SCP_CC_AIMD = 1
+};
+
 struct scp_stream {
     struct list_node node;              // linked into global stream list
     struct scp_transport_class *st_class; // transport callbacks (send/recv)
@@ -180,9 +184,15 @@ struct scp_stream {
     uint16_t cong_q_ema;
 
     uint8_t cc_phase;
+
+    uint8_t cc_id;
+
+    uint32_t ssthresh;
+    uint32_t recover_seq;
     
     void (*cc_init)(struct scp_stream *ss);
-    void (*cc_on_ack)(struct scp_stream *ss);
+    void (*cc_on_ack)(struct scp_stream *ss, uint32_t acked);
+    uint32_t (*cc_on_rtt)(struct scp_stream *ss);
     void (*cc_on_loss)(struct scp_stream *ss);
     void (*cc_on_timeout)(struct scp_stream *ss);
 };
@@ -215,7 +225,9 @@ int scp_send(int fd, void *buf, size_t len);
 int scp_recv(int fd, void *buf, size_t len);
 void scp_close(int fd);
 int scp_is_closed(int fd);
+int scp_set_cc(int fd, enum scp_cc_id cc_id);
 
 void scp_timer_process(void);
+
 
 #endif
