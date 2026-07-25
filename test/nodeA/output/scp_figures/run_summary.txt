@@ -1,0 +1,28 @@
+SCP run summary
+===============
+Samples: 68948
+Duration: 1175.689 s
+Mean q: 0.472451
+Min q: 0.000000
+Max q: 0.999542
+Mean cwnd: 24.957 KiB
+Min cwnd: 1.396 KiB
+Max cwnd: 65.015 KiB
+Mean SRTT: 138.475 ms
+Switch events: 1414
+Complete cycles: 706
+
+Configured q_low: 0.400000
+Configured q_high: 0.600000
+Virtual q_dec*: 0.307692308
+Virtual q_inc*: 0.692307692
+
+Cycle statistics
+----------------
+Mean period: 1.640618 s
+Period std: 1.817577 s
+Mean cycle q: 0.473082
+Mean q minimum: 0.328249
+Mean q maximum: 0.719437
+Mean low-switch q: 0.373048
+Mean high-switch q: 0.642256

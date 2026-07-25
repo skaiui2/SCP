@@ -14,7 +14,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-#define TEST_SCP_CC 1
+#define TEST_SCP_CC 0
 
 #ifndef TEST_USE_TCP
 #define TEST_USE_TCP 0

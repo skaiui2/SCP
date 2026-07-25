@@ -99,7 +99,14 @@ static void scp_dump_ss_fields(struct scp_stream *ss)
            "\"z\":%d,"
            "\"cc_phase\":%d,"
            "\"cc_id\":%u,"
-           "\"ssthresh\":%u",
+           "\"ssthresh\":%u,"
+           "\"prob_mode\":%u,"
+           "\"prob_gamma\":%d,"
+           "\"prob_beta\":%d,"
+           "\"probe_low\":%u,"
+           "\"probe_prev\":%u,"
+           "\"probe_noise\":%u,"
+           "\"last_cycle\":%u",
 
            ss->snd_una,
            ss->snd_seq_q,
@@ -134,7 +141,14 @@ static void scp_dump_ss_fields(struct scp_stream *ss)
            ss->z,
            ss->cc_phase,
            (unsigned)ss->cc_id,
-           ss->ssthresh
+           ss->ssthresh,
+           (unsigned)ss->prob_mode,
+           ss->prob_gamma_q16,
+           ss->prob_beta_q16,
+           ss->prob_d_low,
+           ss->prob_d_prev,
+           ss->prob_noise,
+           ss->prob_last_cycle
     );
 }
 
@@ -553,7 +567,6 @@ void scp_retransmit_gap(struct scp_stream *ss,
     struct list_node *n;
     int sent_frags = 0;
 
-    ss->rtt_updated = 0;
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
         struct scp_buf *sb = container_of(n, struct scp_buf, list);
         uint32_t total = sb->len - sizeof(struct scp_hdr);
@@ -586,7 +599,6 @@ void scp_retransmit_gap(struct scp_stream *ss,
  */
 static void scp_retransmit(struct scp_stream *ss)
 {
-    ss->rtt_updated = 0;
     uint32_t max_frags = 1 << ss->rto_recovery;
 
     if (max_frags > RETRANS_RECO_MAX)
@@ -657,7 +669,7 @@ static void scp_output_connect_ack(struct scp_stream *ss)
 
 static void scp_output_fin_first(struct scp_stream *ss)
 {
-    struct scp_hdr hdr;
+    struct scp_hdr hdr = {0};
 
     hdr.seq  = htonl(ss->snd_nxt);
     hdr.ack  = htonl(ss->rcv_nxt);
@@ -678,7 +690,7 @@ static void scp_output_fin_first(struct scp_stream *ss)
 
 static void scp_output_fin_retrans(struct scp_stream *ss)
 {
-    struct scp_hdr hdr;
+    struct scp_hdr hdr = {0};
 
     hdr.seq  = htonl(ss->snd_nxt - 1);  
     hdr.ack  = htonl(ss->rcv_nxt);
@@ -975,7 +987,7 @@ static inline void scp_update_rtt_base(struct scp_stream *ss)
  * An ACK tells us the peer has received data.
  * We update RTT from this sample and free sent buffers.
  * The ACK also reflects the peer’s congestion state.
- * Handle ACK: update RTT, free buffers, run SB.
+ * Handle ACK: update RTT, free bufferr, run SB.
  */
 static void scp_process_ack(struct scp_stream *ss,
                             uint32_t ack,
@@ -992,8 +1004,6 @@ static void scp_process_ack(struct scp_stream *ss,
         uint32_t acked;
         acked = ack - old_una;
 
-        scp_update_rtt_base(ss);
-        scp_update_rtt(ss);
         scp_update_loss(ss);    
 
         if (ss->fr_active &&
@@ -1005,8 +1015,6 @@ static void scp_process_ack(struct scp_stream *ss,
         if (ss->cc_on_ack)
             ss->cc_on_ack(ss, acked);
 
-        scp_dump_ss_state(ss);
-        ss->rtt_updated = 0;
         ss->rto_recovery = 0;
     }
 
@@ -1144,7 +1152,6 @@ static int scp_output_one(struct scp_stream *ss)
         scp_output_data(ss, sb);
 
         sb->sent = 1;
-        ss->rtt_updated = 1;
 
         if (SEQ_GT(end_seq, ss->snd_nxt))
             ss->snd_nxt = end_seq;
@@ -1367,10 +1374,28 @@ static void scp_est_process(struct scp_stream *ss,
 {
     struct scp_hdr *sh = (struct scp_hdr *)sb->data;
     if (sh->flags & SCP_FLAG_ACK) {
-        uint32_t time_val = ntohl(sh->time_val);
-        if (time_val) {
-            ss->rtt_sample = scp_now_time() - time_val;
-            if (!ss->rtt_sample) ss->rtt_sample = 1;
+        /*
+         * Only a pure ACK carries an echoed DATA timestamp.
+         *
+         * FIN|ACK and other control packets do not carry an RTT echo.
+         * Reading their time_val would interpret an unrelated or
+         * uninitialized value as a send timestamp and could make the
+         * unsigned subtraction wrap to a value near UINT32_MAX.
+         */
+        if (sh->flags == SCP_FLAG_ACK) {
+            uint32_t time_val = ntohl(sh->time_val);
+
+            if (time_val) {
+                uint32_t sample = scp_now_time() - time_val;
+
+                if (!sample)
+                    sample = 1;
+
+                ss->rtt_sample = sample;
+                scp_update_rtt_base(ss);
+                scp_update_rtt(ss);
+                scp_dump_ss_state(ss);
+            }
         }
 
         scp_process_ack(ss, ack, wnd, sack);
@@ -1682,8 +1707,13 @@ int scp_is_closed(int fd)
 #define NEG20       Q16(-20)
 #define POS20       Q16(20)
 
-static const int32_t GAMMA_Q16 = -40000;
-static const int32_t BETA_Q16  = 1000;
+/*
+ * Probe policy. These are controller time-scale constants, not
+ * path-specific RTT or bandwidth parameters.
+ */
+#define SCP_PROB_REPROBE_MS      10000U
+#define SCP_PROB_STABLE_EPOCHS   3U
+#define SCP_PROB_RISE_EPOCHS     2U
 
 static inline uint16_t logistic(int32_t z)
 {
@@ -1722,9 +1752,14 @@ static inline void scp_md_prob(struct scp_stream *ss)
     int32_t d = (int32_t)(d_ms * 65536LL);
     ss->d = d;
 
+    /*
+     * Before the first successful probe, gamma=beta=0 and q=0.5.
+     * Probe mode owns cwnd, so the neutral probability cannot drive
+     * the normal controller.
+     */
     int64_t z64 =
-        (int64_t)GAMMA_Q16 +
-        (((int64_t)BETA_Q16 * d) >> 16);
+        (int64_t)ss->prob_gamma_q16 +
+        (((int64_t)ss->prob_beta_q16 * d) >> 16);
 
     if (z64 > INT32_MAX)
         z64 = INT32_MAX;
@@ -1743,6 +1778,253 @@ static inline void scp_md_prob(struct scp_stream *ss)
                  (uint32_t)ss->cong_q) >> 3
             );
     }
+}
+
+static uint32_t scp_prob_epoch(struct scp_stream *ss)
+{
+    uint32_t epoch;
+
+    if (ss->srtt > UINT32_MAX / 2U)
+        epoch = UINT32_MAX;
+    else
+        epoch = ss->srtt * 2U;
+
+    if (epoch < SCP_RTO_MIN)
+        epoch = SCP_RTO_MIN;
+
+    return epoch;
+}
+
+static uint32_t scp_prob_delay_ms(struct scp_stream *ss)
+{
+    if (ss->d <= 0)
+        return 0;
+
+    return (uint32_t)(ss->d >> 16);
+}
+
+static uint32_t scp_abs_diff_u32(uint32_t a, uint32_t b)
+{
+    return a > b ? a - b : b - a;
+}
+
+static int scp_prob_refit(struct scp_stream *ss,
+                          uint32_t d_low,
+                          uint32_t d_high)
+{
+    uint32_t span;
+    int32_t beta;
+    int64_t gamma;
+
+    if (d_high <= d_low)
+        return SCP_ERR_GENERIC;
+
+    span = d_high - d_low;
+
+    /*
+     * logit(0.6) in Q16 is approximately +26573;
+     * logit(0.4) is approximately -26573.
+     *
+     * Round beta upward so d_high always reaches at least q=0.6,
+     * then anchor d_low exactly at q=0.4.
+     */
+    beta =
+        (int32_t)((53146U + span - 1U) / span);
+    if (beta <= 0)
+        beta = 1;
+
+    gamma =
+        -26573LL -
+        (int64_t)beta * (int64_t)d_low;
+
+    if (gamma > INT32_MAX)
+        gamma = INT32_MAX;
+    if (gamma < INT32_MIN)
+        gamma = INT32_MIN;
+
+    ss->prob_beta_q16 = beta;
+    ss->prob_gamma_q16 = (int32_t)gamma;
+
+    /* Old q history belongs to the old mapping. */
+    ss->cong_q = 0;
+    ss->cong_q_ema = 0;
+    ss->z = 0;
+
+    return 0;
+}
+
+static void scp_prob_start_probe(struct scp_stream *ss)
+{
+    ss->prob_mode = SCP_PROB_PROBE_DRAIN;
+
+    ss->prob_next_time = 0;
+    ss->prob_d_low = 0;
+    ss->prob_d_prev = 0;
+    ss->prob_noise = 0;
+
+    ss->prob_stable_cnt = 0;
+    ss->prob_rise_cnt = 0;
+    ss->prob_samples = 0;
+    ss->prob_seen_high = 0;
+
+    ss->cc_phase = SCP_CC_PHASE_INC;
+}
+
+static void scp_prob_probe_step(struct scp_stream *ss)
+{
+    uint32_t now;
+    uint32_t d_ms;
+    uint32_t epoch;
+
+    if (ss->srtt == 0 || ss->rtt_base == 0)
+        return;
+
+    now = scp_now_time();
+
+    if (ss->prob_next_time &&
+        SEQ_LT(now, ss->prob_next_time)) {
+        return;
+    }
+
+    epoch = scp_prob_epoch(ss);
+    ss->prob_next_time = now + epoch;
+
+    d_ms = scp_prob_delay_ms(ss);
+
+    if (ss->prob_mode == SCP_PROB_PROBE_DRAIN) {
+        if (ss->cwnd > MSS) {
+            uint32_t next =
+                (uint32_t)(((uint64_t)ss->cwnd * 3U) / 4U);
+
+            if (next < MSS)
+                next = MSS;
+
+            ss->cwnd = next;
+            ss->prob_samples = 0;
+            ss->prob_stable_cnt = 0;
+            ss->prob_d_prev = d_ms;
+            return;
+        }
+
+        /* At MSS, wait for the effective delay to settle. */
+        if (ss->prob_samples == 0) {
+            ss->prob_d_prev = d_ms;
+            ss->prob_samples = 1;
+            return;
+        }
+
+        {
+            uint32_t diff =
+                scp_abs_diff_u32(d_ms, ss->prob_d_prev);
+            uint32_t noise =
+                ss->rttvar ? ss->rttvar : 1U;
+
+            if (diff <= noise)
+                ss->prob_stable_cnt++;
+            else
+                ss->prob_stable_cnt = 0;
+
+            ss->prob_d_prev = d_ms;
+            ss->prob_samples++;
+
+            if (ss->prob_stable_cnt <
+                SCP_PROB_STABLE_EPOCHS) {
+                return;
+            }
+
+            ss->prob_d_low = d_ms;
+            ss->prob_noise = noise;
+        }
+
+        ss->prob_mode = SCP_PROB_PROBE_UP;
+        ss->prob_rise_cnt = 0;
+        ss->prob_samples = 0;
+        ss->cwnd = 2U * MSS;
+
+        if (ss->cwnd > CWND_WIN_MAX)
+            ss->cwnd = CWND_WIN_MAX;
+
+        return;
+    }
+
+    if (ss->prob_mode == SCP_PROB_PROBE_UP) {
+        uint32_t noise =
+            ss->prob_noise ? ss->prob_noise : 1U;
+        uint32_t rise =
+            noise > UINT32_MAX / 2U ?
+            UINT32_MAX :
+            noise * 2U;
+        uint32_t threshold =
+            ss->prob_d_low > UINT32_MAX - rise ?
+            UINT32_MAX :
+            ss->prob_d_low + rise;
+
+        /* Hold this cwnd until the delay rise is confirmed. */
+        if (d_ms >= threshold) {
+            ss->prob_rise_cnt++;
+
+            if (ss->prob_rise_cnt <
+                SCP_PROB_RISE_EPOCHS) {
+                return;
+            }
+
+            if (scp_prob_refit(ss,
+                               ss->prob_d_low,
+                               d_ms) == 0) {
+                ss->prob_mode = SCP_PROB_NORMAL;
+                ss->cc_phase = SCP_CC_PHASE_DEC;
+                ss->prob_seen_high = 1;
+                ss->prob_last_cycle = now;
+                ss->prob_next_time = 0;
+            }
+
+            return;
+        }
+
+        ss->prob_rise_cnt = 0;
+
+        if (ss->cwnd >= CWND_WIN_MAX) {
+            /*
+             * No RTT response was identifiable. Keep an older valid
+             * mapping when one exists and retry after the normal
+             * reprobe interval. With no old mapping, return safely to
+             * MSS and let q remain neutral until the next probe.
+             */
+            if (ss->prob_beta_q16 == 0)
+                ss->cwnd = MSS;
+
+            ss->prob_mode = SCP_PROB_NORMAL;
+            ss->cc_phase = SCP_CC_PHASE_INC;
+            ss->prob_last_cycle = now;
+            ss->prob_next_time = 0;
+            return;
+        }
+
+        {
+            uint32_t add = ss->cwnd / 4U;
+
+            if (add < MSS)
+                add = MSS;
+
+            if (add > CWND_WIN_MAX - ss->cwnd)
+                ss->cwnd = CWND_WIN_MAX;
+            else
+                ss->cwnd += add;
+        }
+    }
+}
+
+static int scp_prob_backlogged(struct scp_stream *ss)
+{
+    uint32_t flight =
+        ss->snd_nxt - ss->snd_una;
+    int has_unsent =
+        SEQ_GT(ss->snd_seq_q, ss->snd_nxt);
+    int window_busy =
+        flight >= (ss->cwnd * 3U) / 4U;
+
+    return ss->snd_wnd > ss->cwnd &&
+           (has_unsent || window_busy);
 }
 
 static void scp_update_cwnd_fast(struct scp_stream *ss,
@@ -1769,21 +2051,26 @@ static void scp_update_cwnd_fast(struct scp_stream *ss,
      * Inside (0.4, 0.6), retain the previous phase.
      */
     if (ss->cc_phase == SCP_CC_PHASE_INC) {
-        if (ss->cong_q >= SCP_Q_HIGH_U16)
+        if (ss->cong_q >= SCP_Q_HIGH_U16) {
             ss->cc_phase = SCP_CC_PHASE_DEC;
+            ss->prob_seen_high = 1;
+        }
     } else {
-        if (ss->cong_q <= SCP_Q_LOW_U16)
+        if (ss->cong_q <= SCP_Q_LOW_U16) {
             ss->cc_phase = SCP_CC_PHASE_INC;
+
+            if (ss->prob_seen_high) {
+                ss->prob_last_cycle = scp_now_time();
+                ss->prob_seen_high = 0;
+            }
+        }
     }
 
     if (ss->cc_phase == SCP_CC_PHASE_INC) {
         /*
          * Increase-branch virtual zero:
          *
-         * q_inc_star = 9/13 ≈ 0.6923 > q_high.
-         *
-         * Therefore the increase force remains positive
-         * when q reaches the upper switching boundary 0.6.
+         * q_inc_star = 9/13 ~= 0.6923 > q_high.
          */
         float x = q_inst / q_inc_star;
 
@@ -1792,70 +2079,63 @@ static void scp_update_cwnd_fast(struct scp_stream *ss,
         if (x > 1.0f)
             x = 1.0f;
 
-        float weight = 1.0f - x * x;
-        float denom = w > 1.0f ? w : 1.0f;
+        {
+            float weight = 1.0f - x * x;
+            float denom = w > 1.0f ? w : 1.0f;
+            float add =
+                weight *
+                ((float)MSS * (float)acked / denom);
 
-        float add =
-            weight *
-            ((float)MSS * (float)acked / denom);
+            if (add < 1.0f)
+                add = 1.0f;
 
-        if (add < 1.0f)
-            add = 1.0f;
-
-        w += add;
+            w += add;
+        }
     } else {
-        /*
-         * Decrease-branch virtual zero:
-         *
-         * q_dec_star = 4/13 ≈ 0.3077 < q_low.
-         *
-         * Therefore the decrease force remains positive
-         * immediately above the lower switching boundary 0.4.
-         */
         float q_dec = q_ema;
 
-        /*
-         * A lagging EMA must not weaken a currently high
-         * instantaneous congestion signal.
-         */
         if (q_dec < q_inst)
             q_dec = q_inst;
 
-        float x =
-            (q_dec - q_dec_star) /
-            (1.0f - q_dec_star);
+        {
+            float x =
+                (q_dec - q_dec_star) /
+                (1.0f - q_dec_star);
 
-        if (x < 0.0f)
-            x = 0.0f;
-        if (x > 1.0f)
-            x = 1.0f;
+            if (x < 0.0f)
+                x = 0.0f;
+            if (x > 1.0f)
+                x = 1.0f;
 
-        float g = x * x;
+            {
+                float g = x * x;
+                float excess = w - (float)MSS;
+                float acked_ratio;
+                float dec;
 
-        float excess = w - (float)MSS;
-        if (excess < 0.0f)
-            excess = 0.0f;
+                if (excess < 0.0f)
+                    excess = 0.0f;
 
-        float acked_ratio =
-            (w > 0.0f) ? ((float)acked / w) : 0.0f;
+                acked_ratio =
+                    (w > 0.0f) ?
+                    ((float)acked / w) :
+                    0.0f;
 
-        /*
-         * One cumulative ACK should not apply more than
-         * one window's worth of control in a single update.
-         */
-        if (acked_ratio > 1.0f)
-            acked_ratio = 1.0f;
+                if (acked_ratio > 1.0f)
+                    acked_ratio = 1.0f;
 
-        float dec =
-            k_dec *
-            g *
-            excess *
-            acked_ratio;
+                dec =
+                    k_dec *
+                    g *
+                    excess *
+                    acked_ratio;
 
-        if (dec > excess)
-            dec = excess;
+                if (dec > excess)
+                    dec = excess;
 
-        w -= dec;
+                w -= dec;
+            }
+        }
     }
 
     if (w < (float)MSS)
@@ -1867,11 +2147,9 @@ static void scp_update_cwnd_fast(struct scp_stream *ss,
     ss->cwnd = (uint32_t)w;
 }
 
-
-
 static void scp_prob_init(struct scp_stream *ss)
 {
-    ss->cwnd = MTU;
+    ss->cwnd = MSS;
 
     ss->sent_cnt = 0;
     ss->loss_cnt = 0;
@@ -1890,12 +2168,36 @@ static void scp_prob_init(struct scp_stream *ss)
     ss->ssthresh = 0;
     ss->recover_seq = 0;
     ss->fr_active = 0;
+
+    ss->prob_gamma_q16 = 0;
+    ss->prob_beta_q16 = 0;
+    ss->prob_last_cycle = 0;
+
+    scp_prob_start_probe(ss);
 }
 
 static void scp_prob_on_ack(struct scp_stream *ss,
                             uint32_t acked)
 {
+    uint32_t now;
+
     scp_md_prob(ss);
+
+    if (ss->prob_mode != SCP_PROB_NORMAL) {
+        scp_prob_probe_step(ss);
+        return;
+    }
+
+    now = scp_now_time();
+
+    if (scp_prob_backlogged(ss) &&
+        now - ss->prob_last_cycle >=
+            SCP_PROB_REPROBE_MS) {
+        scp_prob_start_probe(ss);
+        scp_prob_probe_step(ss);
+        return;
+    }
+
     scp_update_cwnd_fast(ss, acked);
 }
 
