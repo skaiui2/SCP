@@ -15,11 +15,11 @@ typedef void *scp_timer_handle_t;
 
 struct scp_timer {
     struct rb_node node;
-    uint32_t expire;   
+    uint32_t expire;
     uint32_t timeout;
-    scp_timer_cb_t cb; 
+    scp_timer_cb_t cb;
     void *arg;
-    uint8_t active; //If node in tree, set it. 
+    uint8_t active; //If node in tree, set it.
 };
 
 //Set by yourself.
@@ -36,7 +36,7 @@ struct scp_timer {
 #define SCP_RECV_LIMIT (1 << 24)
 #define SEND_WIN_INIT (1 << 24)
 #define RECV_WIN_INIT (1 << 24)
-#define CWND_WIN_MAX  (1 << 17)
+#define CWND_WIN_MAX  (1 << 20)
 #define MTU 1460
 #define PERSIST_INTERVAL 200
 #define MAX_IDLE_FAIL  3
@@ -54,9 +54,9 @@ struct scp_transport_class {
 };
 
 struct scp_buf {
-    union { 
-        struct list_node list; 
-        struct rb_node rb; 
+    union {
+        struct list_node list;
+        struct rb_node rb;
     };
     size_t len;
     uint32_t seq; // save it from hdr.
@@ -85,15 +85,14 @@ struct scp_hdr {
 #define SCP_FLAG_PING  0x10
 #define SCP_FLAG_RESEND 0x20
 #define SCP_FLAG_CONNECT_ACK 0x40
-#define SCP_FLAG_FIN         0x80 
+#define SCP_FLAG_FIN         0x80
 
 #define SCP_DIR_INPUT 1
 #define SCP_DIR_SEND 0
 
-#define SCP_ERR_GENERIC   -1 
-#define SCP_ERR_NOBUF     -2  
-#define SCP_ERR_NOMEM     -3 
-
+#define SCP_ERR_GENERIC   -1
+#define SCP_ERR_NOBUF     -2
+#define SCP_ERR_NOMEM     -3
 
 enum {
     SCP_CLOSED,
@@ -107,6 +106,12 @@ enum {
 enum scp_cc_phase {
     SCP_CC_PHASE_INC = 0,
     SCP_CC_PHASE_DEC = 1
+};
+
+enum scp_prob_mode {
+    SCP_PROB_PROBE_DRAIN = 0,
+    SCP_PROB_PROBE_UP,
+    SCP_PROB_NORMAL
 };
 
 enum scp_cc_id {
@@ -138,7 +143,7 @@ struct scp_stream {
     uint32_t rcv_wmem;                  // recv buffer watermark
 
     uint32_t packet_bytes;              //output bytes
-    uint32_t packet_count; 
+    uint32_t packet_count;
 
     uint8_t  rtt_updated;
     uint32_t rtt_sample;
@@ -148,7 +153,7 @@ struct scp_stream {
     uint32_t rto;                       // retransmission timeout
     uint32_t rto_recovery;
 
-    uint16_t  timeout_count;             // consecutive timeout counter
+    uint16_t timeout_count;             // consecutive timeout counter
 
     struct list_node snd_q;             // send queue (in-order)
     uint32_t snd_q_count;
@@ -175,21 +180,36 @@ struct scp_stream {
 
     uint32_t sent_cnt;
     uint32_t loss_cnt;
-    uint32_t p_ema;  
+    uint32_t p_ema;
     uint32_t p;
-    
+
     int32_t  d;
     int32_t  z;
     uint16_t cong_q;
     uint16_t cong_q_ema;
 
     uint8_t cc_phase;
-
     uint8_t cc_id;
 
     uint32_t ssthresh;
     uint32_t recover_seq;
-    
+
+    /* Per-stream self-calibrating probability model. */
+    int32_t prob_gamma_q16;
+    int32_t prob_beta_q16;
+
+    uint32_t prob_last_cycle;
+    uint32_t prob_next_time;
+    uint32_t prob_d_low;
+    uint32_t prob_d_prev;
+    uint32_t prob_noise;
+
+    uint8_t prob_mode;
+    uint8_t prob_stable_cnt;
+    uint8_t prob_rise_cnt;
+    uint8_t prob_samples;
+    uint8_t prob_seen_high;
+
     void (*cc_init)(struct scp_stream *ss);
     void (*cc_on_ack)(struct scp_stream *ss, uint32_t acked);
     uint32_t (*cc_on_rtt)(struct scp_stream *ss);
@@ -210,10 +230,8 @@ struct scp_stream {
 #define SEQ_LT(a,b)  ((int32_t)((a) - (b)) < 0)
 #define SEQ_LEQ(a,b) ((int32_t)((a) - (b)) <= 0)
 
-
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define imin(a, b) ((int)(a) < (int)(b) ? (int)(a) : (int)(b))
-
 
 int scp_init(size_t max_streams);
 struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int src_fd, int dst_fd);
@@ -228,6 +246,5 @@ int scp_is_closed(int fd);
 int scp_set_cc(int fd, enum scp_cc_id cc_id);
 
 void scp_timer_process(void);
-
 
 #endif
