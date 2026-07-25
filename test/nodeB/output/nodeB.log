@@ -1,0 +1,3 @@
+[B][TCP] listening on 0.0.0.0:6000
+[B][TCP] connected; receiving 104857600 bytes into outB.bin
+{"transport":"tcp","role":"receiver","bytes":104857600,"seconds":175.608693,"goodput_mbps":4.776875,"output":"outB.bin","status":"success"}

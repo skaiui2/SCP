@@ -14,7 +14,7 @@
 #include <arpa/inet.h>
 
 #ifndef TEST_USE_TCP
-#define TEST_USE_TCP 0
+#define TEST_USE_TCP 1
 #endif
 
 #define TEST_OUTPUT_PATH    "outB.bin"
