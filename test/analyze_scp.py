@@ -8,14 +8,16 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 FIELDS = [
-    "t","seq","ack","sack","len","wnd","flags",
+    "t",
     "snd_una","snd_seq_q","snd_nxt","rcv_nxt",
     "snd_wnd","rcv_wnd","snd_wmem","rcv_wmem",
     "snd_q","rcv_q",
     "cwnd","flight",
     "srtt","rto","dup_acks","sb_cc",
     "packet_bytes","packet_count",
-    "cong_q","cong_q_ema","p","p_ema","d","z"
+    "cong_q","cong_q_ema",
+    "loss_cnt","sent_cnt",
+    "p","p_ema","d","z","cc_phase"
 ]
 
 DOWNSAMPLE = 1
@@ -31,6 +33,8 @@ def stream_to_df(path, chunksize=200000):
                 obj = json.loads(line)
             except:
                 continue
+            if obj.get("type") != "ss":
+                continue
             cnt += 1
             if cnt % DOWNSAMPLE != 0:
                 continue
@@ -45,7 +49,7 @@ def plot_field(logfile, field):
     plt.figure(figsize=(12,5))
     for df in stream_to_df(logfile):
         y = df[field]
-        if field == "cong_q" or field == "cong_q_ema":
+        if field in ("cong_q","cong_q_ema"):
             y = y / 65535.0
         plt.plot(df["t"], y, linewidth=0.5)
     plt.title(field)
@@ -61,7 +65,7 @@ def scatter(logfile, x, y, filename, step=200):
     for df in stream_to_df(logfile):
         df = df.iloc[::step]
         yy = df[y]
-        if y == "cong_q" or y == "cong_q_ema":
+        if y in ("cong_q","cong_q_ema"):
             yy = yy / 65535.0
         plt.scatter(df[x], yy, s=2)
     plt.title(f"{x} vs {y}")
@@ -74,16 +78,11 @@ def scatter(logfile, x, y, filename, step=200):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 analyze_scp.py <logfile>")
         return
-
     logfile = sys.argv[1]
-
     for f in FIELDS:
         if f != "t":
             plot_field(logfile, f)
-
-    scatter(logfile, "t", "seq", "retx.png")
     scatter(logfile, "srtt", "cong_q", "srtt_cong.png")
     scatter(logfile, "srtt", "cong_q_ema", "srtt_cong_ema.png")
 
