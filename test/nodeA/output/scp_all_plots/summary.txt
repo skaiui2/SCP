@@ -1,12 +1,11 @@
 SCP plotting summary
 ====================
-Samples: 39030
-Duration: 1968.647 s
-Mean cwnd: 6.938 KiB
-Mean flight: 9.525 KiB
-Mean SRTT: 105.137 ms
-Mean q: 0.000000
-NORMAL sample fraction: 0.000000
-DRAIN sample fraction: 1.000000
+Samples: 4778
+Duration: 958.079 s
+Mean cwnd: 27.378 KiB
+Mean flight: 28.068 KiB
+Mean SRTT: 163.683 ms
+Mean q: 0.451621
+NORMAL sample fraction: 1.000000
+DRAIN sample fraction: 0.000000
 PROBE_UP sample fraction: 0.000000
-Observed model parameter changes: 0

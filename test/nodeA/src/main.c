@@ -14,7 +14,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-#define TEST_SCP_CC 1
+#define TEST_SCP_CC 0
 
 #ifndef TEST_USE_TCP
 #define TEST_USE_TCP 0
@@ -384,6 +384,7 @@ int main(void)
         goto out;
     }
 
+    scp_prob_configure(ss, 100, 8000);
 
     if (scp_connect(SCP_TEST_FD) != 0) {
         fprintf(stderr, "scp_connect failed\n");
