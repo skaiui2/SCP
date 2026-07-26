@@ -13,7 +13,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-#define TEST_SCP_CC 1
+#define TEST_SCP_CC 0
 
 #ifndef TEST_USE_TCP
 #define TEST_USE_TCP 0
@@ -382,6 +382,8 @@ int main(void)
 
     struct scp_stream *ss =
         scp_stream_alloc(&transport, SCP_TEST_FD, SCP_TEST_FD);
+
+    scp_prob_configure(ss, 100, 8000);
 
     if (!ss) {
         fprintf(stderr, "scp_stream_alloc failed\n");

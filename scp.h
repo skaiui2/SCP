@@ -38,7 +38,7 @@ struct scp_timer {
 #define RECV_WIN_INIT (1 << 24)
 #define CWND_WIN_MAX  (1 << 20)
 #define MTU 1460
-#define PERSIST_INTERVAL 50
+#define PERSIST_INTERVAL 200
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
@@ -106,12 +106,6 @@ enum {
 enum scp_cc_phase {
     SCP_CC_PHASE_INC = 0,
     SCP_CC_PHASE_DEC = 1
-};
-
-enum scp_prob_mode {
-    SCP_PROB_PROBE_DRAIN = 0,
-    SCP_PROB_PROBE_UP,
-    SCP_PROB_NORMAL
 };
 
 enum scp_cc_id {
@@ -195,21 +189,8 @@ struct scp_stream {
     uint32_t ssthresh;
     uint32_t recover_seq;
 
-    /* Per-stream self-calibrating probability model. */
     int32_t prob_gamma_q16;
     int32_t prob_beta_q16;
-
-    uint32_t prob_last_cycle;
-    uint32_t prob_next_time;
-    uint32_t prob_d_low;
-    uint32_t prob_d_prev;
-    uint32_t prob_noise;
-
-    uint8_t prob_mode;
-    uint8_t prob_stable_cnt;
-    uint8_t prob_rise_cnt;
-    uint8_t prob_samples;
-    uint8_t prob_seen_high;
 
     void (*cc_init)(struct scp_stream *ss);
     void (*cc_on_ack)(struct scp_stream *ss, uint32_t acked);
@@ -245,6 +226,9 @@ int scp_recv(int fd, void *buf, size_t len);
 void scp_close(int fd);
 int scp_is_closed(int fd);
 int scp_set_cc(int fd, enum scp_cc_id cc_id);
+int scp_prob_configure(struct scp_stream *ss,
+                              uint32_t rtt_span_ms,
+                              uint32_t loss_q16);
 
 void scp_timer_process(void);
 
