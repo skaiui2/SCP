@@ -9,108 +9,59 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <arpa/inet.h>
-
-#define TEST_SCP_CC 0
-
-#ifndef TEST_USE_TCP
-#define TEST_USE_TCP 0
-#endif
-
-#define TEST_FILE_PATH      "testA.bin"
-#define TEST_FILE_SIZE      (100ULL * 1024ULL * 1024ULL)
-#define IO_BUF_SIZE         (64U * 1024U)
-
-#define TEST_LOCAL_IP       "0.0.0.0"
-#define TEST_PEER_IP        "10.0.2.1"
-#define TEST_A_PORT         5000
-#define TEST_B_PORT         6000
-
-#define IDLE_SLEEP_US       100
-#define TEST_TIMEOUT_SEC    4000
-
-#if TEST_USE_TCP
-
-#include <netinet/tcp.h>
-
-#ifndef TCP_CC_NAME
-#define TCP_CC_NAME "cubic"
-#endif
-
-#else
 
 #include "cal_udp.h"
 #include "scp.h"
 #include "scp_time.h"
 
-#define SCP_TEST_FD 1
+#define FLOW_COUNT 2
+
+#define FLOW1_FD 1
+#define FLOW2_FD 2
+
+#define TEST_LOCAL_IP "0.0.0.0"
+#define FLOW1_A_PORT 5000
+#define FLOW2_A_PORT 5001
+#define FLOW1_B_PORT 6000
+#define FLOW2_B_PORT 6001
+
+#define DEFAULT_DURATION_SEC 300U
+#define HANDSHAKE_TIMEOUT_SEC 60U
+#define START_SETTLE_MS       1000U
+#define SENDER_EXTRA_MS       3000U
+#define IDLE_SLEEP_US         100U
+
+/* Keep enough queued data to saturate the path without consuming huge RAM. */
+#define APP_WRITE_SIZE  (64U * 1024U)
+#define APP_QUEUE_LIMIT (4U * 1024U * 1024U)
+
+/* Use the same PROB configuration as the current single-flow test. */
+#define PROB_RTT_SPAN_MS 100U
+#define PROB_LOSS_Q16    8000U
 
 struct scp_udp_user {
     cal_udp_ctx_t *udp;
     struct sockaddr_in peer;
 };
 
-static cal_udp_ctx_t g_udp;
-static struct scp_udp_user g_user;
-static uint8_t g_packet_buf[2048];
+struct flow {
+    int fd;
+    int local_port;
+    int peer_port;
+    enum scp_cc_id cc;
+    const char *cc_name;
+    cal_udp_ctx_t udp;
+    struct scp_udp_user user;
+    struct scp_transport_class transport;
+    struct scp_stream *ss;
+    uint64_t app_enqueued;
+};
 
-static int scp_udp_send(void *user, const void *buf, size_t len)
-{
-    struct scp_udp_user *u = (struct scp_udp_user *)user;
-    return cal_udp_send(u->udp, buf, len, &u->peer);
-}
+static struct flow g_flow[FLOW_COUNT];
+static uint8_t g_packet_buf[FLOW_COUNT][2048];
+static uint8_t g_payload[FLOW_COUNT][APP_WRITE_SIZE];
 
-static int scp_test_progress(void)
-{
-    int progressed = 0;
-
-    scp_timer_process();
-
-    if (scp_is_closed(SCP_TEST_FD))
-        return 1;
-
-    for (;;) {
-        struct sockaddr_in src;
-
-        int n = cal_udp_recv(&g_udp,
-                             g_packet_buf,
-                             sizeof(g_packet_buf),
-                             &src);
-
-        if (n <= 0)
-            break;
-
-        int ret = scp_input(NULL,
-                            g_packet_buf,
-                            (size_t)n);
-
-        if (ret < 0) {
-            if (scp_is_closed(SCP_TEST_FD)) {
-                progressed = 1;
-                break;
-            }
-
-            fprintf(stderr,
-                    "scp_input failed before stream close: %d\n",
-                    ret);
-            return -1;
-        }
-
-        progressed = 1;
-
-        if (scp_is_closed(SCP_TEST_FD))
-            break;
-    }
-
-    return progressed;
-}
-
-#endif
-
-#if !TEST_USE_TCP
 static uint64_t monotonic_ms(void)
 {
     struct timespec ts;
@@ -121,224 +72,265 @@ static uint64_t monotonic_ms(void)
     return (uint64_t)ts.tv_sec * 1000ULL +
            (uint64_t)ts.tv_nsec / 1000000ULL;
 }
-#endif
 
-static double elapsed_seconds(const struct timespec *start,
-                              const struct timespec *end)
+static int scp_udp_send(void *user, const void *buf, size_t len)
 {
-    return (double)(end->tv_sec - start->tv_sec) +
-           (double)(end->tv_nsec - start->tv_nsec) / 1000000000.0;
+    struct scp_udp_user *u = (struct scp_udp_user *)user;
+    return cal_udp_send(u->udp, buf, len, &u->peer);
 }
 
-static int verify_input_file(int fd)
+static const char *cc_name(enum scp_cc_id cc)
 {
-    struct stat st;
+    return cc == SCP_CC_PROB ? "prob" : "aimd";
+}
 
-    if (fstat(fd, &st) != 0) {
-        perror("fstat");
-        return -1;
+static int parse_mode(const char *text,
+                      enum scp_cc_id *flow1_cc,
+                      enum scp_cc_id *flow2_cc,
+                      const char **mode_name)
+{
+    if (strcmp(text, "prob-prob") == 0) {
+        *flow1_cc = SCP_CC_PROB;
+        *flow2_cc = SCP_CC_PROB;
+        *mode_name = "prob-prob";
+        return 0;
     }
 
-    if ((uint64_t)st.st_size != TEST_FILE_SIZE) {
-        fprintf(stderr,
-                "input file must be exactly %llu bytes; actual=%lld\n",
-                (unsigned long long)TEST_FILE_SIZE,
-                (long long)st.st_size);
+    if (strcmp(text, "prob-aimd") == 0) {
+        *flow1_cc = SCP_CC_PROB;
+        *flow2_cc = SCP_CC_AIMD;
+        *mode_name = "prob-aimd";
+        return 0;
+    }
+
+    return -1;
+}
+
+static int parse_duration(const char *text, uint32_t *duration_sec)
+{
+    char *end = NULL;
+    unsigned long value;
+
+    errno = 0;
+    value = strtoul(text, &end, 10);
+
+    if (errno != 0 || !end || *end != '\0' || value == 0 || value > 86400UL)
         return -1;
+
+    *duration_sec = (uint32_t)value;
+    return 0;
+}
+
+static int set_nonblocking(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+
+    if (flags < 0)
+        return -1;
+
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return -1;
+
+    return 0;
+}
+
+static int progress_all(void)
+{
+    static uint64_t poll_round = 0;
+    int progressed = 0;
+    int first = (int)(poll_round & 1ULL);
+
+    poll_round++;
+    scp_timer_process();
+
+    for (int step = 0; step < FLOW_COUNT; ++step) {
+        int i = first ^ step;
+
+        for (;;) {
+            struct sockaddr_in src;
+            int n = cal_udp_recv(&g_flow[i].udp,
+                                 g_packet_buf[i],
+                                 sizeof(g_packet_buf[i]),
+                                 &src);
+
+            if (n <= 0)
+                break;
+
+            int ret = scp_input(NULL,
+                                g_packet_buf[i],
+                                (size_t)n);
+
+            if (ret < 0) {
+                fprintf(stderr,
+                        "flow%d scp_input failed: %d\n",
+                        i + 1,
+                        ret);
+                return -1;
+            }
+
+            progressed = 1;
+        }
+    }
+
+    return progressed;
+}
+
+static int all_established(void)
+{
+    for (int i = 0; i < FLOW_COUNT; ++i) {
+        if (!g_flow[i].ss ||
+            g_flow[i].ss->state != SCP_ESTABLISHED)
+            return 0;
+    }
+
+    return 1;
+}
+
+static int any_closed(void)
+{
+    for (int i = 0; i < FLOW_COUNT; ++i) {
+        if (scp_is_closed(g_flow[i].fd))
+            return 1;
     }
 
     return 0;
 }
 
-#if TEST_USE_TCP
-
-static int tcp_connect_to_receiver(void)
+static int setup_flow(struct flow *f,
+                      int fd,
+                      int local_port,
+                      int peer_port,
+                      const char *peer_ip,
+                      enum scp_cc_id cc)
 {
-    int fd = -1;
-    int one = 1;
-    struct sockaddr_in peer;
+    memset(f, 0, sizeof(*f));
 
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        perror("socket");
-        return -1;
-    }
+    f->fd = fd;
+    f->local_port = local_port;
+    f->peer_port = peer_port;
+    f->cc = cc;
+    f->cc_name = cc_name(cc);
+    f->udp.sockfd = -1;
 
-    if (setsockopt(fd,
-                   IPPROTO_TCP,
-                   TCP_CONGESTION,
-                   TCP_CC_NAME,
-                   strlen(TCP_CC_NAME)) != 0) {
+    cal_udp_open(&f->udp, TEST_LOCAL_IP, local_port);
+    if (f->udp.sockfd < 0) {
         fprintf(stderr,
-                "warning: cannot select TCP congestion control '%s': %s; "
-                "using the system default\n",
-                TCP_CC_NAME,
-                strerror(errno));
-    }
-
-    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one)) != 0) {
-        perror("setsockopt(SO_KEEPALIVE)");
-        close(fd);
+                "cal_udp_open failed for flow fd=%d port=%d\n",
+                fd,
+                local_port);
         return -1;
     }
 
-    memset(&peer, 0, sizeof(peer));
-    peer.sin_family = AF_INET;
-    peer.sin_port = htons(TEST_B_PORT);
-
-    if (inet_pton(AF_INET, TEST_PEER_IP, &peer.sin_addr) != 1) {
-        fprintf(stderr, "invalid TEST_PEER_IP: %s\n", TEST_PEER_IP);
-        close(fd);
+    if (set_nonblocking(f->udp.sockfd) != 0) {
+        perror("fcntl(O_NONBLOCK)");
         return -1;
     }
 
-    if (connect(fd, (struct sockaddr *)&peer, sizeof(peer)) != 0) {
-        perror("connect");
-        close(fd);
+    memset(&f->user, 0, sizeof(f->user));
+    f->user.udp = &f->udp;
+    f->user.peer.sin_family = AF_INET;
+    f->user.peer.sin_port = htons((uint16_t)peer_port);
+
+    if (inet_pton(AF_INET,
+                  peer_ip,
+                  &f->user.peer.sin_addr) != 1) {
+        fprintf(stderr, "invalid peer IP: %s\n", peer_ip);
         return -1;
     }
 
-    return fd;
+    f->transport.user = &f->user;
+    f->transport.send = scp_udp_send;
+    f->transport.recv = NULL;
+    f->transport.close = NULL;
+
+    f->ss = scp_stream_alloc(&f->transport, fd, fd);
+    if (!f->ss) {
+        fprintf(stderr, "scp_stream_alloc failed for fd=%d\n", fd);
+        return -1;
+    }
+
+    if (scp_set_cc(fd, cc) != 0) {
+        fprintf(stderr,
+                "scp_set_cc failed for fd=%d cc=%s\n",
+                fd,
+                f->cc_name);
+        return -1;
+    }
+
+    if (cc == SCP_CC_PROB) {
+        if (scp_prob_configure(f->ss,
+                               PROB_RTT_SPAN_MS,
+                               PROB_LOSS_Q16) != 0) {
+            fprintf(stderr,
+                    "scp_prob_configure failed for fd=%d\n",
+                    fd);
+            return -1;
+        }
+    }
+
+    return 0;
 }
 
-#endif
-
-int main(void)
+static int feed_one_flow(struct flow *f,
+                         const uint8_t *payload,
+                         size_t payload_len)
 {
-    int fd_send = -1;
-    uint8_t *buf = NULL;
-    uint64_t accepted = 0;
+    if (f->ss->snd_wmem >= APP_QUEUE_LIMIT)
+        return 0;
+
+    int ret = scp_send(f->fd, (void *)payload, payload_len);
+
+    if (ret == 0) {
+        f->app_enqueued += payload_len;
+        return 1;
+    }
+
+    if (ret == SCP_ERR_NOBUF)
+        return 0;
+
+    fprintf(stderr,
+            "scp_send failed for fd=%d cc=%s: %d\n",
+            f->fd,
+            f->cc_name,
+            ret);
+    return -1;
+}
+
+int main(int argc, char **argv)
+{
+    enum scp_cc_id flow1_cc;
+    enum scp_cc_id flow2_cc;
+    const char *mode_name;
+    uint32_t duration_sec = DEFAULT_DURATION_SEC;
     int rc = 1;
-    struct timespec start;
-    struct timespec end;
 
-    fd_send = open(TEST_FILE_PATH, O_RDONLY);
-    if (fd_send < 0) {
-        perror("open input");
-        goto out;
+    for (int i = 0; i < FLOW_COUNT; ++i)
+        g_flow[i].udp.sockfd = -1;
+
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr,
+                "usage: %s <server-ip> prob-prob|prob-aimd [duration_sec]\n",
+                argv[0]);
+        return 1;
     }
 
-    if (verify_input_file(fd_send) != 0)
-        goto out;
+    const char *peer_ip = argv[1];
 
-    buf = (uint8_t *)malloc(IO_BUF_SIZE);
-    if (!buf) {
-        perror("malloc");
-        goto out;
+    if (parse_mode(argv[2],
+                   &flow1_cc,
+                   &flow2_cc,
+                   &mode_name) != 0) {
+        fprintf(stderr, "invalid mode: %s\n", argv[2]);
+        return 1;
     }
 
-#if TEST_USE_TCP
-
-    int sock = tcp_connect_to_receiver();
-    if (sock < 0)
-        goto out;
-
-    printf("[A][TCP/%s] connected; sending %llu bytes from %s\n",
-           TCP_CC_NAME,
-           (unsigned long long)TEST_FILE_SIZE,
-           TEST_FILE_PATH);
-
-    if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
-        perror("clock_gettime");
-        close(sock);
-        goto out;
+    if (argc == 4 && parse_duration(argv[3], &duration_sec) != 0) {
+        fprintf(stderr, "invalid duration: %s\n", argv[3]);
+        return 1;
     }
 
-    while (accepted < TEST_FILE_SIZE) {
-        size_t want = IO_BUF_SIZE;
-        uint64_t remaining = TEST_FILE_SIZE - accepted;
-
-        if (remaining < want)
-            want = (size_t)remaining;
-
-        ssize_t nr;
-        do {
-            nr = read(fd_send, buf, want);
-        } while (nr < 0 && errno == EINTR);
-
-        if (nr < 0) {
-            perror("read");
-            close(sock);
-            goto out;
-        }
-
-        if (nr == 0) {
-            fprintf(stderr, "unexpected EOF in input file\n");
-            close(sock);
-            goto out;
-        }
-
-        size_t off = 0;
-        while (off < (size_t)nr) {
-            ssize_t nw = send(sock,
-                              buf + off,
-                              (size_t)nr - off,
-                              MSG_NOSIGNAL);
-
-            if (nw > 0) {
-                off += (size_t)nw;
-                accepted += (uint64_t)nw;
-                continue;
-            }
-
-            if (nw < 0 && errno == EINTR)
-                continue;
-
-            perror("send");
-            close(sock);
-            goto out;
-        }
-    }
-
-    for (;;) {
-        uint8_t dummy;
-        ssize_t n = recv(sock, &dummy, sizeof(dummy), 0);
-
-        if (n == 0)
-            break;
-
-        if (n > 0) {
-            fprintf(stderr, "unexpected payload from receiver\n");
-            close(sock);
-            goto out;
-        }
-
-        if (errno == EINTR)
-            continue;
-
-        perror("recv waiting for receiver FIN");
-        close(sock);
-        goto out;
-    }
-
-    if (clock_gettime(CLOCK_MONOTONIC, &end) != 0) {
-        perror("clock_gettime");
-        close(sock);
-        goto out;
-    }
-
-    if (shutdown(sock, SHUT_WR) != 0 && errno != ENOTCONN) {
-        perror("shutdown(SHUT_WR)");
-        close(sock);
-        goto out;
-    }
-
-    close(sock);
-
-#else
-
-    cal_udp_open(&g_udp, TEST_LOCAL_IP, TEST_A_PORT);
-    if (g_udp.sockfd < 0) {
-        fprintf(stderr, "cal_udp_open failed\n");
-        goto out;
-    }
-
-    int flags = fcntl(g_udp.sockfd, F_GETFL, 0);
-    if (flags < 0 ||
-        fcntl(g_udp.sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        perror("fcntl(O_NONBLOCK)");
-        goto out;
-    }
+    memset(g_payload[0], 0xA5, sizeof(g_payload[0]));
+    memset(g_payload[1], 0x5A, sizeof(g_payload[1]));
 
     srand(1);
 
@@ -349,139 +341,48 @@ int main(void)
 
     scp_time_init();
 
-    memset(&g_user, 0, sizeof(g_user));
-    g_user.udp = &g_udp;
-    g_user.peer.sin_family = AF_INET;
-    g_user.peer.sin_port = htons(TEST_B_PORT);
-
-    if (inet_pton(AF_INET,
-                  TEST_PEER_IP,
-                  &g_user.peer.sin_addr) != 1) {
-        fprintf(stderr, "invalid TEST_PEER_IP: %s\n", TEST_PEER_IP);
+    if (setup_flow(&g_flow[0],
+                   FLOW1_FD,
+                   FLOW1_A_PORT,
+                   FLOW1_B_PORT,
+                   peer_ip,
+                   flow1_cc) != 0)
         goto out;
-    }
 
-    struct scp_transport_class transport = {
-        .user = &g_user,
-        .send = scp_udp_send,
-        .recv = NULL,
-        .close = NULL
-    };
-
-    struct scp_stream *ss =
-        scp_stream_alloc(&transport, SCP_TEST_FD, SCP_TEST_FD);
-
-    if (!ss) {
-        fprintf(stderr, "scp_stream_alloc failed\n");
+    if (setup_flow(&g_flow[1],
+                   FLOW2_FD,
+                   FLOW2_A_PORT,
+                   FLOW2_B_PORT,
+                   peer_ip,
+                   flow2_cc) != 0)
         goto out;
-    }
 
-    if (scp_set_cc(SCP_TEST_FD,
-                   TEST_SCP_CC) != 0) {
-        fprintf(stderr,
-                "scp_set_cc failed: %d\n",
-                TEST_SCP_CC);
-        goto out;
-    }
-
-    scp_prob_configure(ss, 100, 8000);
-
-    if (scp_connect(SCP_TEST_FD) != 0) {
+    if (scp_connect(FLOW1_FD) != 0 ||
+        scp_connect(FLOW2_FD) != 0) {
         fprintf(stderr, "scp_connect failed\n");
         goto out;
     }
 
-    printf("[A][SCP] waiting for ESTABLISHED\n");
+    printf("[A] peer=%s mode=%s; waiting for both streams to establish\n",
+           peer_ip,
+           mode_name);
 
-    uint64_t deadline = monotonic_ms() + TEST_TIMEOUT_SEC * 1000ULL;
+    uint64_t handshake_deadline =
+        monotonic_ms() + (uint64_t)HANDSHAKE_TIMEOUT_SEC * 1000ULL;
 
-    while (ss->state != SCP_ESTABLISHED) {
-        int progressed = scp_test_progress();
+    while (!all_established()) {
+        int progressed = progress_all();
 
-        if (progressed < 0) {
-            fprintf(stderr, "SCP progress failed during handshake\n");
+        if (progressed < 0)
+            goto out;
+
+        if (any_closed()) {
+            fprintf(stderr, "a stream closed during handshake\n");
             goto out;
         }
 
-        if (scp_is_closed(SCP_TEST_FD)) {
-            fprintf(stderr, "SCP closed during handshake\n");
-            goto out;
-        }
-
-        if (monotonic_ms() > deadline) {
-            fprintf(stderr, "SCP handshake timeout\n");
-            goto out;
-        }
-
-        if (!progressed)
-            usleep(IDLE_SLEEP_US);
-    }
-
-    printf("[A][SCP] established; sending %llu bytes from %s\n",
-           (unsigned long long)TEST_FILE_SIZE,
-           TEST_FILE_PATH);
-
-    if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
-        perror("clock_gettime");
-        goto out;
-    }
-
-    size_t pending_len = 0;
-
-    deadline = monotonic_ms() + TEST_TIMEOUT_SEC * 1000ULL;
-
-    while (accepted < TEST_FILE_SIZE) {
-        int progressed = scp_test_progress();
-
-        if (progressed < 0) {
-            fprintf(stderr, "SCP progress failed during transfer\n");
-            goto out;
-        }
-
-        if (pending_len == 0) {
-            size_t want = IO_BUF_SIZE;
-            uint64_t remaining = TEST_FILE_SIZE - accepted;
-
-            if (remaining < want)
-                want = (size_t)remaining;
-
-            ssize_t nr;
-            do {
-                nr = read(fd_send, buf, want);
-            } while (nr < 0 && errno == EINTR);
-
-            if (nr < 0) {
-                perror("read");
-                goto out;
-            }
-
-            if (nr == 0) {
-                fprintf(stderr, "unexpected EOF in input file\n");
-                goto out;
-            }
-
-            pending_len = (size_t)nr;
-        }
-
-        int ret = scp_send(SCP_TEST_FD, buf, pending_len);
-
-        if (ret == 0) {
-            accepted += (uint64_t)pending_len;
-            pending_len = 0;
-            progressed = 1;
-        } else if (ret == SCP_ERR_NOBUF) {
-        } else {
-            fprintf(stderr, "scp_send failed: %d\n", ret);
-            goto out;
-        }
-
-        if (scp_is_closed(SCP_TEST_FD)) {
-            fprintf(stderr, "receiver closed before all bytes were accepted\n");
-            goto out;
-        }
-
-        if (monotonic_ms() > deadline) {
-            fprintf(stderr, "SCP transfer timeout\n");
+        if (monotonic_ms() >= handshake_deadline) {
+            fprintf(stderr, "handshake timeout\n");
             goto out;
         }
 
@@ -489,16 +390,16 @@ int main(void)
             usleep(IDLE_SLEEP_US);
     }
 
-    while (!scp_is_closed(SCP_TEST_FD)) {
-        int progressed = scp_test_progress();
+    /* Give the receiver enough time to process both final handshake ACKs. */
+    uint64_t settle_deadline = monotonic_ms() + START_SETTLE_MS;
+    while (monotonic_ms() < settle_deadline) {
+        int progressed = progress_all();
 
-        if (progressed < 0) {
-            fprintf(stderr, "SCP progress failed while waiting for close\n");
+        if (progressed < 0)
             goto out;
-        }
 
-        if (monotonic_ms() > deadline) {
-            fprintf(stderr, "SCP close wait timeout\n");
+        if (any_closed()) {
+            fprintf(stderr, "a stream closed before the test started\n");
             goto out;
         }
 
@@ -506,46 +407,74 @@ int main(void)
             usleep(IDLE_SLEEP_US);
     }
 
-    if (clock_gettime(CLOCK_MONOTONIC, &end) != 0) {
-        perror("clock_gettime");
-        goto out;
+    printf("[A] both streams established; flow1=%s flow2=%s duration=%u s\n",
+           g_flow[0].cc_name,
+           g_flow[1].cc_name,
+           duration_sec);
+
+    uint64_t start_ms = monotonic_ms();
+    uint64_t stop_ms = start_ms +
+                       (uint64_t)duration_sec * 1000ULL +
+                       SENDER_EXTRA_MS;
+    uint64_t round = 0;
+
+    while (monotonic_ms() < stop_ms) {
+        int progressed = progress_all();
+
+        if (progressed < 0)
+            goto out;
+
+        if (any_closed()) {
+            fprintf(stderr, "a stream closed during the test\n");
+            goto out;
+        }
+
+        /* Alternate which flow gets the first application enqueue attempt. */
+        int first = (int)(round & 1ULL);
+        int second = first ^ 1;
+
+        int ret = feed_one_flow(&g_flow[first],
+                                g_payload[first],
+                                sizeof(g_payload[first]));
+        if (ret < 0)
+            goto out;
+        progressed |= ret;
+
+        ret = feed_one_flow(&g_flow[second],
+                            g_payload[second],
+                            sizeof(g_payload[second]));
+        if (ret < 0)
+            goto out;
+        progressed |= ret;
+
+        round++;
+
+        if (!progressed)
+            usleep(IDLE_SLEEP_US);
     }
 
-#endif
-
-    {
-        double seconds = elapsed_seconds(&start, &end);
-        double mbps = ((double)TEST_FILE_SIZE * 8.0) /
-                      seconds /
-                      1000000.0;
-
-        printf("{\"transport\":\"%s\","
-               "\"role\":\"sender\","
-               "\"bytes\":%llu,"
-               "\"seconds_including_receiver_close\":%.6f,"
-               "\"goodput_mbps\":%.6f,"
-               "\"status\":\"success\"}\n",
-#if TEST_USE_TCP
-               "tcp",
-#else
-               "scp",
-#endif
-               (unsigned long long)accepted,
-               seconds,
-               mbps);
-    }
+    printf("{\"role\":\"sender\","
+           "\"mode\":\"%s\","
+           "\"duration_sec\":%u,"
+           "\"flow1_cc\":\"%s\","
+           "\"flow2_cc\":\"%s\","
+           "\"flow1_app_enqueued\":%llu,"
+           "\"flow2_app_enqueued\":%llu,"
+           "\"status\":\"success\"}\n",
+           mode_name,
+           duration_sec,
+           g_flow[0].cc_name,
+           g_flow[1].cc_name,
+           (unsigned long long)g_flow[0].app_enqueued,
+           (unsigned long long)g_flow[1].app_enqueued);
 
     rc = 0;
 
 out:
-    if (fd_send >= 0)
-        close(fd_send);
+    for (int i = 0; i < FLOW_COUNT; ++i) {
+        if (g_flow[i].udp.sockfd >= 0)
+            close(g_flow[i].udp.sockfd);
+    }
 
-#if !TEST_USE_TCP
-    if (g_udp.sockfd >= 0)
-        close(g_udp.sockfd);
-#endif
-
-    free(buf);
     return rc;
 }
