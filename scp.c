@@ -349,6 +349,8 @@ static void scp_timer_persist_cb(void *arg)
     if (!ss || ss->state == SCP_CLOSED)
         return;
 
+    scp_dump_ss_state(ss);
+
     uint32_t now = scp_now_time();
     int need_probe = 0;
 
@@ -463,6 +465,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .cwnd = MTU, 
             .dup_acks = 0,
             .last_gap_rexmit_ack = 0,
+            .last_gap_rexmit_valid = 0,
             .fr_active = 0,
             .packet_bytes = 0,
             .packet_count = 0,
@@ -983,6 +986,33 @@ static inline void scp_update_rtt_base(struct scp_stream *ss)
     }
 }
 
+static inline void scp_enter_recovery(struct scp_stream *ss)
+{
+    if (ss->fr_active)
+        return;
+
+    ss->fr_active = 1;
+    ss->recover_seq = ss->snd_nxt;
+
+    if (ss->cc_on_loss)
+        ss->cc_on_loss(ss);
+}
+
+static inline int scp_sack_gap_valid(struct scp_stream *ss,
+                                     uint32_t ack,
+                                     uint32_t sack)
+{
+    // ack < sack <= snd_nxt
+    if (!SEQ_GT(sack, ack))
+        return 0;
+
+    //The peer cannot SACK data beyond what we have sent.
+    if (SEQ_GT(sack, ss->snd_nxt))
+        return 0;
+
+    return 1;
+}
+
 /* 
  * An ACK tells us the peer has received data.
  * We update RTT from this sample and free sent buffers.
@@ -1027,10 +1057,27 @@ static void scp_process_ack(struct scp_stream *ss,
 
     scp_snd_buf_free(ss, ack);
 
-    if (SEQ_GT(sack, ack)) {
-        if (SEQ_GT(ack, ss->last_gap_rexmit_ack)) {
+    if (scp_sack_gap_valid(ss, ack, sack)) {
+        int new_gap =
+            !ss->last_gap_rexmit_valid ||
+            SEQ_GT(ack, ss->last_gap_rexmit_ack);
+
+        if (new_gap) {
+            scp_enter_recovery(ss);
+
             scp_retransmit_gap(ss, ack, sack);
+
             ss->last_gap_rexmit_ack = ack;
+            ss->last_gap_rexmit_valid = 1;
+
+            scp_timer_delete(&ss->t_retrans);
+
+            if (ss->snd_una != ss->snd_nxt) {
+                scp_timer_create(&ss->t_retrans,
+                                 scp_timer_retrans_cb,
+                                 ss,
+                                 ss->rto);
+            }
         }
     }
 
@@ -1054,22 +1101,26 @@ static void scp_process_ack(struct scp_stream *ss,
     if (SEQ_LT(ss->snd_una, ss->snd_nxt)) {
         ss->dup_acks++;
 
-        // Enter Fast Recovery 
         if (ss->dup_acks >= 3 && !ss->fr_active) {
-            ss->fr_active = 1;
-            ss->recover_seq = ss->snd_nxt;
+            scp_enter_recovery(ss);
 
-            if (ss->cc_on_loss)
-                ss->cc_on_loss(ss);
+            if (scp_sack_gap_valid(ss, ack, sack)) {
+                scp_retransmit_gap(ss, ack, sack);
 
-            scp_retransmit_gap(ss, ack, sack); 
-            ss->last_gap_rexmit_ack = ack; 
+                ss->last_gap_rexmit_ack = ack;
+                ss->last_gap_rexmit_valid = 1;
+            }else {
+                scp_retransmit(ss);
+            }
 
             scp_timer_delete(&ss->t_retrans);
-            scp_timer_create(&ss->t_retrans,
-                             scp_timer_retrans_cb,
-                             ss,
-                             ss->rto);
+
+            if (ss->snd_una != ss->snd_nxt) {
+                scp_timer_create(&ss->t_retrans,
+                                 scp_timer_retrans_cb,
+                                 ss,
+                                 ss->rto);
+            }
         }
     }
 
@@ -1394,7 +1445,6 @@ static void scp_est_process(struct scp_stream *ss,
                 ss->rtt_sample = sample;
                 scp_update_rtt_base(ss);
                 scp_update_rtt(ss);
-                scp_dump_ss_state(ss);
             }
         }
 
@@ -1774,8 +1824,8 @@ static inline void scp_md_prob(struct scp_stream *ss)
     } else {
         ss->cong_q_ema =
             (uint16_t)(
-                ((uint32_t)ss->cong_q_ema * 7U +
-                 (uint32_t)ss->cong_q) >> 3
+                ((uint32_t)ss->cong_q_ema * 31U +
+                 (uint32_t)ss->cong_q) >> 5
             );
     }
 }
@@ -1845,8 +1895,6 @@ static int scp_prob_refit(struct scp_stream *ss,
     ss->prob_beta_q16 = beta;
     ss->prob_gamma_q16 = (int32_t)gamma;
 
-    /* Old q history belongs to the old mapping. */
-    ss->cong_q = 0;
     ss->cong_q_ema = 0;
     ss->z = 0;
 
@@ -1893,8 +1941,8 @@ static void scp_prob_probe_step(struct scp_stream *ss)
 
     if (ss->prob_mode == SCP_PROB_PROBE_DRAIN) {
         if (ss->cwnd > MSS) {
-            uint32_t next =
-                (uint32_t)(((uint64_t)ss->cwnd * 3U) / 4U);
+            uint32_t next;
+            next = (ss->cwnd * 3U) >> 2;
 
             if (next < MSS)
                 next = MSS;
@@ -2027,6 +2075,12 @@ static int scp_prob_backlogged(struct scp_stream *ss)
            (has_unsent || window_busy);
 }
 
+#define SCP_Q_SWITCH_LOW \
+    ((uint16_t)(SCP_Q_LOW_U16 + 655U))   /* 0.41 */
+
+#define SCP_Q_SWITCH_HIGH \
+    ((uint16_t)(SCP_Q_HIGH_U16 - 655U))  /* 0.59 */
+
 static void scp_update_cwnd_fast(struct scp_stream *ss,
                                  uint32_t acked)
 {
@@ -2051,12 +2105,12 @@ static void scp_update_cwnd_fast(struct scp_stream *ss,
      * Inside (0.4, 0.6), retain the previous phase.
      */
     if (ss->cc_phase == SCP_CC_PHASE_INC) {
-        if (ss->cong_q >= SCP_Q_HIGH_U16) {
+        if (ss->cong_q >= SCP_Q_SWITCH_HIGH) {
             ss->cc_phase = SCP_CC_PHASE_DEC;
             ss->prob_seen_high = 1;
         }
     } else {
-        if (ss->cong_q <= SCP_Q_LOW_U16) {
+        if (ss->cong_q <= SCP_Q_SWITCH_LOW) {
             ss->cc_phase = SCP_CC_PHASE_INC;
 
             if (ss->prob_seen_high) {
@@ -2190,9 +2244,20 @@ static void scp_prob_on_ack(struct scp_stream *ss,
 
     now = scp_now_time();
 
+    int model_stuck =
+        (ss->cc_phase == SCP_CC_PHASE_DEC &&
+         ss->cwnd <= 2U * MSS &&
+         ss->cong_q_ema > SCP_Q_SWITCH_LOW) ||
+
+        (ss->cc_phase == SCP_CC_PHASE_INC &&
+         ss->cwnd >= CWND_WIN_MAX &&
+        ss->cong_q_ema < SCP_Q_SWITCH_HIGH);
+
     if (scp_prob_backlogged(ss) &&
         now - ss->prob_last_cycle >=
-            SCP_PROB_REPROBE_MS) {
+        SCP_PROB_REPROBE_MS &&
+        model_stuck) {
+
         scp_prob_start_probe(ss);
         scp_prob_probe_step(ss);
         return;
@@ -2276,43 +2341,22 @@ static void scp_aimd_on_ack(struct scp_stream *ss,
 
 static void scp_aimd_on_loss(struct scp_stream *ss)
 {
-    uint32_t flight =
-        ss->snd_nxt -
-        ss->snd_una;
-
-    uint32_t half =
-        flight / 2U;
-
-    uint32_t minimum =
-        2U * MSS;
+    uint32_t half = ss->cwnd / 2U;
+    uint32_t minimum = 2U * MSS;
 
     ss->ssthresh =
-        (half > minimum) ?
-        half :
-        minimum;
+        half > minimum ? half : minimum;
 
     ss->cwnd = ss->ssthresh;
-
-    if (ss->cwnd > CWND_WIN_MAX)
-        ss->cwnd = CWND_WIN_MAX;
 }
 
 static void scp_aimd_on_timeout(struct scp_stream *ss)
 {
-    uint32_t flight =
-        ss->snd_nxt -
-        ss->snd_una;
-
-    uint32_t half =
-        flight / 2U;
-
-    uint32_t minimum =
-        2U * MSS;
+    uint32_t half = ss->cwnd / 2U;
+    uint32_t minimum = 2U * MSS;
 
     ss->ssthresh =
-        (half > minimum) ?
-        half :
-        minimum;
+        half > minimum ? half : minimum;
 
     ss->cwnd = MSS;
 }

@@ -14,7 +14,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-#define TEST_SCP_CC 0
+#define TEST_SCP_CC 1
 
 #ifndef TEST_USE_TCP
 #define TEST_USE_TCP 0
@@ -30,7 +30,7 @@
 #define TEST_B_PORT         6000
 
 #define IDLE_SLEEP_US       100
-#define TEST_TIMEOUT_SEC    1800
+#define TEST_TIMEOUT_SEC    4000
 
 #if TEST_USE_TCP
 

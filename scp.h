@@ -38,7 +38,7 @@ struct scp_timer {
 #define RECV_WIN_INIT (1 << 24)
 #define CWND_WIN_MAX  (1 << 20)
 #define MTU 1460
-#define PERSIST_INTERVAL 200
+#define PERSIST_INTERVAL 50
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
@@ -177,6 +177,7 @@ struct scp_stream {
 
     uint8_t fr_active;
     uint32_t last_gap_rexmit_ack;
+    uint8_t  last_gap_rexmit_valid : 1;
 
     uint32_t sent_cnt;
     uint32_t loss_cnt;

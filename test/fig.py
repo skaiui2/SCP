@@ -409,7 +409,7 @@ def plot_phase_portrait(
 
     if not dec.empty:
         ax.scatter(
-            dec["q_inst"],
+            dec["q_ema"],
             dec["cwnd_kib"],
             s=7,
             alpha=0.55,
@@ -421,7 +421,7 @@ def plot_phase_portrait(
     ax.axvline(Q_LOW, linestyle=":", linewidth=0.9)
     ax.axvline(Q_HIGH, linestyle="-.", linewidth=0.9)
 
-    ax.set_xlabel("Congestion factor")
+    ax.set_xlabel("Smoothed Congestion factor")
     ax.set_ylabel("cwnd (KiB)")
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(bottom=0)
