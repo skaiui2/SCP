@@ -1,0 +1,4 @@
+[B] mode=prob-prob; waiting for both streams
+[B] both streams established; flow1=prob flow2=prob; measurement starts on first payload
+[B] measurement started for 300 seconds
+{"role":"receiver","mode":"prob-prob","seconds":300.000000,"flow1_cc":"prob","flow2_cc":"prob","flow1_bytes":36906778,"flow2_bytes":35335344,"flow1_goodput_mbps":0.984181,"flow2_goodput_mbps":0.942276,"total_goodput_mbps":1.926457,"jain":0.999527060,"flow1_share":0.510876162,"flow1_to_flow2_ratio":1.044472016,"status":"success"}

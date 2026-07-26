@@ -1,0 +1,3 @@
+[A] peer=10.0.2.1 mode=prob-prob; waiting for both streams to establish
+[A] both streams established; flow1=prob flow2=prob duration=300 s
+{"role":"sender","mode":"prob-prob","duration_sec":300,"flow1_cc":"prob","flow2_cc":"prob","flow1_app_enqueued":40828928,"flow2_app_enqueued":39256064,"status":"success"}
