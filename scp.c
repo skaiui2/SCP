@@ -7,7 +7,7 @@
 static void scp_send_window_probe(struct scp_stream *ss);
 static void scp_retransmit(struct scp_stream *ss);
 static int scp_output(struct scp_stream *ss);
-static int scp_output_one(struct scp_stream *ss);
+static void scp_pacing_timer_cb(void *arg);
 static int scp_install_cc(struct scp_stream *ss,
                           enum scp_cc_id cc_id);
 void scp_output_data(struct scp_stream *ss, struct scp_buf *sb);
@@ -470,6 +470,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
     scp_timer_node_init(&ss->t_persist);
     scp_timer_node_init(&ss->t_hs);
     scp_timer_node_init(&ss->t_fin);
+    scp_timer_node_init(&ss->t_pacing);
 
     list_node_init(&ss->node);
     list_node_init(&ss->snd_q);
@@ -495,6 +496,7 @@ int scp_stream_free(struct scp_stream *ss)
     scp_timer_remove(&ss->t_persist);
     scp_timer_remove(&ss->t_hs);
     scp_timer_remove(&ss->t_fin);
+    scp_timer_remove(&ss->t_pacing);
 
     list_remove(&ss->node);
     hashmap_remove(&scp_stream_map, (void *)(uintptr_t)(ss->src_fd));
@@ -1178,68 +1180,148 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
     ss->sent_cnt++;
 }
 
-static int scp_output_one(struct scp_stream *ss)
+static void scp_output_to_pacing(struct scp_stream *ss,
+                                 uint32_t available,
+                                 uint32_t now,
+                                 uint32_t pacing_time_q16)
 {
-    struct list_node *n = NULL;
+    uint32_t packet_index = 0;
 
-    for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
-        struct scp_buf *sb = container_of(n, struct scp_buf, list);
+    while (ss->schedule_next) {
+        struct scp_buf *sb = ss->schedule_next;
+        struct list_node *next = sb->list.next;
+        uint32_t frag_len =
+            sb->len - sizeof(struct scp_hdr);
+        uint64_t delta_q16;
 
-        if (sb->sent)
-            continue;
+        if (frag_len > available)
+            break;
 
-        uint32_t frag_len = sb->len - sizeof(struct scp_hdr);
-        uint32_t end_seq = sb->seq + frag_len;
+        delta_q16 =
+            (uint64_t)packet_index * pacing_time_q16;
 
-        scp_output_data(ss, sb);
+        sb->sent_time =
+            now +
+            (uint32_t)((delta_q16 + (1U << 15)) >> 16);
 
-        sb->sent = 1;
+        if (!ss->pacing_next)
+            ss->pacing_next = sb;
 
-        if (SEQ_GT(end_seq, ss->snd_nxt))
-            ss->snd_nxt = end_seq;
+        if (next == &ss->snd_q) {
+            ss->schedule_next = NULL;
+        } else {
+            ss->schedule_next =
+                container_of(next,
+                             struct scp_buf,
+                             list);
+        }
 
-        return (int)frag_len;
+        available -= frag_len;
+        packet_index++;
+    }
+}
+
+static int scp_output(struct scp_stream *ss)
+{
+    uint32_t flight;
+    uint32_t win;
+    uint32_t rtt;
+    uint32_t pacing_time_q16;
+
+    if (ss->pacing_next || !ss->schedule_next)
+        return 0;
+
+    win = min(ss->snd_wnd, ss->cwnd);
+    flight = ss->schedule_next->seq - ss->snd_una;
+
+    if (win == 0 || flight >= win)
+        return 0;
+
+    rtt = ss->srtt ? ss->srtt : ss->rto;
+    if (rtt == 0)
+        rtt = SCP_RTO_MIN;
+
+    pacing_time_q16 =
+        (uint32_t)(((((uint64_t)rtt * MSS) << 16) +
+                    ss->cwnd / 2U) /
+                   ss->cwnd);
+
+    if (pacing_time_q16 == 0)
+        pacing_time_q16 = 1;
+
+    scp_output_to_pacing(ss,
+                         win - flight,
+                         scp_now_time(),
+                         pacing_time_q16);
+
+    if (ss->pacing_next && !ss->t_pacing.active) {
+        scp_timer_create(&ss->t_pacing,
+                         scp_pacing_timer_cb,
+                         ss,
+                         SCP_PACING_TICK_MS);
     }
 
     return 0;
 }
 
-static int scp_output(struct scp_stream *ss)
+static void scp_pacing_timer_cb(void *arg)
 {
-    uint32_t flight = ss->snd_nxt - ss->snd_una;
-    uint32_t sent_bytes = 0;
-    uint32_t effective_win = min(ss->snd_wnd, ss->cwnd);
+    struct scp_stream *ss = arg;
+    uint32_t now;
+    uint8_t sent_any = 0;
 
-    if (effective_win == 0 || 
-        flight >= effective_win) 
-        return 0;
+    if (!ss || ss->state != SCP_ESTABLISHED)
+        return;
 
-    for (;;) {
-        uint32_t win = min(ss->snd_wnd, ss->cwnd);
+    now = scp_now_time();
 
-        int32_t swnd = (int32_t)win - (int32_t)flight;
-        if (swnd <= 0)
-            break;
+    while (ss->pacing_next &&
+           SEQ_LEQ(ss->pacing_next->sent_time, now)) {
+        struct scp_buf *sb = ss->pacing_next;
+        struct list_node *next = sb->list.next;
+        uint32_t frag_len =
+            sb->len - sizeof(struct scp_hdr);
+        uint32_t end_seq = sb->seq + frag_len;
 
-        int frag = scp_output_one(ss);
-        if (frag <= 0)
-            break;
+        scp_output_data(ss, sb);
 
-        flight += (uint32_t)frag;
-        sent_bytes += (uint32_t)frag;
+        if (SEQ_GT(end_seq, ss->snd_nxt))
+            ss->snd_nxt = end_seq;
+
+        if (next == &ss->snd_q) {
+            ss->pacing_next = NULL;
+        } else {
+            struct scp_buf *next_buf =
+                container_of(next,
+                             struct scp_buf,
+                             list);
+
+            if (next_buf == ss->schedule_next)
+                ss->pacing_next = NULL;
+            else
+                ss->pacing_next = next_buf;
+        }
+
+        sent_any = 1;
     }
 
-    if (sent_bytes > 0 &&
+    if (sent_any &&
         !ss->t_retrans.active &&
         ss->snd_una != ss->snd_nxt) {
-
         scp_timer_create(&ss->t_retrans,
                          scp_timer_retrans_cb,
                          ss,
                          ss->rto);
     }
 
-    return 0;
+    if (ss->pacing_next) {
+        scp_timer_create(&ss->t_pacing,
+                         scp_pacing_timer_cb,
+                         ss,
+                         SCP_PACING_TICK_MS);
+    } else {
+        scp_output(ss);
+    }
 }
 
 /*
@@ -1306,6 +1388,9 @@ int scp_send(int fd, void *buf, size_t len)
         memcpy(pure, (uint8_t *)buf + off, frag);
         queue_enqueue(&ss->snd_q, &sb->list);
         ss->snd_q_count++;
+
+        if (!ss->schedule_next)
+            ss->schedule_next = sb;
 
         off      += frag;
     }
