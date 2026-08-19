@@ -67,7 +67,8 @@ static void scp_dump_ss_fields(struct scp_stream *ss)
 {
     uint32_t flight = ss->snd_nxt - ss->snd_una;
 
-    printf("\"snd_una\":%u,"
+    printf("\"stream_fd\":%u,"
+           "\"snd_una\":%u,"
            "\"snd_seq_q\":%u,"
            "\"snd_nxt\":%u,"
            "\"rcv_nxt\":%u,"
@@ -103,6 +104,7 @@ static void scp_dump_ss_fields(struct scp_stream *ss)
            "\"prob_gamma_q16\":%d,"
            "\"prob_beta_q16\":%d",
            
+           ss->src_fd,
            ss->snd_una,
            ss->snd_seq_q,
            ss->snd_nxt,
