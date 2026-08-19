@@ -39,6 +39,7 @@ struct scp_timer {
 #define CWND_WIN_MAX  (1 << 20)
 #define MTU 1460
 #define PERSIST_INTERVAL 200
+#define SCP_PACING_TICK_MS 1U
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
@@ -60,7 +61,7 @@ struct scp_buf {
     };
     size_t len;
     uint32_t seq; // save it from hdr.
-    uint8_t sent:1;
+    uint32_t sent_time; // planned pacing send time, milliseconds
     uint8_t dir:1;
     uint8_t *data;
     uint32_t payload_off;
@@ -121,6 +122,7 @@ struct scp_stream {
     struct scp_timer t_persist;         // persist / keepalive timer
     struct scp_timer t_hs;              // handshake retry timer
     struct scp_timer t_fin;             // FIN retry timer
+    struct scp_timer t_pacing;          // pacing timer
 
     uint32_t dst_fd;                    // remote endpoint id
     uint32_t src_fd;                    // local endpoint id
@@ -151,6 +153,8 @@ struct scp_stream {
 
     struct list_node snd_q;             // send queue (in-order)
     uint32_t snd_q_count;
+    struct scp_buf *pacing_next;        // next scheduled packet to send
+    struct scp_buf *schedule_next;      // next packet not handed to pacing
 
     struct rb_root rcv_buf_q;           // out-of-order receive tree
     struct list_node rcv_data_q;        // in-order delivered data
