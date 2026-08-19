@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 
 
 FIELDS = [
-    "t",
+    "t", "stream_fd",
     "snd_una", "snd_seq_q", "snd_nxt", "rcv_nxt",
     "snd_wnd", "rcv_wnd", "snd_wmem", "rcv_wmem",
     "snd_q", "rcv_q",
@@ -69,6 +69,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("logfile", type=Path)
     parser.add_argument(
+        "--stream-fd",
+        type=int,
+        default=None,
+        help="plot only one SCP stream from a multi-flow log",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=Path("scp_all_plots"),
@@ -96,7 +102,7 @@ def json_loads(line: str) -> dict:
     return json.loads(line)
 
 
-def load_log(path: Path) -> pd.DataFrame:
+def load_log(path: Path, stream_fd: int | None = None) -> pd.DataFrame:
     rows: list[dict] = []
 
     with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -121,6 +127,17 @@ def load_log(path: Path) -> pd.DataFrame:
     df = pd.DataFrame.from_records(rows)
     for field in FIELDS:
         df[field] = pd.to_numeric(df[field], errors="coerce")
+
+    if stream_fd is not None:
+        available = sorted(
+            int(value)
+            for value in df["stream_fd"].dropna().unique()
+        )
+        df = df[df["stream_fd"] == stream_fd]
+        if df.empty:
+            raise ValueError(
+                f"stream_fd={stream_fd} not found; available streams: {available}"
+            )
 
     df = df.dropna(subset=["t"]).reset_index(drop=True)
     if df.empty:
@@ -411,11 +428,11 @@ def main() -> int:
     args = parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
-    full_df = load_log(args.logfile)
+    full_df = load_log(args.logfile, args.stream_fd)
     plot_df = downsample_preserve_events(full_df, args.max_points)
 
     for field in FIELDS:
-        if field != "t":
+        if field not in {"t", "stream_fd"}:
             plot_field(plot_df, field, args.out, args.dpi)
 
     plot_model_thresholds(plot_df, args.out, args.dpi)

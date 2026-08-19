@@ -40,6 +40,7 @@ from matplotlib.ticker import MaxNLocator, ScalarFormatter
 
 FIELDS = [
     "t",
+    "stream_fd",
     "cwnd",
     "flight",
     "srtt",
@@ -70,6 +71,12 @@ def parse_args() -> argparse.Namespace:
         description="Create publication-quality SCP congestion-control figures."
     )
     parser.add_argument("logfile", type=Path, help="JSONL SCP state log")
+    parser.add_argument(
+        "--stream-fd",
+        type=int,
+        default=None,
+        help="plot only one SCP stream from a multi-flow log",
+    )
     parser.add_argument(
         "--out",
         type=Path,
@@ -142,7 +149,7 @@ def json_loads(line: str) -> dict:
     return json.loads(line)
 
 
-def load_log(path: Path) -> pd.DataFrame:
+def load_log(path: Path, stream_fd: int | None = None) -> pd.DataFrame:
     rows: list[dict] = []
 
     with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -169,6 +176,17 @@ def load_log(path: Path) -> pd.DataFrame:
 
     for field in FIELDS:
         df[field] = pd.to_numeric(df[field], errors="coerce")
+
+    if stream_fd is not None:
+        available = sorted(
+            int(value)
+            for value in df["stream_fd"].dropna().unique()
+        )
+        df = df[df["stream_fd"] == stream_fd]
+        if df.empty:
+            raise ValueError(
+                f"stream_fd={stream_fd} not found; available streams: {available}"
+            )
 
     df = df.dropna(subset=["t", "cwnd", "cong_q", "cc_phase"]).reset_index(drop=True)
 
@@ -605,7 +623,7 @@ def main() -> int:
     configure_matplotlib()
     args.out.mkdir(parents=True, exist_ok=True)
 
-    full_df = load_log(args.logfile)
+    full_df = load_log(args.logfile, args.stream_fd)
     plot_df = downsample_preserve_switches(full_df, args.max_points)
 
     events = transition_table(full_df)
