@@ -1,71 +1,51 @@
-#include <sys/timerfd.h>
-#include <unistd.h>
 #include <stdint.h>
-#include <string.h>
 #include <stdio.h>
-#include <errno.h>
-#include <pthread.h>
+#include <time.h>
+
 #include "scp_time.h"
-#include "scp.h"
 
 uint32_t scp_clock = 0;
 
-static void *scp_time_thread(void *arg)
-{
-    int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
-    if (tfd < 0) {
-        perror("timerfd_create");
-        return NULL;
-    }
-
-    struct itimerspec its;
-    memset(&its, 0, sizeof(its));
-
-    its.it_interval.tv_sec  = 0;
-    its.it_interval.tv_nsec = 1 * 1000 * 1000;   /* 1ms */
-
-    its.it_value.tv_sec  = 0;
-    its.it_value.tv_nsec = 1 * 1000 * 1000;
-
-    if (timerfd_settime(tfd, 0, &its, NULL) < 0) {
-        perror("timerfd_settime");
-        close(tfd);
-        return NULL;
-    }
-
-    uint64_t exp = 0;
-
-    while (1) {
-        ssize_t n = read(tfd, &exp, sizeof(exp));
-        if (n != sizeof(exp)) {
-            if (n < 0 && errno == EINTR)
-                continue;
-            perror("read(timerfd)");
-            break;
-        }
-
-        scp_clock += (uint32_t)exp;
-    }
-
-    close(tfd);
-    return NULL;
-}
+static struct timespec scp_clock_start;
 
 int scp_time_init(void)
 {
-    pthread_t tid;
-    int ret = pthread_create(&tid, NULL, scp_time_thread, NULL);
-    if (ret != 0) {
-        errno = ret;
-        perror("pthread_create(scp_time_thread)");
+    if (clock_gettime(CLOCK_MONOTONIC, &scp_clock_start) != 0) {
+        perror("clock_gettime(CLOCK_MONOTONIC)");
         return -1;
     }
 
-    pthread_detach(tid);
+    scp_clock = 0;
     return 0;
 }
 
 uint32_t scp_now_time(void)
 {
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        perror("clock_gettime(CLOCK_MONOTONIC)");
+        return scp_clock;
+    }
+
+    int64_t sec =
+        (int64_t)now.tv_sec -
+        (int64_t)scp_clock_start.tv_sec;
+
+    int64_t nsec =
+        (int64_t)now.tv_nsec -
+        (int64_t)scp_clock_start.tv_nsec;
+
+    if (nsec < 0) {
+        sec--;
+        nsec += 1000000000LL;
+    }
+
+    uint64_t elapsed_ms =
+        (uint64_t)sec * 1000ULL +
+        (uint64_t)nsec / 1000000ULL;
+
+    scp_clock = (uint32_t)elapsed_ms;
+
     return scp_clock;
 }

@@ -20,7 +20,7 @@
 #define PACING_B_PORT 6100
 #define PACING_BYTES (8ULL * 1024ULL * 1024ULL)
 #define PACING_WRITE_SIZE (64U * 1024U)
-#define PACING_TIMEOUT_SEC 120U
+#define PACING_TIMEOUT_SEC 600U
 #define PACING_IDLE_US 100U
 
 struct pacing_tx_stats {

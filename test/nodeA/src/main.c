@@ -101,6 +101,7 @@ int main(int argc, char **argv)
     const char *duration;
     size_t i;
     int matched = 0;
+    int failures = 0;
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -125,8 +126,18 @@ int main(int argc, char **argv)
         matched = 1;
         printf("[runner] start %s\n", g_cases[i].name);
 
-        if (run_isolated(&g_cases[i], peer_ip, duration) != 0)
-            return 1;
+        if (run_isolated(&g_cases[i], peer_ip, duration) != 0) {
+            printf("{\"type\":\"case\",\"name\":\"%s\","
+                "\"status\":\"failed\"}\n",
+                g_cases[i].name);
+
+            failures++;
+
+            if (strcmp(selection, "all") != 0)
+                return 1;
+
+            continue;
+        }
 
         printf("[runner] finish %s\n", g_cases[i].name);
     }
@@ -136,5 +147,5 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    return 0;
+    return failures ? 1 : 0;
 }
