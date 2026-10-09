@@ -7,13 +7,15 @@ SCP is a compact, stream-oriented reliable transport protocol implemented over U
 SCP provides sequencing, ACK/SACK processing, retransmission, flow control, connection management, RTT/RTO estimation, and congestion control without depending on a kernel TCP stack. The project currently contains two interchangeable congestion controllers:
 
 - **SCP-PROB**: an experimental nonlinear controller that converts loss and RTT evidence into a continuous congestion-likelihood signal.
-- **AIMD**: a conventional baseline used for comparison and coexistence experiments.
+- **AIMD**: a conventional additive-increase, multiplicative-decrease controller, also used as the baseline in comparative experiments.
 
 The current implementation also includes a sender-side pacing layer. Packets admitted by the congestion window are assigned transmission times derived from `cwnd` and RTT, then released by the pacing timer.
 
-> **Project status:** SCP is a research prototype, not a production replacement for TCP. Its API, wire format, and congestion-control behavior may change. Current experiments have identified a serious fairness limitation under zero random loss; the limitation and the measurements are documented below.
+> **Project status:** SCP is under active development; its API and wire format may change. The transport core and the selectable congestion controllers are evaluated separately. The PROB-specific experimental results are documented below.
 
 The probability-driven controller is described in [SCP-PROB: Probability-Driven Nonlinear Congestion Control](./SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf).
+
+The pacing study, [Pacing and Congestion-Window Growth: An Exact Packet-Level Analysis](./Pacing_and_Congestion_Window_Growth.pdf), analyzes a specified per-ACK append scheduler. It is a mathematical model, not an exact description of the current SCP implementation. [Pacing_and_Congestion_Window_Growth.tex](./papers/pacing/Pacing_and_Congestion_Window_Growth.tex) is the sole manuscript source: upload it to Overleaf and compile with pdfLaTeX. Proofs, references, and the analytical figure are all included; no experiment package or external figures are required.
 
 ## Features
 
@@ -24,7 +26,7 @@ The probability-driven controller is described in [SCP-PROB: Probability-Driven 
 - RTT, RTT variance, and retransmission-timeout estimation
 - CONNECT/FIN connection lifecycle
 - Pluggable congestion-control callbacks
-- Probability-driven nonlinear controller and AIMD baseline
+- Selectable PROB and AIMD congestion controllers
 - Sender-side pacing based on `cwnd / RTT`
 - Red-black trees for timers and out-of-order receive buffers
 - Small C implementation intended to remain inspectable and portable
@@ -80,13 +82,13 @@ stateDiagram-v2
 
 ### SCP-PROB
 
-SCP-PROB replaces a purely binary congestion indication with a continuous signal built from loss deviation, RTT deviation, and their interaction. That signal drives nonlinear window increase and decrease.
+SCP-PROB combines a smoothed loss estimate with RTT measurements to form a residual congestion signal. A calibrated sigmoid and hysteresis determine whether its nonlinear control law increases or decreases the window.
 
-The design target is robust transmission in lossy or variable environments. The current implementation demonstrates useful high-loss behavior, but the controller does **not** yet provide reliable fairness in every environment. In particular, the zero-random-loss results below show that identical PROB flows can converge to a strongly asymmetric allocation and that PROB can be starved by AIMD.
+The design target is transmission in lossy or variable environments. In the zero-random-loss configuration reported below, two PROB flows received unequal shares, and PROB received a very small share when competing with AIMD. These observations concern the tested PROB controller and configuration; they do not establish a failure of the AIMD controller or SCP's reliable-transport mechanisms.
 
 ### AIMD
 
-The AIMD implementation is retained as a baseline. It uses conventional additive increase and multiplicative decrease behavior and is selected through the same congestion-control interface as SCP-PROB.
+AIMD is an independently selectable congestion controller using conventional additive increase and multiplicative decrease. It uses the same congestion-control interface as SCP-PROB, while applying its own window-update rules. It also serves as the baseline in the experiments below.
 
 ### Pacing
 
@@ -98,6 +100,13 @@ The pacing layer does not replace the congestion window:
 4. A 1 ms pacing timer sends every packet whose scheduled time has arrived.
 
 Multiple packets may be released in one timer tick when their calculated interval is below 1 ms or when the process wakes up late. The pacing integration test measures calls to the real transport `send` callback; it does not claim to measure physical wire-departure time after qdisc.
+
+### Pacing discussion notes
+
+The analysis asks how pacing changes ACK timing and window growth, and how that behavior depends on the pacing gain. Relevant ICCRG threads record the questions and implementation details considered during the work:
+
+- [Slow-start timing and comparison models](https://mailarchive.ietf.org/arch/msg/iccrg/K0LZfeCUDnp3Kj91dMx-0iPGef8/), including the distinction between [fixed-batch and per-ACK scheduling](https://mailarchive.ietf.org/arch/msg/iccrg/GSzlNebpiu6Gp1UTRZJISBRiIi8/) and [window limits versus pacing-rate limits](https://mailarchive.ietf.org/arch/msg/iccrg/6K-oKt8LfaaH1XQKzp62wfElujc/).
+- [Why Linux uses a slow-start pacing multiplier of 2](https://mailarchive.ietf.org/arch/msg/iccrg/ms7Nww2LvUBuDaUmOD71osmp8bI/). [Neal Cardwell's reply](https://mailarchive.ietf.org/arch/msg/iccrg/ERsHqvYQLs7cNCxOPw13U5Jl9sg/) provides paced/unpaced CUBIC timing diagrams and the BBR Startup gain derivation. The [follow-up question](https://mailarchive.ietf.org/arch/msg/iccrg/a59n7DRXZr4q6it_djAZh23wuas/) examines the assumptions behind a continuous-model calculation of `2 ln 2` and its relation to Linux's multiplier of 2.
 
 ## Build
 
@@ -251,9 +260,9 @@ The transferred 100 MiB file passed end-to-end hash verification.
 |---|---|
 | PROB vs PROB | 2.044 Mbit/s total; Jain index 0.999887; flow ratio 1.022:1 |
 
-These measurements expose an important unresolved behavior: random loss restores near-perfect fairness between the tested PROB flows, but at a large throughput cost. With zero random loss, the same controller can enter a persistent asymmetric allocation. This is an active research problem, not a solved property of the current controller.
+In this snapshot, the two PROB flows had near-equal shares at 10% random loss and unequal shares at zero random loss; aggregate goodput was lower in the loss case. PROB's allocation behavior and coexistence with AIMD need further investigation. The tables report controller-specific throughput and sharing separately from the transport's file-integrity checks.
 
-In test output, `"status":"success"` means only that the case completed without a protocol or integrity failure. It does **not** mean that fairness or performance passed an acceptance threshold.
+In test output, `"status":"success"` records successful case execution and the applicable protocol/integrity checks. Throughput and fairness are reported as separate measurements.
 
 ## Analysis
 
@@ -295,7 +304,7 @@ SCP is useful for:
 
 Current limitations include:
 
-- unresolved zero-random-loss fairness and AIMD coexistence;
+- the tested PROB configuration has unresolved sharing behavior at zero random loss, including when competing with AIMD;
 - no production security layer, authentication, or encryption in the protocol core;
 - no claim of TCP compatibility;
 - no stable wire-format or API guarantee;
@@ -303,17 +312,15 @@ Current limitations include:
 
 ## AI assistance disclosure
 
-The protocol direction, congestion-control model, mathematical formulation, architecture, and experiment questions are defined by the project maintainer.
+The author, **Skai Uijing**, describes the division of work as follows:
 
-Recent work used AI assistance in a limited but material way:
+- **Protocol code:** `scp.c` and `scp.h` were written primarily by the author. AI assisted with review and error checking, and with work on the pacing mechanism.
+- **Tests and plotting:** most test code, including large-file transfer tests, was generated by AI and checked by the author for validity and suitability. The plotting scripts were also generated by AI.
+- **SCP-PROB paper and control design:** the probability-driven design, residual algorithm, and the project's AIMD control-loop design are the author's work. This does not claim invention of AIMD itself. AI assisted with translation and writing, and with checking parts of the mathematical arguments, including Bayesian reasoning and fairness. Such assistance does not establish those claims as proved.
+- **Pacing research:** the author proposed the sandwich comparison and the idea that very large pacing gain approaches burst sending, whereas too little gain slows window growth. The author also proposed investigating a gain that preserves window growth without increasingly concentrating packet transmissions. This is the motivation for the analysis, not a general guarantee for every pacer.
+- **Further modeling and derivations:** GPT 6 ASTRA proposed the differential-equation analysis, rate-based modeling, and other extended analyses beyond the author's ideas described above. Because of the volume of generated material, the author has not yet independently verified all of these analyses and their derivations. Readers should critically assess their assumptions, proofs, and applicability, including those in the pacing manuscript. AI checking is not a substitute for the author's verification or independent review.
 
-- the maintainer supplied the pacing design, constraints, and source-level pseudocode;
-- AI tools assisted with C-code completion, review suggestions, regression-harness organization, and documentation editing;
-- the unified test dispatcher and the dedicated pacing test contain AI-assisted code;
-- historical single-flow and fairness test bodies were restored from named Git commits, with their entry points renamed for the unified runner;
-- this README was rewritten with AI assistance.
-
-AI output is not treated as experimental evidence. Code accepted into the project is manually reviewed by the maintainer and tested on the real Linux network-namespace setup. Reported results come from runtime logs and file-integrity checks. The Git history and raw test artifacts should be used to audit provenance.
+This README was edited with AI assistance. Reported experimental measurements come from runtime logs and file-integrity checks, not from AI-generated assertions. Code review, experimental evidence, and verification of mathematical claims are separate activities; none should be inferred from another.
 
 ## License
 
