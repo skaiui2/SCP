@@ -19,6 +19,63 @@ through SCP. A compares the reply, closes, and both require completed closure.
 Generated-data mode creates no payload files. Transfers default to 1 GiB; use a different byte
 count for 10 GiB or 100 GiB. Sender backlog is limited to about 1 MiB.
 
+## Test design and environments
+
+The test system asks three separate questions: whether the byte stream and connection lifecycle complete correctly, how the protocol behaves under configured network conditions, and what throughput or sharing is observed. A functional pass does not establish a throughput target or fairness guarantee.
+
+### Architecture
+
+```text
+CTest / run.py / virtual/sweep.py
+               |
+        transfer workload
+      common/transfer.c
+               |
+         actual SCP core
+               |
+    +----------+-----------+
+    |                      |
+virtual/vnet.c       common/udp_runner.c
+seeded packet        sockets, real clock,
+scheduler and        separate endpoint
+simulated clock      processes
+    |                      |
+configured link      localhost / Linux netem / real path
+
+core JSON logs -> original analyze_scp.py -> per-connection plots
+case summaries -> sweep merge/report -> aggregate tables and overview
+```
+
+- `common/transfer.c` owns the shared generated-data workload, receive validation, checksum reply, and close progression. File transfers reuse the UDP/SCP path with input/output files. Fairness runs add a timed two-flow workload; short CTest competition runs check liveness.
+- `virtual/vnet.c` owns packet delivery and link conditions, not retransmission or congestion control. Those remain in SCP. Virtual time advances in 1 ms steps: timers, A-to-B arrivals, B-to-A arrivals, then applications. The model serializes packets before propagation and applies seeded random loss to DATA and control traffic in both directions; it has no finite queue, duplication, or deliberate reordering model.
+- `common/udp_runner.c` and `common/real_clock.c` provide real sockets and time. `run.py` starts the receiver before the sender, checks endpoint results, and organizes logs, file hashes, and plots. Localhost tests exercise OS networking but impose no WAN link constraints.
+- Focused virtual cases exercise lifecycle, allocation failure, control-packet loss, and closure. Bulk transfers and sweeps reuse the shared workload rather than separate transfer implementations.
+- `virtual/sweep.py` reads the single `network_sweep.json` grid, runs cases with explicit configurations and seeds, and merges results. GitHub distributes the grid across eight shards. Each case and connection retains its own core-state plots; the aggregate overview supplements them.
+
+### Environment and pass criteria
+
+Build with CMake and a C99 compiler. Real UDP checks require Python 3; plotting requires matplotlib, numpy, and pandas. CTest disables plotting. Windows uses the compatibility headers and Winsock; Linux uses its native UDP sockets. The default protocol-log interval is 100 ms and is configurable at build time. Virtual time and real elapsed time must be labeled separately in reports.
+
+Generated-data transfers validate the ordered bytes and compare FNV-1a-64 stream checksums returned through SCP. File runs additionally require equal lengths and SHA-256 hashes. Successful completion requires the applicable integrity checks and completed closure at both endpoints, without failure or timeout. Focused cases check their own state and resource conditions. Pacing statistics describe transport-send callback timing; fairness statistics should use receiver-delivered bytes over the shared measurement interval.
+
+For reproducibility, retain the commit, OS/compiler, build configuration, controller, byte count or duration, rate, one-way delay, loss, seed where applicable, and timeouts. Keep logs and failure reports as well as successful results. The Linux CI workflow currently runs functional checks, separate 1 GiB virtual and localhost file transfers, and configured virtual sweeps; it does not run the namespace/netem setup.
+
+### Earlier Linux netem experiments
+
+`setup_scp_netns.sh` creates a routed `scp-c ↔ scp-r ↔ scp-s` topology using two veth pairs. The router forwards IP traffic and applies netem on both egress interfaces, so each direction has independently configured rate, one-way delay, random loss, and packet queue limit. The script attempts to disable interface offloads when `ethtool` is available. Setup requires Linux, root privileges, `ip` and `tc`; it recreates the named SCP namespaces.
+
+The earlier validation snapshot in the main README used 5 Mbit/s per direction, 50 ms one-way delay, a 1000-packet queue, 100 MiB file transfers, and 300-second fairness measurements. The zero-loss and 10% random-loss observations are historical measurements, not results newly produced by the current CI. netem exercises real UDP/IP, qdisc queues and process scheduling under emulated impairments. It differs from the virtual model and from an actual intercontinental path.
+
+```sh
+sudo bash setup_scp_netns.sh setup 5mbit 50ms 0% 1000
+sudo bash setup_scp_netns.sh ping
+sudo bash setup_scp_netns.sh show
+sudo python3 test/run.py test/build/scp_udp --netns --file testA.bin --timeout 3600 --out test/results/netem-file
+sudo bash setup_scp_netns.sh clean
+```
+
+Prepare an existing nonempty input file first; its length determines the transfer size. Save `show` output with the experiment to record topology and qdisc statistics. Repeat setup with the desired loss (for example `10%`) for a separate condition and use a distinct output directory. Goodput, callback pacing, and receiver fairness are separate measurements; none alone proves the transport correct.
+
 ## File transfer on real Linux networking
 
 The file test uses the same UDP/SCP receive and send path as the generated-data
@@ -151,7 +208,7 @@ Eight virtual-network shards sweep configured parameters. The report job uses
 the original analyzer in each sweep shard to draw every case's core-state curves;
 the report job adds the sweep overview; download `network-report` for the plots. Local Linux real
 network tests remain available (`ctest --test-dir test/build -L real`).
-Relevant pushes run quick; manual runs select larger profiles. Missing cases in recovered shards or failed
+Relevant pushes run `scenarios`; manual runs can select any configured profile. Missing cases in recovered shards or failed
 case reports make the merge step fail.
 
 ## State logs and regression checks
