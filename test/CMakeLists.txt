@@ -23,8 +23,13 @@ if(SCP_TEST_TRANSFER)
     common/real_clock.c common/transfer.c ../scp.c)
   scp_test_target(test_lifecycle virtual/case_lifecycle.c common/transfer.c)
   scp_test_target(test_close virtual/case_close.c virtual/vnet.c common/transfer.c ../scp.c)
+  scp_test_target(test_handshake virtual/case_handshake.c virtual/vnet.c common/transfer.c ../scp.c)
   enable_testing()
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  foreach(drops 1 2)
+    add_test(NAME handshake_ack_loss_${drops} COMMAND test_handshake ${drops})
+    set_tests_properties(handshake_ack_loss_${drops} PROPERTIES LABELS virtual TIMEOUT 30)
+  endforeach()
     add_test(NAME udp_transfer COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:scp_udp>
       --no-plot --bytes 8388625 --out ${CMAKE_CURRENT_BINARY_DIR}/results/udp)
