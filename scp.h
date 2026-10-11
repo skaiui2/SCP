@@ -169,6 +169,8 @@ struct scp_stream {
     uint32_t iss;                       // initial send seq
     uint32_t irs;                       // initial recv seq
     uint8_t retry;                      // handshake/FIN retry count
+    uint8_t close_pending;
+    uint8_t peer_fin;
 
     uint32_t cwnd;                      // congestion window
     uint8_t dup_acks;                   // duplicate ACK counter

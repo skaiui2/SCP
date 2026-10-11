@@ -7,6 +7,7 @@
 static void scp_send_window_probe(struct scp_stream *ss);
 static void scp_retransmit(struct scp_stream *ss);
 static int scp_output(struct scp_stream *ss);
+static void scp_finish_close(struct scp_stream *ss);
 static void scp_pacing_timer_cb(void *arg);
 static int scp_install_cc(struct scp_stream *ss,
                           enum scp_cc_id cc_id);
@@ -198,11 +199,6 @@ void *scp_malloc(size_t want_size)
 void scp_free(void *ptr)
 {
     free(ptr);
-}
-
-void scp_timer_init(void)
-{
-    rb_root_init(&scp_timer_tree);
 }
 
 void scp_timer_node_init(struct scp_timer *t)
@@ -432,6 +428,9 @@ static void scp_buf_free(struct scp_stream *ss, struct scp_buf *b)
 */
 struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int src_fd, int dst_fd)
 {
+    if (hashmap_get(&scp_stream_map, (void *)(uintptr_t)src_fd))
+        return NULL;
+
     struct scp_stream *ss = scp_malloc(sizeof(struct scp_stream));
     if (!ss) {
         return NULL;
@@ -500,6 +499,23 @@ int scp_stream_free(struct scp_stream *ss)
     scp_timer_remove(&ss->t_fin);
     scp_timer_remove(&ss->t_pacing);
 
+    while (!list_empty(&ss->snd_q)) {
+        struct scp_buf *sb = container_of(ss->snd_q.next, struct scp_buf, list);
+        list_remove(&sb->list);
+        scp_buf_free(ss, sb);
+    }
+    while (!list_empty(&ss->rcv_data_q)) {
+        struct scp_buf *sb = container_of(ss->rcv_data_q.next, struct scp_buf, list);
+        list_remove(&sb->list);
+        scp_buf_free(ss, sb);
+    }
+    while (ss->rcv_buf_q.rb_node) {
+        struct rb_node *node = rb_first(&ss->rcv_buf_q);
+        struct scp_buf *sb = container_of(node, struct scp_buf, rb);
+        rb_remove_node(&ss->rcv_buf_q, node);
+        scp_buf_free(ss, sb);
+    }
+
     list_remove(&ss->node);
     hashmap_remove(&scp_stream_map, (void *)(uintptr_t)(ss->src_fd));
 
@@ -514,6 +530,7 @@ int scp_stream_free(struct scp_stream *ss)
 */
 int scp_init(size_t max_streams)
 {
+    rb_root_init(&scp_timer_tree);
     list_node_init(&scp_stream_queue);
     hashmap_init(&scp_stream_map, max_streams, HASHMAP_KEY_INT);
     return 0;
@@ -738,6 +755,7 @@ static void scp_handle_handshake_timeout(void *arg)
     ss->state = SCP_CLOSED;
 
     scp_timer_delete(&ss->t_hs);
+    scp_stream_free(ss);
 }
 
 static void scp_handle_fin_timeout(void *arg)
@@ -767,6 +785,27 @@ static void scp_handle_fin_timeout(void *arg)
 
     scp_timer_delete(&ss->t_fin);
     scp_stream_free(ss);
+}
+
+static void scp_handle_close_drain_timeout(void *arg)
+{
+    struct scp_stream *ss = arg;
+    ss->state = SCP_CLOSED;
+    scp_stream_free(ss);
+}
+
+static void scp_finish_close(struct scp_stream *ss)
+{
+    if (!ss->close_pending || ss->state != SCP_ESTABLISHED ||
+        !list_empty(&ss->snd_q) || ss->snd_una != ss->snd_seq_q)
+        return;
+
+    ss->state = ss->peer_fin ? SCP_LAST_ACK : SCP_FIN_WAIT;
+    ss->retry = 0;
+    scp_timer_delete(&ss->t_pacing);
+    scp_timer_delete(&ss->t_retrans);
+    scp_timer_create(&ss->t_fin, scp_handle_fin_timeout, ss, ss->rto);
+    scp_output_fin_first(ss);
 }
 
 /*
@@ -1123,6 +1162,7 @@ out:
     if (!list_empty(&ss->snd_q)) {
         scp_output(ss);
     }
+    scp_finish_close(ss);
 }
 
 /*
@@ -1362,40 +1402,61 @@ int scp_send(int fd, void *buf, size_t len)
 {
     struct scp_stream *ss = hashmap_get(&scp_stream_map, (void *)(uintptr_t)fd);
     if (!ss) return -1;
-    if (ss->state != SCP_ESTABLISHED) return -1;
+    if (ss->state != SCP_ESTABLISHED || ss->close_pending) return -1;
+    if (!len) return 0;
+    if (!buf) return -1;
 
     uint32_t flight = ss->snd_nxt - ss->snd_una;
     uint32_t win = ss->snd_wnd;
     if (flight >= win) return SCP_ERR_NOBUF;
 
-    uint32_t off = 0;
+    struct list_node pending;
+    size_t off = 0;
+    size_t count = len / MSS + (len % MSS != 0);
+    size_t overhead = sizeof(struct scp_buf) + sizeof(struct scp_hdr);
+    size_t required;
+    if (len > SEND_MEM_MAX || count > (SEND_MEM_MAX - len) / overhead)
+        return SCP_ERR_NOBUF;
+    required = len + count * overhead;
+    if (required > SEND_MEM_MAX - ss->snd_wmem)
+        return SCP_ERR_NOBUF;
+    list_node_init(&pending);
     while (off < len) {
         uint32_t frag = (len - off > MSS) ? MSS : (uint32_t)(len - off);
         uint32_t total = sizeof(struct scp_buf) + sizeof(struct scp_hdr) + frag;
 
-        if (ss->snd_wmem + total > SEND_MEM_MAX) return SCP_ERR_NOBUF;
-        ss->snd_wmem += total;
-
         struct scp_buf *sb = scp_buf_alloc(total);
-        if (!sb) return SCP_ERR_NOMEM;
+        if (!sb) {
+            while (!list_empty(&pending)) {
+                struct scp_buf *p = container_of(pending.next, struct scp_buf, list);
+                list_remove(&p->list);
+                scp_free(p);
+            }
+            return SCP_ERR_NOMEM;
+        }
 
-        sb->data = (uint8_t *)sb + sizeof(struct scp_buf);
         sb->len  = sizeof(struct scp_hdr) + frag;
-        sb->seq  = ss->snd_seq_q;
+        sb->seq  = ss->snd_seq_q + (uint32_t)off;
         sb->dir = SCP_DIR_SEND;
-
-        ss->snd_seq_q += frag;
 
         uint8_t *pure = sb->data + sizeof(struct scp_hdr);
         memcpy(pure, (uint8_t *)buf + off, frag);
+        queue_enqueue(&pending, &sb->list);
+
+        off += frag;
+    }
+    while (!list_empty(&pending)) {
+        struct scp_buf *sb = container_of(pending.next, struct scp_buf, list);
+        list_remove(&sb->list);
         queue_enqueue(&ss->snd_q, &sb->list);
         ss->snd_q_count++;
 
         if (!ss->schedule_next)
             ss->schedule_next = sb;
 
-        off      += frag;
     }
+    ss->snd_seq_q += (uint32_t)len;
+    ss->snd_wmem += (uint32_t)required;
 
     scp_output(ss);
     return 0;
@@ -1557,16 +1618,8 @@ static void scp_est_process(struct scp_stream *ss,
         ss->rcv_nxt = seq + 1;
         scp_output_ack(ss, NULL);
 
-        ss->state = SCP_LAST_ACK;
-        ss->retry = 0;
-
-        scp_timer_create(&ss->t_fin,
-            scp_handle_fin_timeout,
-            ss,
-            ss->rto
-        );
-
-        scp_output_fin_first(ss);
+        ss->peer_fin = 1;
+        scp_close(ss->src_fd);
         scp_buf_free(ss, sb);
         return;
     }
@@ -1590,8 +1643,7 @@ static void scp_fin_wait_process(struct scp_stream *ss,
     }
 
     if (sh->flags & SCP_FLAG_DATA) {
-        scp_output_ack(ss, sh);
-        scp_buf_free(ss, sb);
+        scp_process_data(ss, sb);
         return;
     }
 
@@ -1654,9 +1706,14 @@ int scp_input(void *ctx, void *buf, size_t len)
     struct scp_stream *ss;
     uint32_t total;
 
+    if (!buf || len < sizeof(struct scp_hdr) || len > MTU)
+        return SCP_ERR_GENERIC;
+
     scp_debug_dump_rx(buf, len);
 
     sh = (struct scp_hdr *)buf;
+    if (ntohs(sh->len) != len - sizeof(struct scp_hdr))
+        return SCP_ERR_GENERIC;
 
     uint16_t calc = in_checksum(buf, len);
     if (calc != 0) return -1;
@@ -1672,12 +1729,12 @@ int scp_input(void *ctx, void *buf, size_t len)
     if (ss->rcv_wmem + total > RECV_MEM_MAX)
         return SCP_ERR_NOBUF;
 
-    ss->rcv_wmem += total;
-    ss->last_active = scp_now_time(); 
-    ss->idle_failures = 0;
-
     sb = scp_buf_alloc(total);
     if (!sb) return SCP_ERR_NOMEM;
+
+    ss->rcv_wmem += total;
+    ss->last_active = scp_now_time();
+    ss->idle_failures = 0;
 
     memcpy(sb->data, buf, len);
     sb->len = len;
@@ -1721,17 +1778,12 @@ void scp_close(int fd)
     switch (ss->state) {
 
     case SCP_ESTABLISHED:
-        ss->state = SCP_FIN_WAIT;
-        ss->retry = 0;
-
-        scp_timer_delete(&ss->t_fin);
-        scp_timer_create(&ss->t_fin,
-            scp_handle_fin_timeout,
-            ss,
-            ss->rto
-        );
-
-        scp_output_fin_first(ss);
+        if (!ss->close_pending) {
+            ss->close_pending = 1;
+            scp_timer_create(&ss->t_fin, scp_handle_close_drain_timeout,
+                             ss, IDLE_TIMEOUT);
+        }
+        scp_finish_close(ss);
         break;
 
     case SCP_SYN_SENT:
@@ -1807,7 +1859,7 @@ int scp_is_closed(int fd)
         hashmap_get(&scp_stream_map,
                     (void *)(uintptr_t)fd);
 
-    return ss == NULL;
+    return ss == NULL || ss->state == SCP_CLOSED;
 }
 
 
