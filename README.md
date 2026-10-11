@@ -116,7 +116,7 @@ One CMake configuration builds all tests. Real UDP and virtual-network tests sha
 cmake -S test -B test/build -DCMAKE_BUILD_TYPE=Release
 cmake --build test/build -j
 ctest --test-dir test/build --output-on-failure
-python3 test/common/check_udp.py test/build/scp_udp --out test/results/udp-1g
+python3 test/run.py test/build/scp_udp --out test/results/udp-1g
 ```
 
 The default transfer is 1 GiB. See [test instructions](test/README.md) for network sweeps and fairness measurements.
@@ -168,12 +168,18 @@ In test output, `"status":"success"` records successful case execution and the a
 
 ## Analysis
 
-`test/plot.py` accepts a virtual result directory, a sweep report directory, or an SCP JSONL state log. Enable `SCP_DUMP_SS` to produce state logs. It plots recorded numeric fields, residual-delay phase portraits and controller transitions; it does not infer obsolete controller thresholds.
+Test builds enable the protocol's own JSON state printer, sampled every 100 ms.
+`test/run.py` saves logs and plots automatically (requires matplotlib). Real Linux
+file transfer and virtual-network runs are separate:
 
 ```sh
-python3 test/plot.py test/results/sweep
-python3 test/plot.py A.log --stream-fd 1 --out plots
+sudo python3 test/run.py test/build/scp_udp --netns --file testA.bin --timeout 3600 --out test/results/linux-file
+python3 test/run.py test/build/scp_virtual --backend virtual --out test/results/virtual-1g
 ```
+
+Create the namespace topology before the file run. The file test writes
+`received.bin`, checks both files' SHA-256 and saves endpoint logs and curves.
+See [test instructions](test/README.md) for setup and output locations.
 
 ## Intended uses and limitations
 

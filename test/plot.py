@@ -50,7 +50,7 @@ def plot_samples(directory):
     save(fig, directory / 'curves.png')
 
 
-def plot_log(path, out, stream_fd, max_points):
+def plot_log(path, out, stream_fd, max_points, fields=False):
     streams = {}
     with path.open(encoding='utf-8') as f:
         for line in f:
@@ -73,14 +73,36 @@ def plot_log(path, out, stream_fd, max_points):
         indices = sorted(indices)
         sampled = [rows[i] for i in indices]
         sample_times = [times[i] for i in indices]
+        fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
+        for key in ('cwnd', 'flight', 'reserved'):
+            axes[0].plot(sample_times, [row.get(key, 0) / 1024 for row in sampled], label=key)
+        axes[0].set_ylabel('KiB'); axes[0].legend()
+        for key in ('srtt', 'rto'):
+            axes[1].plot(sample_times, [row.get(key, 0) for row in sampled], label=key)
+        axes[1].set_ylabel('Milliseconds'); axes[1].legend()
+        for key, label in [('snd_una', 'Acknowledged'), ('rcv_nxt', 'Received in order')]:
+            base = 'iss' if key == 'snd_una' else 'irs'
+            progress, prev, total = [], 0, 0
+            for row in rows:
+                current = (row.get(key, 0) - row.get(base, 0)) % 2**32
+                total += (current - prev) % 2**32
+                prev = current; progress.append(total)
+            axes[2].plot(sample_times, [progress[i] / 2**20 for i in indices], label=label)
+            pairs = [(a, b) for a, b in zip(indices, indices[1:]) if times[b] > times[a]]
+            axes[3].plot([times[b] for a, b in pairs], [(progress[b] - progress[a]) * 8 / ((times[b] - times[a]) * 1000000) for a, b in pairs], label=label)
+        axes[2].set_ylabel('Sequence progress MiB'); axes[2].legend()
+        axes[3].set(ylabel='Sequence progress Mbps', xlabel='Seconds'); axes[3].legend()
+        axes[0].set_title(f'{path.stem}: SCP stream {fd}')
+        for ax in axes: ax.grid(alpha=0.3)
+        save(fig, out / f'flow{fd}_curves.png')
         keys = sorted({k for row in rows for k, value in row.items() if isinstance(value, (int, float))} - {'t', 'stream_fd'})
-        for key in keys:
+        for key in keys if fields else []:
             fig, ax = plt.subplots(figsize=(9, 3))
             ax.plot(sample_times, [row.get(key, float('nan')) for row in sampled])
             ax.set(xlabel='Seconds', ylabel=key, title=f'Stream {fd}')
             ax.grid(alpha=0.3)
             save(fig, out / f'flow{fd}_{key}.png')
-        if all('cwnd' in row and 'd' in row for row in rows):
+        if fields and all('cwnd' in row and 'd' in row for row in rows):
             fig, ax = plt.subplots(figsize=(6, 4))
             ax.scatter([row['cwnd'] / 1024 for row in sampled], [row['d'] / 65536 for row in sampled], s=2)
             ax.set(xlabel='cwnd KiB', ylabel='Residual delay (ms)')
@@ -96,8 +118,25 @@ parser.add_argument('input', type=Path)
 parser.add_argument('--out', type=Path, default=Path('plots'))
 parser.add_argument('--stream-fd', type=int)
 parser.add_argument('--max-points', type=int, default=10000)
+parser.add_argument('--fields', action='store_true', help='Also plot every recorded state field')
+parser.add_argument('--recursive', action='store_true', help='Plot each completed sweep case')
 args = parser.parse_args()
 if args.max_points < 1: parser.error('--max-points must be positive')
-if args.input.is_file(): plot_log(args.input, args.out, args.stream_fd, args.max_points)
-elif (args.input / 'sweep.csv').exists(): plot_sweep(args.input)
-else: plot_samples(args.input)
+def plot_directory(directory):
+    if (directory / 'samples.csv').exists(): plot_samples(directory)
+    for path in (directory / 'A.log', directory / 'B.log', directory / 'run.log'):
+        if path.exists():
+            plot_log(path, directory / path.stem, args.stream_fd, args.max_points, args.fields)
+
+if args.input.is_file():
+    plot_log(args.input, args.out, args.stream_fd, args.max_points, args.fields)
+else:
+    if (args.input / 'sweep.csv').exists(): plot_sweep(args.input)
+    elif not args.recursive: plot_directory(args.input)
+    if args.recursive:
+        for summary in sorted(args.input.rglob('summary.json')):
+            directory = summary.parent
+            if not (directory / 'samples.csv').exists(): continue
+            plot_directory(directory)
+            print(f'Case curves: {directory}')
+print(f'Plots written under {args.out if args.input.is_file() else args.input}')

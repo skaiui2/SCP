@@ -24,7 +24,12 @@ struct scp_timer {
 
 //Set by yourself.
 #define SCP_DEBUG 0
+#ifndef SCP_DUMP_SS
 #define SCP_DUMP_SS 0
+#endif
+#ifndef SCP_DUMP_INTERVAL_MS
+#define SCP_DUMP_INTERVAL_MS 100U
+#endif
 #define SCP_RUN_DEBUG 0
 #define SCP_DUMP_HDR  0
 

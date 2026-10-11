@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.12)
 project(scp_tests C)
 set(CMAKE_C_STANDARD 99)
+set(SCP_TEST_LOG_INTERVAL_MS 100 CACHE STRING "Protocol state log interval in milliseconds")
 option(SCP_TEST_TRANSFER "Build generated-data transfer test" ON)
 if(SCP_TEST_TRANSFER)
   set(SCP_DATASTRUCT
@@ -8,6 +9,7 @@ if(SCP_TEST_TRANSFER)
     ../lib/src/queue.c ../lib/src/rbtree.c)
   function(scp_test_target target)
     add_executable(${target} ${ARGN} ${SCP_DATASTRUCT})
+    target_compile_definitions(${target} PRIVATE SCP_DUMP_SS=1 SCP_DUMP_INTERVAL_MS=${SCP_TEST_LOG_INTERVAL_MS})
     target_include_directories(${target} PRIVATE .. ../lib/include)
     if(WIN32)
       target_include_directories(${target} PRIVATE virtual/compat)
@@ -24,28 +26,34 @@ if(SCP_TEST_TRANSFER)
   enable_testing()
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(NAME udp_transfer COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/common/check_udp.py $<TARGET_FILE:scp_udp>
-      --bytes 8388625 --out ${CMAKE_CURRENT_BINARY_DIR}/results/udp)
-    set_tests_properties(udp_transfer PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+      ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:scp_udp>
+      --no-plot --bytes 8388625 --out ${CMAKE_CURRENT_BINARY_DIR}/results/udp)
+    set_tests_properties(udp_transfer PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS real)
     foreach(mode prob pacing prob-prob prob-aimd)
       add_test(NAME udp_${mode} COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/common/check_udp.py $<TARGET_FILE:scp_udp>
-        --bytes 8388625 --mode ${mode} --seconds 3
+        ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:scp_udp>
+        --no-plot --bytes 8388625 --mode ${mode} --seconds 3
         --out ${CMAKE_CURRENT_BINARY_DIR}/results/udp-${mode})
-      set_tests_properties(udp_${mode} PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+      set_tests_properties(udp_${mode} PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS real)
     endforeach()
+  add_test(NAME udp_file COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:scp_udp>
+    --file-test --bytes 8388625 --no-plot
+    --out ${CMAKE_CURRENT_BINARY_DIR}/results/udp-file)
+  set_tests_properties(udp_file PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS real)
   foreach(case lifecycle close)
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
       target_compile_options(test_${case} PRIVATE -UNDEBUG)
     endif()
     add_test(NAME ${case} COMMAND test_${case})
+    set_tests_properties(${case} PROPERTIES LABELS virtual)
   endforeach()
   file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/smoke
     ${CMAKE_CURRENT_BINARY_DIR}/results/loss)
   add_test(NAME transfer_smoke COMMAND scp_virtual --bytes 8388625)
   set_tests_properties(transfer_smoke PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/smoke)
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/smoke LABELS virtual)
   add_test(NAME transfer_loss COMMAND scp_virtual --bytes 8388625 --loss-ppm 1000 --seed 7)
   set_tests_properties(transfer_loss PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/loss)
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/loss LABELS virtual)
 endif()

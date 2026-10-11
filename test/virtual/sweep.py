@@ -11,17 +11,20 @@ from report import write_report
 
 if len(sys.argv) == 3 and sys.argv[1] == "--merge":
     root = Path(sys.argv[2])
-    rows, expected = [], 0
+    rows, expected, total_planned = [], 0, 0
     for directory in sorted(root.glob("shard-*")):
         plan = directory / "plan.json"
         if plan.exists():
-            expected += len(json.loads(plan.read_text())["cases"])
+            metadata = json.loads(plan.read_text())
+            expected += len(metadata["cases"])
+            total_planned = max(total_planned, metadata.get("total_cases", 0))
         path = directory / "sweep.csv"
         if path.exists():
             with path.open() as f:
                 rows.extend(csv.DictReader(f))
     if not rows:
         raise SystemExit("No completed shard reports found")
+    expected = total_planned or expected
     passed = write_report(root, rows, expected)
     raise SystemExit(0 if passed == expected else 1)
 
@@ -52,7 +55,7 @@ cases = cases[args.shard_index::args.shard_count]
 print(f"Profile {args.profile}: {total_cases} cases; shard {args.shard_index}/{args.shard_count}: {len(cases)} cases", flush=True)
 if args.list:
     raise SystemExit(0)
-(out / "plan.json").write_text(json.dumps({"settings": settings, "cases": cases}, indent=2))
+(out / "plan.json").write_text(json.dumps({"settings": settings, "cases": cases, "total_cases": total_cases, "profile": args.profile}, indent=2))
 
 def run(case):
     rate, delay, loss, size, seed = (case[k] for k in ("mbps", "delay_ms", "loss_ppm", "bytes", "seed"))
