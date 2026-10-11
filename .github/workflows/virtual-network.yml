@@ -1,0 +1,58 @@
+name: SCP virtual network
+on:
+  push:
+    paths: ['scp.c', 'scp.h', 'lib/**', 'test/virtual/**', '.github/workflows/virtual-network.yml']
+  pull_request:
+    paths: ['scp.c', 'scp.h', 'lib/**', 'test/virtual/**', '.github/workflows/virtual-network.yml']
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Network sweep profile
+        type: choice
+        default: broad
+        options: [quick, broad, large, stress]
+permissions:
+  contents: read
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S test/virtual -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
+      - run: ctest --test-dir build --output-on-failure
+      - name: Sweep configured network environments
+        env:
+          PROFILE: ${{ inputs.profile || 'quick' }}
+        run: python3 test/virtual/sweep.py build/scp_virtual --config test/virtual/network_sweep.json --profile "$PROFILE" --shard-index ${{ matrix.shard }} --shard-count 8 --jobs 2 --out results/shard-${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: network-shard-${{ matrix.shard }}
+          path: results/
+          retention-days: 14
+  report:
+    needs: sweep
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: network-shard-*
+          merge-multiple: true
+          path: results
+      - run: python3 test/virtual/merge_sweep.py results
+      - run: pip install matplotlib
+      - run: python3 test/virtual/plot_sweep.py results
+      - run: cat results/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: network-report
+          path: results/
+          retention-days: 14
