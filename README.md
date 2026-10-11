@@ -2,7 +2,7 @@
 
 [中文说明](./docs/中文/README中文.md)
 
-SCP is a compact, stream-oriented reliable transport protocol implemented over UDP or another unreliable packet transport. It is designed for protocol research, user-space networking, embedded systems, and environments where the transport behavior must remain visible and easy to modify.
+SCP is a compact, stream-oriented reliable transport protocol implemented over UDP or another unreliable packet transport. The project focuses on network transport research: exploring reliable delivery, congestion control, pacing, and connection behavior with an inspectable C implementation.
 
 SCP provides sequencing, ACK/SACK processing, retransmission, flow control, connection management, RTT/RTO estimation, and congestion control without depending on a kernel TCP stack. The project currently contains two interchangeable congestion controllers:
 
@@ -12,6 +12,8 @@ SCP provides sequencing, ACK/SACK processing, retransmission, flow control, conn
 The current implementation also includes a sender-side pacing layer. Packets admitted by the congestion window are assigned transmission times derived from `cwnd` and RTT, then released by the pacing timer.
 
 > **Project status:** SCP is under active development; its API and wire format may change. The transport core and the selectable congestion controllers are evaluated separately. The PROB-specific experimental results are documented below.
+
+## Research papers
 
 The probability-driven controller is described in [SCP-PROB: Probability-Driven Nonlinear Congestion Control](./SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf).
 
@@ -36,24 +38,16 @@ The pacing study, [Pacing and Congestion-Window Growth: An Exact Packet-Level An
 ```text
 scp.c / scp.h                  protocol core
 lib/                           intrusive containers and data structures
-test/                         shared UDP and virtual-network tests
-setup_scp_netns.sh             reproducible network-namespace topology
-test/plot.py                  curves and state-log analysis
+test/common/                   shared transfer logic and real UDP runner
+test/virtual/                  virtual network, functional tests and sweeps
+test/run.py                    paired transfers, validation and saved results
+test/plot.py                   plotting entry point and sweep overview
+test/analyze_scp.py / fig.py    original state-log analyzer and publication figures
+.github/workflows/             Linux transfers and virtual-network CI
+setup_scp_netns.sh             Linux network-namespace topology
+papers/pacing/                 pacing manuscript source
 docs/                          user documentation
 ```
-
-The protocol core sends packets through a user-provided transport callback:
-
-```c
-struct scp_transport_class {
-    int (*send)(void *user, const void *buf, size_t len);
-    int (*recv)(void *user, void *buf, size_t maxlen);
-    int (*close)(void *user);
-    void *user;
-};
-```
-
-This makes the core independent of a particular UDP wrapper or network device.
 
 ## Connection state machine
 
@@ -119,7 +113,30 @@ ctest --test-dir test/build --output-on-failure
 python3 test/run.py test/build/scp_udp --out test/results/udp-1g
 ```
 
-The default transfer is 1 GiB. See [test instructions](test/README.md) for network sweeps and fairness measurements.
+The default standalone transfer is 1 GiB. See [test instructions](test/README.md) for dependencies, file transfers, network sweeps, and fairness measurements.
+
+### Current test system
+
+- **Functional and integrity checks:** CTest registers 12 checks covering connection lifecycle, control-packet loss, allocation failure, closure, generated-data and file transfers, PROB/AIMD operation, pacing observations, and two-flow smoke checks.
+- **Shared transfer logic:** real UDP and virtual-network runs use the same transfer implementation. Generated data is checked byte by byte and by stream checksum; file runs additionally compare file lengths and SHA-256 hashes. Both endpoints must complete closure.
+- **Linux and virtual transfers:** GitHub Actions runs CTest, a 1 GiB virtual transfer, and a 1 GiB file transfer over Linux localhost UDP. The localhost run has no imposed WAN bandwidth or delay; Linux namespaces provide a separate controlled-network setup.
+- **Network scenarios:** the default CI sweep runs 150 virtual cases: three 100 Mbps scenarios with base RTTs of 10, 50, and 200 ms, ten independent packet-loss rates from 0% to 5%, five seeds, and 64 MiB per run. Manual `scenarios-1g` runs 36 cases at 1 GiB. These are configured simulations; the simplified Wi-Fi case does not model contention or link-layer retries.
+- **Inspectable results:** each parameter combination and connection retains its own protocol-state logs and plots using the original analyzer. Reports include failures and successful-run goodput statistics. CI artifacts are `transfer-1g-curves` and `network-report`.
+
+These tests provide evidence for the configurations exercised; they do not establish correctness for every network or turn simulation results into real-path measurements.
+
+### Test architecture and environments
+
+The harness separates the transfer workload from packet delivery. Both backends exercise the actual SCP core and reuse `test/common/transfer.c` for data generation, receive validation, checksum exchange, and closure. The virtual backend uses a seeded packet scheduler and simulated clock; the UDP backend uses sockets and real elapsed time. Python runners coordinate execution, retain diagnostics, and invoke the original plotting scripts on the core's JSON logs. The [test design and environment notes](test/README.md#test-design-and-environments) describe the layers and pass criteria.
+
+| Environment | What it exercises |
+|---|---|
+| Virtual network | Repeatable rate, propagation delay, random loss, and protocol events without waiting for real elapsed time |
+| Localhost UDP | Real sockets, Linux/Windows process scheduling, paired endpoints, and file I/O |
+| Linux namespaces + netem | Real Linux UDP/IP and qdisc behavior on a controlled client–router–server path |
+| Actual China-to-US path | Deployment experience on a real intercontinental route; separate from configured simulation scenarios |
+
+Earlier netem experiments used `scp-c ↔ scp-r ↔ scp-s`, with a netem qdisc on each router egress. Each direction had its own rate, one-way delay, random loss, and finite packet queue. The historical results below used 5 Mbit/s per direction, 50 ms one-way delay (about 100 ms unloaded RTT), a 1000-packet queue, 100 MiB transfers, and 300-second fairness measurements. This exercises actual Linux networking under emulated impairments; it does not reproduce every feature of an Internet path. The current CI localhost transfer does not apply this netem topology, and the virtual model has no finite queue. Results from these environments should be reported separately.
 
 For Linux namespaces, create the topology, then start B and A in separate terminals:
 
@@ -181,22 +198,19 @@ Create the namespace topology before the file run. The file test writes
 `received.bin`, checks both files' SHA-256 and saves endpoint logs and curves.
 See [test instructions](test/README.md) for setup and output locations.
 
-## Intended uses and limitations
+## Research use and project experience
 
-SCP is useful for:
+The author reports using SCP in Linux protocol-stack and network experiments, transferring 100 MB files on an actual China-to-US intercontinental path, and running a version on a microcontroller with 20 KB of memory. The repository also contains extensive automated transport tests. These experiences concern particular versions and environments; the microcontroller experience is not a memory requirement guaranteed by the current version, and the real intercontinental transfer is separate from the virtual scenarios above.
 
-- congestion-control and reliable-transport experiments;
-- user-space or embedded transports over a custom unreliable medium;
-- controlled internal communication and file-transfer experiments;
-- teaching and inspecting transport-protocol mechanisms.
+If you enjoy experimenting with networking, try SCP, inspect its behavior, and join the discussion. The project is a place to investigate transport mechanisms and compare designs. For products with strict reliability, security, maintenance, or interoperability requirements, consider established options such as lwIP, QUIC implementations, or KCP and evaluate them against your requirements.
 
-Current limitations include:
+SCP remains experimental: its API and wire format may change, it is not TCP-compatible, and the core provides no authentication or encryption. The historical PROB results above leave sharing and coexistence questions open. Automated tests, code review, and mathematical analysis each contribute different evidence.
 
-- the tested PROB configuration has unresolved sharing behavior at zero random loss, including when competing with AIMD;
-- no production security layer, authentication, or encryption in the protocol core;
-- no claim of TCP compatibility;
-- no stable wire-format or API guarantee;
-- no large-scale interoperability, adversarial, or production deployment audit.
+## Contributing and discussion
+
+[Issues](https://github.com/skaiui2/SCP/issues) are welcome for questions, experiment reports, bugs, and design discussions. For a reproducible report, include the commit, OS and build commands, controller, transfer size, network settings or virtual seed, expected and observed behavior, and relevant logs. Distinguish real-network measurements from simulations.
+
+Before proposing a core algorithm or API change, discuss the intended behavior and a concrete approach in an issue. Read [AGENTS.md](AGENTS.md) and the [project contribution rules](FUCKAI/SKILL.md), particularly for AI-assisted work. Keep pull requests focused, explain what changes and why, and report the checks actually run with their results. Run the relevant CTest checks; network or performance claims should include their configuration, logs, and per-connection curves. Submit through [pull requests](https://github.com/skaiui2/SCP/pulls) for author review.
 
 ## AI assistance disclosure
 
