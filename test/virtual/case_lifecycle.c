@@ -18,6 +18,7 @@ static void test_free(void *p) { if (p) --live; free(p); }
 #include "../../scp.c"
 #undef malloc
 #undef free
+#include "../common/transfer.h"
 static uint32_t now;
 uint32_t scp_now_time(void) { return now; }
 static int sink(void *user, const void *buf, size_t len) { return (int)len; }
@@ -41,6 +42,17 @@ int main(void)
     int baseline;
     memset(data, 1, sizeof(data));
     assert(!scp_init(16));
+    {
+        struct transfer listener;
+        assert(!transfer_init(&listener, &t, 3, 4, 0, 1073741824, SCP_CC_AIMD));
+        for (now = 0; now < 1000; ++now) {
+            scp_timer_process();
+            assert(!transfer_step(&listener) && !listener.failed && !listener.done);
+        }
+        transfer_cleanup(&listener);
+        assert(live == 0);
+    }
+    now = 0;
     s = scp_stream_alloc(&t, 1, 2);
     assert(s && scp_is_closed(1));
     assert(!scp_stream_alloc(&t, 1, 3));

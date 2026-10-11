@@ -1,4 +1,6 @@
 import argparse
+import csv
+import sys
 import itertools
 import json
 import subprocess
@@ -6,6 +8,22 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from report import write_report
+
+if len(sys.argv) == 3 and sys.argv[1] == "--merge":
+    root = Path(sys.argv[2])
+    rows, expected = [], 0
+    for directory in sorted(root.glob("shard-*")):
+        plan = directory / "plan.json"
+        if plan.exists():
+            expected += len(json.loads(plan.read_text())["cases"])
+        path = directory / "sweep.csv"
+        if path.exists():
+            with path.open() as f:
+                rows.extend(csv.DictReader(f))
+    if not rows:
+        raise SystemExit("No completed shard reports found")
+    passed = write_report(root, rows, expected)
+    raise SystemExit(0 if passed == expected else 1)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("executable", type=Path)

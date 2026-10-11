@@ -1,11 +1,14 @@
 #include "scp.h"
 #include "vnet.h"
+#include "../common/transfer.h"
 #include <stdlib.h>
 #include <string.h>
 struct packet { struct packet *next; uint64_t due; size_t len; unsigned char data[MTU]; };
 static struct packet *head[2], *tail[2];
 static uint64_t next_us[2];
 static uint32_t now_ms, delay, rate, loss, random_state;
+static struct transfer *apps[2];
+void vnet_attach(struct transfer *a, struct transfer *b) { apps[0] = b; apps[1] = a; }
 uint64_t vnet_packets, vnet_dropped;
 uint32_t scp_now_time(void) { return now_ms; }
 void vnet_init(uint32_t delay_ms, uint32_t mbps, uint32_t loss_ppm, uint32_t seed)
@@ -47,7 +50,7 @@ int vnet_step(void)
             {
                 const struct scp_hdr *hdr = (const struct scp_hdr *)p->data;
                 int fd = (int)hdr->fd;
-                result = scp_input(NULL, p->data, p->len);
+                result = apps[d] ? transfer_input(apps[d], p->data, p->len) : scp_input(NULL, p->data, p->len);
                 if (result < 0 && scp_is_closed(fd)) result = 0;
             }
             free(p);
