@@ -19,17 +19,17 @@ struct rb_node {
     uint8_t rb_color;
     struct rb_node *rb_right;
     struct rb_node *rb_left;
-    uint32_t value;
 };
 
 struct rb_root {
+    int (*compare)(struct rb_node *a, struct rb_node *b);
     struct rb_node *rb_node;
     struct rb_node *first_node;
     struct rb_node *last_node;
     uint32_t count;
 };
 
-void rb_root_init(rb_root_handle root);
+void rb_root_init(rb_root_handle root, int (*compare)(struct rb_node *, struct rb_node *));
 void rb_node_init(rb_node_handle node);
 void rb_insert_node(rb_root_handle root, rb_node_handle new_node);
 void rb_remove_node(rb_root_handle root, rb_node_handle node);
@@ -38,7 +38,8 @@ rb_node_handle rb_first(rb_root_handle root);
 rb_node_handle rb_last(rb_root_handle root);
 rb_node_handle rb_next(rb_node_handle node);
 rb_node_handle rb_prev(rb_node_handle node);
-rb_node_handle rb_first_greater(rb_root_handle root, size_t key);
+rb_node_handle rb_first_greater(rb_root_handle root, struct rb_node *key);
+rb_node_handle search_node(rb_root_handle root, struct rb_node *key);
 
 void rb_replace_node(rb_node_handle victim, rb_node_handle new_node,
                      rb_root_handle root);
