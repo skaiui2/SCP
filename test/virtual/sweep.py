@@ -46,7 +46,8 @@ settings = config["defaults"]
 cases = []
 fields = ("mbps", "delay_ms", "loss_ppm", "bytes", "seed")
 for grid in config["profiles"][args.profile]:
-    cases.extend(dict(zip(fields, values)) for values in itertools.product(*(grid[k] for k in fields)))
+    cases.extend(dict(zip(fields, values), **({"scenario": grid["scenario"]} if "scenario" in grid else {}))
+                 for values in itertools.product(*(grid[k] for k in fields)))
 cases = list({tuple(c.items()): c for c in cases}.values())
 if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
     parser.error("Invalid shard index/count")
@@ -59,7 +60,7 @@ if args.list:
 
 def run(case):
     rate, delay, loss, size, seed = (case[k] for k in ("mbps", "delay_ms", "loss_ppm", "bytes", "seed"))
-    directory = out / f"bytes{size}_rate{rate}_delay{delay}_loss{loss}_seed{seed}"
+    directory = out / (case.get("scenario", "network") + "_" + f"bytes{size}_rate{rate}_delay{delay}_loss{loss}_seed{seed}")
     directory.mkdir(exist_ok=True)
     row = dict(case)
     command = [str(exe), "--bytes", str(size), "--mbps", str(rate),
