@@ -1590,6 +1590,13 @@ static void scp_est_process(struct scp_stream *ss,
                             uint32_t sack)
 {
     struct scp_hdr *sh = (struct scp_hdr *)sb->data;
+    if (sh->flags == SCP_FLAG_CONNECT_ACK) {
+        if (ntohl(sh->seq) == ss->irs)
+            scp_output_ack(ss, NULL);
+
+        scp_buf_free(ss, sb);
+        return;
+    }
     if (sh->flags & SCP_FLAG_ACK) {
         /*
          * Only a pure ACK carries an echoed DATA timestamp.
