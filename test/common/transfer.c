@@ -67,10 +67,20 @@ int transfer_step(struct transfer *t)
         while (t->sent < t->total && t->stream->snd_seq_q - t->stream->snd_una < 1048576) {
             size_t count = (size_t)min(t->total - t->sent, sizeof(buf));
             int result;
-            for (i = 0; i < count; ++i) buf[i] = byte_at(t->sent + i);
+            if (t->file) {
+                if (!t->pending_size) {
+                    if (fread(t->pending, 1, count, t->file) != count) goto fail;
+                    t->pending_size = count;
+                }
+                memcpy(buf, t->pending, t->pending_size);
+                count = t->pending_size;
+            } else {
+                for (i = 0; i < count; ++i) buf[i] = byte_at(t->sent + i);
+            }
             result = scp_send(t->fd, buf, count);
             if (result == SCP_ERR_NOBUF) break;
             if (result) goto fail;
+            t->pending_size = 0;
             t->hash = checksum(t->hash, buf, count); t->sent += count;
         }
         while ((n = scp_recv(t->fd, buf, sizeof(buf))) > 0) {
@@ -91,11 +101,16 @@ int transfer_step(struct transfer *t)
     } else {
         while ((n = scp_recv(t->fd, buf, sizeof(buf))) > 0) {
             if (t->received + (size_t)n > t->total) goto fail;
-            for (i = 0; i < (size_t)n; ++i) if (buf[i] != byte_at(t->received + i)) goto fail;
+            if (t->file) {
+                if (fwrite(buf, 1, (size_t)n, t->file) != (size_t)n) goto fail;
+            } else {
+                for (i = 0; i < (size_t)n; ++i) if (buf[i] != byte_at(t->received + i)) goto fail;
+            }
             t->hash = checksum(t->hash, buf, (size_t)n); t->received += (size_t)n;
         }
         if (t->received == t->total && !t->checksum_sent) {
             int result;
+            if (t->file && fflush(t->file)) goto fail;
             for (i = 0; i < 8; ++i) {
                 t->reply[i] = (unsigned char)(t->total >> (i * 8));
                 t->reply[i + 8] = (unsigned char)(t->hash >> (i * 8));
@@ -114,5 +129,6 @@ fail:
 }
 void transfer_cleanup(struct transfer *t)
 {
+    if (t->file) { fclose(t->file); t->file = NULL; }
     if (t->stream && !t->done && !(t->started && scp_is_closed(t->fd))) scp_stream_free(t->stream);
 }

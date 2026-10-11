@@ -116,7 +116,7 @@ pacing 不替代拥塞窗口：
 cmake -S test -B test/build -DCMAKE_BUILD_TYPE=Release
 cmake --build test/build -j
 ctest --test-dir test/build --output-on-failure
-python3 test/common/check_udp.py test/build/scp_udp --out test/results/udp-1g
+python3 test/run.py test/build/scp_udp --out test/results/udp-1g
 ```
 
 默认测试 1 GiB。更多配置、虚拟网络扫描和公平性测试见 [测试说明](../../test/README.md)。
@@ -168,12 +168,14 @@ sudo ip netns exec scp-c test/build/scp_udp A 10.0.2.1
 
 ## 日志与曲线
 
-`test/plot.py` 可绘制虚拟网络曲线、参数扫描结果或 SCP JSONL 状态日志；状态日志需启用 `SCP_DUMP_SS`。
+测试构建默认启用协议栈自己的 JSON 状态打印，每条连接每 100ms 一次。`test/run.py` 自动保存日志并生成曲线。Linux 文件传输与虚拟网络分别运行：
 
 ```sh
-python3 test/plot.py test/results/sweep
-python3 test/plot.py A.log --stream-fd 1 --out plots
+sudo python3 test/run.py test/build/scp_udp --netns --file testA.bin --timeout 3600 --out test/results/linux-file
+python3 test/run.py test/build/scp_virtual --backend virtual --out test/results/virtual-1g
 ```
+
+文件测试需要先建立网络拓扑，结果包含 B 写出的 `received.bin`、双方日志、曲线及文件 SHA-256 核对。绘图需要 matplotlib，完整命令见 [测试说明](../../test/README.md)。
 
 ## 适用场景与限制
 

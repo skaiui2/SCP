@@ -123,7 +123,7 @@ static int fairness_step(struct transfer *app, uint64_t *count, int feed)
     return 0;
 }
 int transfer_udp_run(int sender, const char *peer_ip, uint64_t bytes,
-                     int cc, int flows, uint32_t seconds, int mixed)
+                     int cc, int flows, uint32_t seconds, int mixed, const char *file_path)
 {
     struct udp_link links[2] = {0};
     struct transfer apps[2] = {0};
@@ -136,6 +136,7 @@ int transfer_udp_run(int sender, const char *peer_ip, uint64_t bytes,
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2,2), &wsa)) return 1;
 #endif
+    start = scp_now_time();
     for (i = 0; i < 2; ++i) links[i].socket = UDP_INVALID;
     if (scp_init(16)) goto cleanup;
     for (i = 0; i < flows; ++i) {
@@ -145,6 +146,10 @@ int transfer_udp_run(int sender, const char *peer_ip, uint64_t bytes,
         ++initialized;
         if (transfer_init(&apps[i], &transports[i], i + 1, i + 1, sender, bytes,
                           mixed && i == 1 ? SCP_CC_AIMD : cc)) goto cleanup;
+        if (file_path) {
+            apps[i].file = fopen(file_path, sender ? "rb" : "wb");
+            if (!apps[i].file) { perror(file_path); goto cleanup; }
+        }
         if (seconds && (mixed && i == 1 ? SCP_CC_AIMD : cc) == SCP_CC_PROB &&
             scp_prob_configure(apps[i].stream, 100, 8000)) goto cleanup;
     }

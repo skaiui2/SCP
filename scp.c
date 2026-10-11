@@ -19,6 +19,9 @@ extern uint32_t scp_now_time(void);
 static struct rb_root scp_timer_tree;
 static struct hashmap scp_stream_map;
 static struct list_node scp_stream_queue;
+#if SCP_DUMP_SS
+static uint32_t scp_dump_time;
+#endif
 
 #if SCP_RUN_DEBUG
     #define SCP_PRINT(...) printf(__VA_ARGS__)
@@ -67,8 +70,10 @@ static void scp_debug_dump_rx(const void *buf, size_t len)
 static void scp_dump_ss_fields(struct scp_stream *ss)
 {
     uint32_t flight = ss->snd_nxt - ss->snd_una;
+    uint32_t end = ss->schedule_next ? ss->schedule_next->seq : ss->snd_seq_q;
+    uint32_t reserved = SEQ_GT(ss->snd_una, end) ? 0 : end - ss->snd_una;
 
-    printf("\"stream_fd\":%u,"
+    printf("\"iss\":%u,\"irs\":%u,\"state\":%u,\"reserved\":%u,\"stream_fd\":%u,"
            "\"snd_una\":%u,"
            "\"snd_seq_q\":%u,"
            "\"snd_nxt\":%u,"
@@ -105,6 +110,9 @@ static void scp_dump_ss_fields(struct scp_stream *ss)
            "\"prob_gamma_q16\":%d,"
            "\"prob_beta_q16\":%d",
            
+           ss->iss, ss->irs,
+           (unsigned)ss->state,
+           reserved,
            ss->src_fd,
            ss->snd_una,
            ss->snd_seq_q,
@@ -281,8 +289,17 @@ void scp_timer_process(void)
         rb_remove_node(&scp_timer_tree, &t->node);
         t->active = 0;
 
-        t->cb(t->arg);  
+        t->cb(t->arg);
     }
+#if SCP_DUMP_SS
+    uint32_t now = scp_now_time();
+    if (now - scp_dump_time >= SCP_DUMP_INTERVAL_MS) {
+        struct list_node *node;
+        scp_dump_time = now;
+        for (node = scp_stream_queue.next; node != &scp_stream_queue; node = node->next)
+            scp_dump_ss_state(container_of(node, struct scp_stream, node));
+    }
+#endif
 }
 
 /*
@@ -336,8 +353,6 @@ static void scp_timer_persist_cb(void *arg)
     struct scp_stream *ss = arg;
     if (!ss || ss->state == SCP_CLOSED)
         return;
-
-    scp_dump_ss_state(ss);
 
     uint32_t now = scp_now_time();
     int need_probe = 0;
@@ -485,6 +500,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
 
     queue_enqueue(&scp_stream_queue, &ss->node);
     hashmap_put(&scp_stream_map, (void *)(uintptr_t)(ss->src_fd), ss);
+    scp_dump_ss_state(ss);
 
     return ss;
 }
@@ -492,6 +508,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
 int scp_stream_free(struct scp_stream *ss)
 {
     if (!ss) return -1;
+    scp_dump_ss_state(ss);
 
     scp_timer_remove(&ss->t_retrans);
     scp_timer_remove(&ss->t_persist);
@@ -530,6 +547,9 @@ int scp_stream_free(struct scp_stream *ss)
 */
 int scp_init(size_t max_streams)
 {
+#if SCP_DUMP_SS
+    scp_dump_time = 0;
+#endif
     rb_root_init(&scp_timer_tree);
     list_node_init(&scp_stream_queue);
     hashmap_init(&scp_stream_map, max_streams, HASHMAP_KEY_INT);

@@ -1,4 +1,4 @@
-name: SCP virtual network
+name: SCP transfer curves and network sweep
 on:
   push:
     paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/virtual-network.yml']
@@ -14,6 +14,33 @@ on:
 permissions:
   contents: read
 jobs:
+  transfers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S test -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
+      - name: Integrity and functional checks
+        run: ctest --test-dir build --output-on-failure
+      - run: python3 -m pip install matplotlib
+      - name: Virtual network 1 GiB and protocol curves
+        run: python3 test/run.py build/scp_virtual --backend virtual --bytes 1073741824 --mbps 1000 --out results/transfers/virtual-1g
+      - name: Linux UDP file transfer 1 GiB and protocol curves
+        run: python3 test/run.py build/scp_udp --file-test --bytes 1073741824 --out results/transfers/linux-udp-1g
+      - name: Publish transfer results
+        if: always()
+        run: |
+          for report in results/transfers/*/report.md; do
+            if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transfer-1g-curves
+          path: |
+            results/transfers/
+            !results/transfers/**/*.bin
+          retention-days: 14
   sweep:
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -24,10 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cmake -S test -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
-      - run: ctest --test-dir build --output-on-failure
-      - name: Real UDP 1 GiB using the shared transfer scenario
-        if: matrix.shard == 0
-        run: python3 test/common/check_udp.py build/scp_udp --out results/udp-1g
       - name: Sweep configured network environments
         env:
           PROFILE: ${{ inputs.profile || 'quick' }}
@@ -49,9 +72,10 @@ jobs:
           pattern: network-shard-*
           merge-multiple: true
           path: results
+      - run: python3 -m pip install matplotlib
       - run: python3 test/virtual/sweep.py --merge results
-      - run: pip install matplotlib
-      - run: python3 test/plot.py results
+      - run: python3 test/plot.py results --recursive
+        if: always()
       - run: cat results/report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
