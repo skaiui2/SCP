@@ -388,13 +388,13 @@ void rb_replace_node( struct rb_node *victim,  struct rb_node *new,
 }
 
 
-struct rb_node *rb_first_greater(struct rb_root *root, size_t key)
+struct rb_node *rb_first_greater(struct rb_root *root, struct rb_node *key)
 {
     struct rb_node *node = root->rb_node;
     struct rb_node *candidate = NULL;
 
     while (node != NULL) {
-        if (node->value > key) {
+        if (root->compare(node, key) > 0) {
             candidate = node;
             node = node->rb_left;
         } else {
@@ -405,9 +405,10 @@ struct rb_node *rb_first_greater(struct rb_root *root, size_t key)
     return candidate;
 }
 
-void rb_root_init(rb_root_handle root)
+void rb_root_init(rb_root_handle root, int (*compare)(struct rb_node *, struct rb_node *))
 {
     *root = (struct rb_root){
+        .compare = compare,
         .rb_node = NULL,
         .first_node = NULL,
         .last_node = NULL,
@@ -423,7 +424,6 @@ void rb_node_init(rb_node_handle node)
             .rb_color = RB_RED,
             .rb_right = NULL,
             .rb_parent = NULL,
-            .value = 0,
             .root = NULL
     };
 }
@@ -437,7 +437,7 @@ void rb_insert_node(rb_root_handle root,  struct rb_node *new_node)
 
     while (*link) {
         parent = *link;
-        if (new_node->value < (*link)->value) {
+        if (root->compare(new_node, *link) < 0) {
             link = &((*link)->rb_left);
         } else {
             link = &((*link)->rb_right);
@@ -445,11 +445,11 @@ void rb_insert_node(rb_root_handle root,  struct rb_node *new_node)
     }
 
     if (root->count != 0) {
-        if (new_node->value >= root->last_node->value) {
+        if (root->compare(new_node, root->last_node) >= 0) {
             root->last_node = new_node;
         }
 
-        if (new_node->value < root->first_node->value) {
+        if (root->compare(new_node, root->first_node) < 0) {
             root->first_node = new_node;
         }
     } else {
@@ -481,14 +481,14 @@ void rb_remove_node(struct rb_root *root,  struct rb_node *node)
 }
 
 
-struct rb_node *search_node(struct rb_root *root, uint32_t key) {
+struct rb_node *search_node(struct rb_root *root, struct rb_node *key) {
     struct rb_node *node = root->rb_node;
 
     while (node) {
-        if (key < node->value) {
+        if (root->compare(key, node) < 0) {
             node = node->rb_left;
         }
-        else if (key > node->value) {
+        else if (root->compare(key, node) > 0) {
             node = node->rb_right;
         }
         else {

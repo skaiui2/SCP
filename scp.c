@@ -19,6 +19,28 @@ extern uint32_t scp_now_time(void);
 static struct rb_root scp_timer_tree;
 static struct hashmap scp_stream_map;
 static struct list_node scp_stream_queue;
+static int scp_receive_compare(struct rb_node *a, struct rb_node *b)
+{
+    struct scp_buf *pa = container_of(a, struct scp_buf, rb);
+    struct scp_buf *pb = container_of(b, struct scp_buf, rb);
+    if (SEQ_LT(pa->seq, pb->seq))
+        return -1;
+    if (SEQ_GT(pa->seq, pb->seq))
+        return 1;
+    return 0;
+}
+
+static int scp_timer_compare(struct rb_node *a, struct rb_node *b)
+{
+    struct scp_timer *ta = container_of(a, struct scp_timer, node);
+    struct scp_timer *tb = container_of(b, struct scp_timer, node);
+    if (SEQ_LT(ta->expire, tb->expire))
+        return -1;
+    if (SEQ_GT(ta->expire, tb->expire))
+        return 1;
+    return 0;
+}
+
 #if SCP_DUMP_SS
 static uint32_t scp_dump_time;
 #endif
@@ -224,7 +246,6 @@ void scp_timer_node_init(struct scp_timer *t)
 static inline void scp_timer_add(struct scp_timer *t)
 {
     t->expire = scp_now_time() + t->timeout;
-    t->node.value = t->expire;
     rb_insert_node(&scp_timer_tree, &t->node);
     t->active = 1;
 }
@@ -490,7 +511,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
 
     list_node_init(&ss->node);
     list_node_init(&ss->snd_q);
-    rb_root_init(&ss->rcv_buf_q);
+    rb_root_init(&ss->rcv_buf_q, scp_receive_compare);
     list_node_init(&ss->rcv_data_q);
 
     if (scp_install_cc(ss, SCP_CC_PROB) != 0) {
@@ -550,7 +571,7 @@ int scp_init(size_t max_streams)
 #if SCP_DUMP_SS
     scp_dump_time = 0;
 #endif
-    rb_root_init(&scp_timer_tree);
+    rb_root_init(&scp_timer_tree, scp_timer_compare);
     list_node_init(&scp_stream_queue);
     hashmap_init(&scp_stream_map, max_streams, HASHMAP_KEY_INT);
     return 0;
@@ -904,7 +925,7 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
 
     // out-of-order segment: check duplicate before inserting
     {
-        struct rb_node *pos = rb_first_greater(&s->rcv_buf_q, seq);
+        struct rb_node *pos = rb_first_greater(&s->rcv_buf_q, &sb->rb);
         struct rb_node *prev = NULL;
 
         if (pos)
@@ -929,7 +950,6 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
 
     // new out-of-order segment
     rb_node_init(&sb->rb);
-    sb->rb.value = sb->seq;
     rb_insert_node(&s->rcv_buf_q, &sb->rb);
     scp_output_ack(s, sh);
 }
