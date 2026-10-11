@@ -9,8 +9,8 @@ on:
       profile:
         description: Network sweep profile
         type: choice
-        default: broad
-        options: [quick, broad, large, stress]
+        default: scenarios
+        options: [quick, broad, large, stress, scenarios, scenarios-1g]
 permissions:
   contents: read
 jobs:
@@ -54,7 +54,7 @@ jobs:
       - run: python3 -m pip install matplotlib numpy pandas
       - name: Sweep configured network environments
         env:
-          PROFILE: ${{ inputs.profile || 'quick' }}
+          PROFILE: ${{ inputs.profile || 'scenarios' }}
         run: python3 test/virtual/sweep.py build/scp_virtual --config test/virtual/network_sweep.json --profile "$PROFILE" --shard-index ${{ matrix.shard }} --shard-count 8 --jobs 2 --out results/shard-${{ matrix.shard }}
       - uses: actions/upload-artifact@v4
         if: always()

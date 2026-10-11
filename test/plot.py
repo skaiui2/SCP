@@ -4,7 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 import matplotlib.pyplot as plt
 
 
@@ -17,6 +17,22 @@ def save(fig, path):
 def plot_sweep(directory):
     with (directory / 'sweep.csv').open() as f:
         rows = list(csv.DictReader(f))
+    if any(row.get('scenario') for row in rows):
+        fig, ax = plt.subplots(figsize=(9, 5))
+        groups = {}
+        for row in rows:
+            groups.setdefault((row['scenario'], int(row['bytes'])), []).append(row)
+        for (scene, size), group in sorted(groups.items()):
+            losses = sorted({int(row['loss_ppm']) for row in group})
+            values = [[float(row['goodput_mbps']) for row in group if int(row['loss_ppm']) == loss and row['success'].lower() == 'true'] for loss in losses]
+            points = [(loss, data) for loss, data in zip(losses, values) if data]
+            ax.plot([loss / 10000 for loss, data in points], [median(data) for loss, data in points], 'o-', label=f'{scene}, {size / 2**20:g} MiB')
+            ax.fill_between([loss / 10000 for loss, data in points], [min(data) for loss, data in points], [max(data) for loss, data in points], alpha=0.15)
+        ax.set(xlabel='Independent packet loss (%)', ylabel='Goodput Mbps', title='Successful runs: median and min/max; failures listed in report')
+        ax.grid(alpha=0.3)
+        ax.legend()
+        save(fig, directory / 'sweep.png')
+        return
     size = min(int(r['bytes']) for r in rows)
     grid = [r for r in rows if int(r['bytes']) == size]
     rates = sorted({int(r['mbps']) for r in grid})

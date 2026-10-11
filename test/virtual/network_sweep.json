@@ -1,12 +1,28 @@
 {
   "defaults": {"simulated_timeout_ms": 36000000, "wall_timeout_seconds": 600},
   "profiles": {
-    "quick": [{"bytes": [8388608], "mbps": [10,100,1000], "delay_ms": [1,10,100], "loss_ppm": [0,1000], "seed": [7]}],
-    "broad": [{"bytes": [8388608], "mbps": [1,10,50,100,1000], "delay_ms": [1,10,50,100], "loss_ppm": [0,100,1000,10000,30000], "seed": [1,7,42]}],
-    "large": [
-      {"bytes": [1073741824], "mbps": [10,100,1000], "delay_ms": [1,10,50,100], "loss_ppm": [0,100,1000,10000], "seed": [1,7,42]},
-      {"bytes": [10737418240], "mbps": [100,1000], "delay_ms": [10,100], "loss_ppm": [0,1000], "seed": [7]}
+    "quick": [
+      {"bytes": [8388608],"mbps": [10,100,1000],"delay_ms": [1,10,100],"loss_ppm": [0,1000],"seed": [7]}
     ],
-    "stress": [{"bytes": [107374182400], "mbps": [100,1000], "delay_ms": [10,50], "loss_ppm": [0,1000], "seed": [7]}]
+    "broad": [
+      {"bytes": [8388608],"mbps": [1,10,50,100,1000],"delay_ms": [1,10,50,100],"loss_ppm": [0,100,1000,10000,30000],"seed": [1,7,42]}
+    ],
+    "large": [
+      {"bytes": [1073741824],"mbps": [10,100,1000],"delay_ms": [1,10,50,100],"loss_ppm": [0,100,1000,10000],"seed": [1,7,42]},
+      {"bytes": [10737418240],"mbps": [100,1000],"delay_ms": [10,100],"loss_ppm": [0,1000],"seed": [7]}
+    ],
+    "stress": [
+      {"bytes": [107374182400],"mbps": [100,1000],"delay_ms": [10,50],"loss_ppm": [0,1000],"seed": [7]}
+    ],
+    "scenarios": [
+      {"scenario": "wan","bytes": [67108864],"mbps": [100],"delay_ms": [25],"loss_ppm": [0,100,500,1000,3000,5000,10000,20000,30000,50000],"seed": [1,7,42,123,2026]},
+      {"scenario": "wifi-simplified","bytes": [67108864],"mbps": [100],"delay_ms": [5],"loss_ppm": [0,100,500,1000,3000,5000,10000,20000,30000,50000],"seed": [1,7,42,123,2026]},
+      {"scenario": "intercontinental","bytes": [67108864],"mbps": [100],"delay_ms": [100],"loss_ppm": [0,100,500,1000,3000,5000,10000,20000,30000,50000],"seed": [1,7,42,123,2026]}
+    ],
+    "scenarios-1g": [
+      {"scenario": "wan","bytes": [1073741824],"mbps": [100],"delay_ms": [25],"loss_ppm": [0,1000,10000,30000],"seed": [1,7,42]},
+      {"scenario": "wifi-simplified","bytes": [1073741824],"mbps": [100],"delay_ms": [5],"loss_ppm": [0,1000,10000,30000],"seed": [1,7,42]},
+      {"scenario": "intercontinental","bytes": [1073741824],"mbps": [100],"delay_ms": [100],"loss_ppm": [0,1000,10000,30000],"seed": [1,7,42]}
+    ]
   }
 }

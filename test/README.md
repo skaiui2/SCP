@@ -179,3 +179,24 @@ CTest covers generated/file AIMD transfers, PROB transfers, pacing observations,
 allocation failure and lifecycle cleanup, bidirectional close-before-drain, and
 virtual transfers with and without loss. Large transfer and performance sweeps
 remain explicit runs rather than mandatory local smoke tests.
+
+## Focused loss scenarios
+
+The default GitHub push sweep is `scenarios`: 150 runs of 64 MiB, using five
+seeds and losses of 0, 0.01, 0.05, 0.1, 0.3, 0.5, 1, 2, 3 and 5 percent.
+All scenarios use 100 Mbps: `wan` has 50 ms base RTT, `wifi-simplified` 10 ms,
+and `intercontinental` 200 ms. These are controlled experimental settings,
+not measured representative networks. Loss affects both directions, including
+ACK and control packets. Wi-Fi contention and link-layer retries are not modeled.
+
+Select `scenarios-1g` manually in Actions for 36 runs: 1 GiB, three seeds,
+and 0, 0.1, 1 and 3 percent loss in each scenario. Local equivalents:
+
+```sh
+python3 test/virtual/sweep.py test/build/scp_virtual --profile scenarios --out test/results/scenarios
+python3 test/virtual/sweep.py test/build/scp_virtual --profile scenarios-1g --out test/results/scenarios-1g
+```
+
+Each run uses the original state-log analyzer. `report.md` includes individual
+failures and successful-run median/min/max goodput relative to the zero-loss
+baseline; `sweep.png` plots loss versus median goodput with min/max shading.
