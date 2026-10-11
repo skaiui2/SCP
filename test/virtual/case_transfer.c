@@ -15,7 +15,7 @@ int main(int argc, char **argv)
     struct scp_transport_class ta = {.send = vnet_send, .user = &ep_a};
     struct scp_transport_class tb = {.send = vnet_send, .user = &ep_b};
     struct transfer a, b;
-    FILE *samples, *summary;
+    FILE *summary;
     int i, ok = 0;
     for (i = 1; i < argc; i += 2) {
         uint64_t value;
@@ -32,10 +32,8 @@ int main(int argc, char **argv)
         else return 2;
     }
     if (!total || !rate || loss > 1000000 || !timeout) return 2;
-    samples = fopen("samples.csv", "w");
     summary = fopen("summary.json", "w");
-    if (!samples || !summary) return 2;
-    fprintf(samples, "t_ms,accepted_bytes,received_bytes,cwnd,flight,reserved,srtt,packets,dropped\n");
+    if (!summary) return 2;
     vnet_init(delay, rate, loss, seed);
     if (scp_init(16)) return 2;
     if (transfer_init(&b, &tb, 2, 1, 0, total, SCP_CC_AIMD) ||
@@ -44,16 +42,13 @@ int main(int argc, char **argv)
     printf("Generated transfer: %" PRIu64 " bytes, %u Mbps/direction, %u ms one-way, %u ppm loss, seed %u\n", total, rate, delay, loss, seed);
     while (scp_now_time() < timeout) {
         if (vnet_step() || transfer_step(&a) || transfer_step(&b)) break;
-        if (scp_now_time() % 100 == 0) {
-            fprintf(samples, "%u,%" PRIu64 ",%" PRIu64 ",%u,%u,%u,%u,%" PRIu64 ",%" PRIu64 "\n", scp_now_time(), a.sent, b.received, a.cwnd, a.flight, a.reserved, a.srtt, vnet_packets, vnet_dropped);
-        }
         if (a.done && b.done) { ok = 1; break; }
     }
     sent = a.sent; received = b.received; hash_a = a.hash; hash_b = b.hash;
     transfer_cleanup(&a); transfer_cleanup(&b);
     fprintf(summary, "{\"success\":%s,\"requested_bytes\":%" PRIu64 ",\"accepted_bytes\":%" PRIu64 ",\"received_bytes\":%" PRIu64 ",\"checksum_algorithm\":\"FNV-1a-64\",\"checksum_a\":\"%016" PRIx64 "\",\"checksum_b\":\"%016" PRIx64 "\",\"simulated_ms\":%u,\"mbps\":%u,\"delay_ms\":%u,\"loss_ppm\":%u,\"seed\":%u,\"packets\":%" PRIu64 ",\"dropped\":%" PRIu64 "}\n", ok ? "true" : "false", total, sent, received, hash_a, hash_b, scp_now_time(), rate, delay, loss, seed, vnet_packets, vnet_dropped);
     printf("%s: received=%" PRIu64 " A=%016" PRIx64 " B=%016" PRIx64 " virtual_ms=%u dropped=%" PRIu64 "\n", ok ? "PASS" : "FAIL", received, hash_a, hash_b, scp_now_time(), vnet_dropped);
-    fclose(samples); fclose(summary);
+    fclose(summary);
     vnet_free();
     return ok ? 0 : 1;
 }

@@ -44,8 +44,8 @@ if args.file:
     args.bytes = args.file.stat().st_size
     if not args.bytes: parser.error("Input file is empty")
 if not args.no_plot:
-    try: import matplotlib
-    except ImportError: parser.error("Plotting needs matplotlib: python3 -m pip install matplotlib; or use --no-plot")
+    try: import matplotlib, numpy, pandas
+    except ImportError: parser.error("Plotting needs matplotlib, numpy and pandas: python3 -m pip install matplotlib numpy pandas; or use --no-plot")
 
 def finish():
     if not args.no_plot:
@@ -53,7 +53,7 @@ def finish():
     (args.out / "report.md").write_text(
         f"# SCP {args.backend} run\n\nResult: PASS\n\n"
         f"Mode: {args.mode}\n\nBytes: {args.bytes if not args.mode.startswith('prob-') else 'timed two-flow experiment'}\n\n"
-        "State curves come from the protocol's own JSON logs. Sequence-progress rates are sampled ACK/in-order progress, not raw wire throughput.\n", encoding="utf-8")
+        "State curves come from the protocol's own JSON logs, using test/analyze_scp.py.\n", encoding="utf-8")
     print(f"Results: {args.out}", flush=True)
 args.out.mkdir(parents=True, exist_ok=True)
 exe = str(args.executable.resolve())

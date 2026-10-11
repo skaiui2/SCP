@@ -1,6 +1,8 @@
 import argparse
 import csv
 import json
+import subprocess
+import sys
 from pathlib import Path
 from statistics import mean
 import matplotlib.pyplot as plt
@@ -33,84 +35,20 @@ def plot_sweep(directory):
     save(fig, directory / 'sweep.png')
 
 
-def plot_samples(directory):
-    with (directory / 'samples.csv').open() as f:
-        rows = [{k: int(v) for k, v in row.items()} for row in csv.DictReader(f)]
-    t = [r['t_ms'] / 1000 for r in rows]
-    fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
-    for key in ('cwnd', 'flight', 'reserved'):
-        axes[0].plot(t, [r[key] / 1024 for r in rows], label=key)
-    axes[0].set_ylabel('KiB'); axes[0].legend()
-    axes[1].plot(t, [r['received_bytes'] / 2**30 for r in rows])
-    axes[1].set_ylabel('Delivered GiB')
-    pairs = [(a, b) for a, b in zip(rows, rows[1:]) if b['t_ms'] > a['t_ms']]
-    axes[2].plot([b['t_ms'] / 1000 for a, b in pairs], [(b['received_bytes'] - a['received_bytes']) * 8 / ((b['t_ms'] - a['t_ms']) * 1000) for a, b in pairs])
-    axes[2].set(ylabel='Goodput Mbps', xlabel='Virtual seconds')
-    for ax in axes: ax.grid(alpha=0.3)
-    save(fig, directory / 'curves.png')
-
-
-def plot_log(path, out, stream_fd, max_points, fields=False):
-    streams = {}
+def plot_log(path, out, stream_fd, max_points):
+    streams = set()
     with path.open(encoding='utf-8') as f:
         for line in f:
             try: row = json.loads(line)
             except ValueError: continue
-            if not isinstance(row, dict) or 't' not in row or 'cwnd' not in row: continue
+            if not isinstance(row, dict) or row.get('type') != 'ss': continue
             fd = row.get('stream_fd', 0)
-            if stream_fd is None or fd == stream_fd: streams.setdefault(fd, []).append(row)
+            if stream_fd is None or fd == stream_fd: streams.add(fd)
     if not streams: raise SystemExit('No SCP state records found; enable SCP_DUMP_SS for state logs')
-    out.mkdir(parents=True, exist_ok=True)
-    for fd, rows in streams.items():
-        elapsed, prev = 0, rows[0]['t']
-        times = []
-        for row in rows:
-            elapsed += (row['t'] - prev) % 2**32
-            prev = row['t']; times.append(elapsed / 1000)
-        step = max(1, (len(rows) + max_points - 1) // max_points)
-        indices = set(range(0, len(rows), step)) | {len(rows) - 1}
-        indices.update(i for i in range(1, len(rows)) if rows[i].get('cc_phase') != rows[i-1].get('cc_phase'))
-        indices = sorted(indices)
-        sampled = [rows[i] for i in indices]
-        sample_times = [times[i] for i in indices]
-        fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
-        for key in ('cwnd', 'flight', 'reserved'):
-            axes[0].plot(sample_times, [row.get(key, 0) / 1024 for row in sampled], label=key)
-        axes[0].set_ylabel('KiB'); axes[0].legend()
-        for key in ('srtt', 'rto'):
-            axes[1].plot(sample_times, [row.get(key, 0) for row in sampled], label=key)
-        axes[1].set_ylabel('Milliseconds'); axes[1].legend()
-        for key, label in [('snd_una', 'Acknowledged'), ('rcv_nxt', 'Received in order')]:
-            base = 'iss' if key == 'snd_una' else 'irs'
-            progress, prev, total = [], 0, 0
-            for row in rows:
-                current = (row.get(key, 0) - row.get(base, 0)) % 2**32
-                total += (current - prev) % 2**32
-                prev = current; progress.append(total)
-            axes[2].plot(sample_times, [progress[i] / 2**20 for i in indices], label=label)
-            pairs = [(a, b) for a, b in zip(indices, indices[1:]) if times[b] > times[a]]
-            axes[3].plot([times[b] for a, b in pairs], [(progress[b] - progress[a]) * 8 / ((times[b] - times[a]) * 1000000) for a, b in pairs], label=label)
-        axes[2].set_ylabel('Sequence progress MiB'); axes[2].legend()
-        axes[3].set(ylabel='Sequence progress Mbps', xlabel='Seconds'); axes[3].legend()
-        axes[0].set_title(f'{path.stem}: SCP stream {fd}')
-        for ax in axes: ax.grid(alpha=0.3)
-        save(fig, out / f'flow{fd}_curves.png')
-        keys = sorted({k for row in rows for k, value in row.items() if isinstance(value, (int, float))} - {'t', 'stream_fd'})
-        for key in keys if fields else []:
-            fig, ax = plt.subplots(figsize=(9, 3))
-            ax.plot(sample_times, [row.get(key, float('nan')) for row in sampled])
-            ax.set(xlabel='Seconds', ylabel=key, title=f'Stream {fd}')
-            ax.grid(alpha=0.3)
-            save(fig, out / f'flow{fd}_{key}.png')
-        if fields and all('cwnd' in row and 'd' in row for row in rows):
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.scatter([row['cwnd'] / 1024 for row in sampled], [row['d'] / 65536 for row in sampled], s=2)
-            ax.set(xlabel='cwnd KiB', ylabel='Residual delay (ms)')
-            save(fig, out / f'flow{fd}_phase.png')
-        transitions = [dict(t_seconds=times[i], cc_phase=rows[i]['cc_phase']) for i in range(1, len(rows)) if rows[i].get('cc_phase') != rows[i-1].get('cc_phase') and 'cc_phase' in rows[i]]
-        with (out / f'flow{fd}_transitions.csv').open('w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['t_seconds', 'cc_phase'])
-            writer.writeheader(); writer.writerows(transitions)
+    for fd in sorted(streams):
+        subprocess.run([sys.executable, str(Path(__file__).with_name('analyze_scp.py')),
+                        str(path), '--stream-fd', str(fd), '--out', str(out / f'flow{fd}'),
+                        '--max-points', str(max_points)], check=True)
 
 
 parser = argparse.ArgumentParser()
@@ -118,25 +56,28 @@ parser.add_argument('input', type=Path)
 parser.add_argument('--out', type=Path, default=Path('plots'))
 parser.add_argument('--stream-fd', type=int)
 parser.add_argument('--max-points', type=int, default=10000)
-parser.add_argument('--fields', action='store_true', help='Also plot every recorded state field')
 parser.add_argument('--recursive', action='store_true', help='Plot each completed sweep case')
 args = parser.parse_args()
 if args.max_points < 1: parser.error('--max-points must be positive')
 def plot_directory(directory):
-    if (directory / 'samples.csv').exists(): plot_samples(directory)
     for path in (directory / 'A.log', directory / 'B.log', directory / 'run.log'):
         if path.exists():
-            plot_log(path, directory / path.stem, args.stream_fd, args.max_points, args.fields)
+            plot_log(path, directory / path.stem, args.stream_fd, args.max_points)
 
 if args.input.is_file():
-    plot_log(args.input, args.out, args.stream_fd, args.max_points, args.fields)
+    plot_log(args.input, args.out, args.stream_fd, args.max_points)
 else:
     if (args.input / 'sweep.csv').exists(): plot_sweep(args.input)
     elif not args.recursive: plot_directory(args.input)
     if args.recursive:
-        for summary in sorted(args.input.rglob('summary.json')):
-            directory = summary.parent
-            if not (directory / 'samples.csv').exists(): continue
-            plot_directory(directory)
-            print(f'Case curves: {directory}')
+        failures = []
+        for log in sorted(args.input.rglob('run.log')):
+            directory = log.parent
+            try:
+                plot_directory(directory)
+                print(f'Case curves: {directory}')
+            except (subprocess.CalledProcessError, SystemExit) as error:
+                failures.append(directory)
+                print(f'Plot failed: {directory}: {error}', file=sys.stderr)
+        if failures: raise SystemExit(f'Plotting failed for {len(failures)} cases')
 print(f'Plots written under {args.out if args.input.is_file() else args.input}')

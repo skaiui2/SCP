@@ -9,7 +9,7 @@ ctest --test-dir test/build --output-on-failure
 ```
 
 Python 3 is required for the paired UDP checks. Normal runs generate plots
-automatically and require matplotlib (`python3 -m pip install matplotlib`).
+automatically and require matplotlib (`python3 -m pip install matplotlib numpy pandas`).
 CTest uses `--no-plot` so its correctness checks do not require matplotlib. On Windows append `.exe` to executable paths.
 
 `scp_virtual` and `scp_udp` link the actual protocol core and share
@@ -27,7 +27,7 @@ checks SCP checksums, file length and both files' SHA-256. It saves `A.log`, `B.
 `report.md` and protocol-state curves under `A/` and `B/` in the result directory.
 
 ```sh
-python3 -m pip install matplotlib
+python3 -m pip install matplotlib numpy pandas
 sudo bash setup_scp_netns.sh setup 100mbit 10ms 0% 1000
 sudo python3 test/run.py test/build/scp_udp --netns --file testA.bin --timeout 3600 --out test/results/linux-file
 ```
@@ -111,9 +111,9 @@ check. Application enqueue and input processing alternate between flows.
 python3 test/run.py test/build/scp_virtual --backend virtual --bytes 1073741824 --out test/results/virtual-1g
 ```
 
-This saves `run.log`, `samples.csv`, `summary.json`, `report.md`, `curves.png` and
+This saves `run.log`, `summary.json`, `report.md` and
 per-stream state curves under `run/`. `--mbps`, `--delay-ms`, `--loss-ppm` and
-`--seed` configure this run. Executing the C binary directly writes CSV/JSON into
+`--seed` configure this run. Executing the C binary directly writes summary JSON into
 its working directory; automatic plotting is provided by `test/run.py`.
 
 Options: `--bytes`, `--mbps`, `--delay-ms`, `--loss-ppm`, `--seed`, `--timeout-ms`.
@@ -123,8 +123,7 @@ to both control and DATA packets after serialization; retransmissions use the co
 There is no finite queue, duplication or deliberate reordering model.
 
 Virtual time advances in milliseconds. Each step processes timers, A-to-B arrivals,
-B-to-A arrivals, then applications. `samples.csv` records cwnd, flight, reserved
-bytes and delivery progress. `reserved - flight` is scheduled but unsent data.
+B-to-A arrivals, then applications. State curves use the core JSON logs.
 `summary.json` records configuration, checksums and success.
 
 ## Parameter sweeps and reports
@@ -138,6 +137,8 @@ python3 test/virtual/sweep.py --merge test/results
 `virtual/network_sweep.json` is the only grid configuration. Profiles: quick
 (18 cases), broad (300), large (144 at 1 GiB plus 8 at 10 GiB), stress (8 at
 100 GiB). `--config`, `--jobs`, `--shard-index` and `--shard-count` control execution.
+Every sweep automatically calls the original `analyze_scp.py` for each case and each stream.
+Images and `summary.txt` are saved in `<case>/run/flow1/` and `flow2/`.
 Each case has its own configuration, curves, summary and log. CSV/Markdown reports
 include failures; goodput includes startup, ACK drain and close time.
 
@@ -147,8 +148,8 @@ file transfer over localhost. Both save protocol logs, reports and curves in the
 `transfer-1g-curves` artifact; generated input/output files are not uploaded.
 The real UDP link has no imposed bandwidth/delay cap and is not a WAN measurement.
 Eight virtual-network shards sweep configured parameters. The report job uses
-`test/plot.py --recursive` to draw every completed case's core-state curves plus
-the sweep overview; download `network-report` for the plots. Local Linux real
+the original analyzer in each sweep shard to draw every case's core-state curves;
+the report job adds the sweep overview; download `network-report` for the plots. Local Linux real
 network tests remain available (`ctest --test-dir test/build -L real`).
 Relevant pushes run quick; manual runs select larger profiles. Missing cases in recovered shards or failed
 case reports make the merge step fail.
@@ -168,10 +169,11 @@ cmake --build test/build -j
 ```
 
 Normal core builds still default to logging disabled. The plotter filters by stream,
-unwraps the 32-bit clock and plots recorded numeric fields in their raw units.
-It exports phase transitions; add `--fields` for individual field plots and residual-delay phase portraits.
-Old hardcoded controller thresholds and derived switching-accuracy claims were
-removed; current fields are analyzed directly.
+calls the original `test/analyze_scp.py` for individual field plots, unit conversion,
+scatter plots and `summary.txt`, in a separate `flow<fd>/` directory per stream.
+The original `test/fig.py` remains available for publication figures (PNG/PDF).
+`fig.py` retains its original controller-specific thresholds; use it only when
+those thresholds match the experiment.
 
 CTest covers generated/file AIMD transfers, PROB transfers, pacing observations, two timed competition modes,
 allocation failure and lifecycle cleanup, bidirectional close-before-drain, and

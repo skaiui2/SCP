@@ -75,9 +75,13 @@ def run(case):
                                 text=True, timeout=settings["wall_timeout_seconds"])
         row["exit_code"] = result.returncode
         (directory / "run.log").write_text(result.stdout + result.stderr)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
         row["exit_code"] = "wall_timeout"
-        (directory / "run.log").write_text(f"Wall-clock timeout: {settings['wall_timeout_seconds']} seconds\n")
+        output = error.stdout or b""
+        errors = error.stderr or b""
+        if isinstance(output, bytes): output = output.decode(errors="replace")
+        if isinstance(errors, bytes): errors = errors.decode(errors="replace")
+        (directory / "run.log").write_text(output + errors + f"\nWall-clock timeout: {settings['wall_timeout_seconds']} seconds\n")
     row["wall_seconds"] = round(time.perf_counter() - start, 3)
     if summary.exists():
         row.update(json.loads(summary.read_text()))
@@ -90,5 +94,6 @@ def run(case):
 with ThreadPoolExecutor(max_workers=args.jobs) as pool:
     rows = list(pool.map(run, cases))
 passed = write_report(out, rows)
+plots = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "plot.py"), str(out), "--recursive"])
 print(f"Completed: {passed}/{len(rows)} passed. Report: {out / 'report.md'}")
-raise SystemExit(0 if passed == len(rows) else 1)
+raise SystemExit(0 if passed == len(rows) and plots.returncode == 0 else 1)

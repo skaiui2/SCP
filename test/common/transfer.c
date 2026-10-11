@@ -56,8 +56,6 @@ int transfer_step(struct transfer *t)
     }
     t->cwnd = t->stream->cwnd;
     t->flight = t->stream->snd_nxt - t->stream->snd_una;
-    t->reserved = (t->stream->schedule_next ? t->stream->schedule_next->seq : t->stream->snd_seq_q) - t->stream->snd_una;
-    t->srtt = t->stream->srtt;
     if (t->stream->state != SCP_ESTABLISHED) return 0;
     if (!t->established) {
         t->established = 1;

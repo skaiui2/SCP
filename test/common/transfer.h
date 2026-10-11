@@ -8,7 +8,7 @@ struct transfer {
     int fd, sender, started, established, checksum_sent, close_requested, done, failed;
     unsigned char reply[16];
     size_t reply_size;
-    uint32_t cwnd, flight, reserved, srtt;
+    uint32_t cwnd, flight;
     FILE *file;
     unsigned char pending[65536];
     size_t pending_size;
