@@ -36,9 +36,9 @@ The pacing study, [Pacing and Congestion-Window Growth: An Exact Packet-Level An
 ```text
 scp.c / scp.h                  protocol core
 lib/                           intrusive containers and data structures
-test/nodeA / test/nodeB        Linux integration tests
+test/                         shared UDP and virtual-network tests
 setup_scp_netns.sh             reproducible network-namespace topology
-test/analyze_scp.py            log analysis
+test/plot.py                  curves and state-log analysis
 docs/                          user documentation
 ```
 
@@ -108,126 +108,28 @@ The analysis asks how pacing changes ACK timing and window growth, and how that 
 - [Slow-start timing and comparison models](https://mailarchive.ietf.org/arch/msg/iccrg/K0LZfeCUDnp3Kj91dMx-0iPGef8/), including the distinction between [fixed-batch and per-ACK scheduling](https://mailarchive.ietf.org/arch/msg/iccrg/GSzlNebpiu6Gp1UTRZJISBRiIi8/) and [window limits versus pacing-rate limits](https://mailarchive.ietf.org/arch/msg/iccrg/6K-oKt8LfaaH1XQKzp62wfElujc/).
 - [Why Linux uses a slow-start pacing multiplier of 2](https://mailarchive.ietf.org/arch/msg/iccrg/ms7Nww2LvUBuDaUmOD71osmp8bI/). [Neal Cardwell's reply](https://mailarchive.ietf.org/arch/msg/iccrg/ERsHqvYQLs7cNCxOPw13U5Jl9sg/) provides paced/unpaced CUBIC timing diagrams and the BBR Startup gain derivation. The [follow-up question](https://mailarchive.ietf.org/arch/msg/iccrg/a59n7DRXZr4q6it_djAZh23wuas/) examines the assumptions behind a continuous-model calculation of `2 ln 2` and its relation to Linux's multiplier of 2.
 
-## Build
+## Build and tests
 
-The test programs are currently intended for Linux.
+One CMake configuration builds all tests. Real UDP and virtual-network tests share the generated-data transfer, checksum exchange and close verification. No payload files are needed.
 
-```bash
-git clone https://github.com/skaiui2/SCP.git
-cd SCP
-
-mkdir -p test/nodeA/build test/nodeB/build
-
-cd test/nodeA/build
-cmake ..
-make -j$(nproc)
-
-cd ../../nodeB/build
-cmake ..
-make -j$(nproc)
+```sh
+cmake -S test -B test/build -DCMAKE_BUILD_TYPE=Release
+cmake --build test/build -j
+ctest --test-dir test/build --output-on-failure
+python3 test/common/check_udp.py test/build/scp_udp --out test/results/udp-1g
 ```
 
-To collect controller state for plots, change `SCP_DUMP_SS` in `scp.h` from `0` to `1`, then rebuild both nodes. Set it back to `0` for measurements that do not require time-series logs. JSON logging can perturb performance, so always record whether it was enabled.
+The default transfer is 1 GiB. See [test instructions](test/README.md) for network sweeps and fairness measurements.
 
-When new test source files are added, rerun `cmake ..` before `make` because the current CMake files discover sources during configuration.
+For Linux namespaces, create the topology, then start B and A in separate terminals:
 
-## Regression tests
-
-The unified test runner provides five cases:
-
-| Case | Purpose |
-|---|---|
-| `prob-100m` | Send one 100 MiB file with SCP-PROB |
-| `aimd-100m` | Send one 100 MiB file with AIMD |
-| `pacing` | Transfer and verify 8 MiB while recording real sender callback timing |
-| `prob-prob` | Measure fairness between two continuously backlogged PROB flows |
-| `prob-aimd` | Measure coexistence between continuously backlogged PROB and AIMD flows |
-
-The 100 MiB tests preserve the historical one-way file test:
-
-```text
-nodeA/build/testA.bin  -->  nodeB/build/outB.bin
+```sh
+sudo bash setup_scp_netns.sh
+sudo ip netns exec scp-s test/build/scp_udp B
+sudo ip netns exec scp-c test/build/scp_udp A 10.0.2.1
 ```
 
-The test does not generate `testA.bin`. Prepare a file of exactly 100 MiB before running it:
-
-```bash
-cd test/nodeA/build
-truncate -s 100M testA.bin
-```
-
-### Create the network topology
-
-The repository provides a three-namespace topology:
-
-```text
-scp-c (client)  <-->  scp-r (router/netem)  <-->  scp-s (server)
-```
-
-Example: 5 Mbit/s per direction, 50 ms one-way delay, no random loss, and a 1000-packet queue:
-
-```bash
-cd SCP
-sudo ./setup_scp_netns.sh setup 5mbit 50ms 0% 1000
-sudo ./setup_scp_netns.sh ping
-```
-
-### Regression smoke test
-
-The `all` mode checks that all cases can run sequentially. It deliberately combines several experiments and clock epochs, so its output is **not** a valid input for performance plots.
-
-Start nodeB first:
-
-```bash
-cd test/nodeB/build
-sudo ip netns exec scp-s ./nodeB all 10
-```
-
-Then start nodeA:
-
-```bash
-cd test/nodeA/build
-sudo ip netns exec scp-c ./nodeA 10.0.2.1 all 10
-```
-
-The final argument is the measurement duration, in seconds, for each fairness case.
-
-### Performance and figure runs
-
-Run every measured case separately and save A/B output in case-specific files. For example, start the receiver:
-
-```bash
-cd SCP/test/nodeB/build
-sudo ip netns exec scp-s ./nodeB prob-prob 300 \
-    | tee nodeB-prob-prob.log
-```
-
-Then start the sender:
-
-```bash
-cd SCP/test/nodeA/build
-sudo ip netns exec scp-c ./nodeA 10.0.2.1 prob-prob 300 \
-    | tee nodeA-prob-prob.log
-```
-
-Use correspondingly named files such as `nodeA-prob-100m.log`, `nodeA-aimd-100m.log`, and `nodeA-prob-aimd.log`. Do not append unrelated cases to the same performance log.
-
-### Verify file integrity
-
-```bash
-cd SCP
-stat -c '%n %s' \
-    test/nodeA/build/testA.bin \
-    test/nodeB/build/outB.bin
-
-md5sum \
-    test/nodeA/build/testA.bin \
-    test/nodeB/build/outB.bin
-```
-
-Both files must be 104857600 bytes and their hashes must match. No fixed hash is assumed because the input file is supplied by the user.
-
-## Current validation snapshot
+## Earlier validation snapshot
 
 The following results are a transparent snapshot from **2026-08-19**, not a multi-run benchmark or a general performance claim.
 
@@ -266,32 +168,12 @@ In test output, `"status":"success"` records successful case execution and the a
 
 ## Analysis
 
-With `SCP_DUMP_SS=1`, SCP emits `type:"ss"` JSON records. Each record includes `stream_fd`, so the two flows in a fairness experiment can be plotted independently.
+`test/plot.py` accepts a virtual result directory, a sweep report directory, or an SCP JSONL state log. Enable `SCP_DUMP_SS` to produce state logs. It plots recorded numeric fields, residual-delay phase portraits and controller transitions; it does not infer obsolete controller thresholds.
 
-Generate complete diagnostic plots for both sender-side flows:
-
-```bash
-cd SCP
-python3 test/analyze_scp.py test/nodeA/build/nodeA-prob-prob.log \
-    --stream-fd 1 --out test/nodeA/build/plots-prob-prob-flow1
-
-python3 test/analyze_scp.py test/nodeA/build/nodeA-prob-prob.log \
-    --stream-fd 2 --out test/nodeA/build/plots-prob-prob-flow2
+```sh
+python3 test/plot.py test/results/sweep
+python3 test/plot.py A.log --stream-fd 1 --out plots
 ```
-
-Generate compact publication figures:
-
-```bash
-python3 test/fig.py test/nodeA/build/nodeA-prob-prob.log \
-    --stream-fd 1 --out test/nodeA/build/paper-prob-prob-flow1
-
-python3 test/fig.py test/nodeA/build/nodeA-prob-prob.log \
-    --stream-fd 2 --out test/nodeA/build/paper-prob-prob-flow2
-```
-
-For a single-flow log, `--stream-fd` may be omitted. Never feed an `all` log into the plotting scripts: it contains unrelated cases and reset clock epochs.
-
-Because plots and congestion behavior change with the topology, controller revision, and random seed, the README intentionally does not treat old plots as current evidence. Preserve the raw command, source revision, build mode, netem parameters, and logs for every reported experiment.
 
 ## Intended uses and limitations
 

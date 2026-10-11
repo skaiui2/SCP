@@ -1,9 +1,9 @@
 name: SCP virtual network
 on:
   push:
-    paths: ['scp.c', 'scp.h', 'lib/**', 'test/virtual/**', '.github/workflows/virtual-network.yml']
+    paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/virtual-network.yml']
   pull_request:
-    paths: ['scp.c', 'scp.h', 'lib/**', 'test/virtual/**', '.github/workflows/virtual-network.yml']
+    paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/virtual-network.yml']
   workflow_dispatch:
     inputs:
       profile:
@@ -23,8 +23,11 @@ jobs:
         shard: [0,1,2,3,4,5,6,7]
     steps:
       - uses: actions/checkout@v4
-      - run: cmake -S test/virtual -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
+      - run: cmake -S test -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
       - run: ctest --test-dir build --output-on-failure
+      - name: Real UDP 1 GiB using the shared transfer scenario
+        if: matrix.shard == 0
+        run: python3 test/common/check_udp.py build/scp_udp --out results/udp-1g
       - name: Sweep configured network environments
         env:
           PROFILE: ${{ inputs.profile || 'quick' }}
@@ -46,9 +49,9 @@ jobs:
           pattern: network-shard-*
           merge-multiple: true
           path: results
-      - run: python3 test/virtual/merge_sweep.py results
+      - run: python3 test/virtual/sweep.py --merge results
       - run: pip install matplotlib
-      - run: python3 test/virtual/plot_sweep.py results
+      - run: python3 test/plot.py results
       - run: cat results/report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()

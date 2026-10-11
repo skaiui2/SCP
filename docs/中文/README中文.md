@@ -36,9 +36,9 @@ Pacing 研究见：[Pacing and Congestion-Window Growth: An Exact Packet-Level A
 ```text
 scp.c / scp.h                  协议核心
 lib/                           侵入式容器和基础数据结构
-test/nodeA / test/nodeB        Linux 集成测试
+test/                         统一的 UDP 与虚拟网络测试
 setup_scp_netns.sh             可复现的 network namespace 拓扑
-test/analyze_scp.py            日志分析
+test/plot.py                  曲线与状态日志分析
 docs/                          使用文档
 ```
 
@@ -108,126 +108,28 @@ pacing 不替代拥塞窗口：
 - [慢启动时序与比较模型](https://mailarchive.ietf.org/arch/msg/iccrg/K0LZfeCUDnp3Kj91dMx-0iPGef8/)，涉及[固定批次与逐 ACK 调度的区别](https://mailarchive.ietf.org/arch/msg/iccrg/GSzlNebpiu6Gp1UTRZJISBRiIi8/)，以及[窗口限制与 pacing 速率限制的关系](https://mailarchive.ietf.org/arch/msg/iccrg/6K-oKt8LfaaH1XQKzp62wfElujc/)。
 - [Linux 为什么在慢启动中采用 2 倍 pacing 速率](https://mailarchive.ietf.org/arch/msg/iccrg/ms7Nww2LvUBuDaUmOD71osmp8bI/)：[Neal Cardwell 的回复](https://mailarchive.ietf.org/arch/msg/iccrg/ERsHqvYQLs7cNCxOPw13U5Jl9sg/)提供了 paced/unpaced CUBIC 时序图和 BBR Startup gain 推导；[后续问题](https://mailarchive.ietf.org/arch/msg/iccrg/a59n7DRXZr4q6it_djAZh23wuas/)继续讨论连续模型算出 `2 ln 2` 所依赖的假设，以及它与 Linux 系数 2 的关系。
 
-## 编译
+## 编译与测试
 
-当前测试程序面向 Linux。
+全部测试通过一份 CMake 配置构建。真实 UDP 和虚拟网络共用数据生成、收发、校验与关闭流程，不读取或复制测试文件。
 
-```bash
-git clone https://github.com/skaiui2/SCP.git
-cd SCP
-
-mkdir -p test/nodeA/build test/nodeB/build
-
-cd test/nodeA/build
-cmake ..
-make -j$(nproc)
-
-cd ../../nodeB/build
-cmake ..
-make -j$(nproc)
+```sh
+cmake -S test -B test/build -DCMAKE_BUILD_TYPE=Release
+cmake --build test/build -j
+ctest --test-dir test/build --output-on-failure
+python3 test/common/check_udp.py test/build/scp_udp --out test/results/udp-1g
 ```
 
-需要采集控制器状态并绘图时，把 `scp.h` 中的 `SCP_DUMP_SS` 从 `0` 改成 `1`，然后重新编译两端。不需要时间序列时改回 `0`。JSON 日志可能干扰性能，因此实验记录必须注明是否开启。
+默认测试 1 GiB。更多配置、虚拟网络扫描和公平性测试见 [测试说明](../../test/README.md)。
 
-新增测试源文件后，需要先重新执行 `cmake ..` 再运行 `make`，因为当前 CMake 会在配置阶段扫描源文件。
+Linux 网络命名空间测试，先建立拓扑，再在两个终端中分别启动 B、A：
 
-## 回归测试
-
-统一测试入口包含五项测试：
-
-| 测试名 | 目的 |
-|---|---|
-| `prob-100m` | 使用 SCP-PROB 单向发送 100 MiB 文件 |
-| `aimd-100m` | 使用 AIMD 单向发送 100 MiB 文件 |
-| `pacing` | 传输并校验 8 MiB，同时记录真实发送回调时间 |
-| `prob-prob` | 测量两条持续有数据的 PROB 流之间的公平性 |
-| `prob-aimd` | 测量持续有数据的 PROB 与 AIMD 的共存情况 |
-
-100 MiB 测试严格保留历史单向文件测试：
-
-```text
-nodeA/build/testA.bin  -->  nodeB/build/outB.bin
+```sh
+sudo bash setup_scp_netns.sh
+sudo ip netns exec scp-s test/build/scp_udp B
+sudo ip netns exec scp-c test/build/scp_udp A 10.0.2.1
 ```
 
-测试程序不会生成 `testA.bin`。运行前必须准备一个严格等于 100 MiB 的输入文件：
-
-```bash
-cd test/nodeA/build
-truncate -s 100M testA.bin
-```
-
-### 建立网络拓扑
-
-仓库提供三 namespace 拓扑：
-
-```text
-scp-c（客户端） <--> scp-r（路由器/netem） <--> scp-s（服务端）
-```
-
-下面模拟双向各 5 Mbit/s、单向 50 ms 延迟、0% 随机丢包和 1000 包队列：
-
-```bash
-cd SCP
-sudo ./setup_scp_netns.sh setup 5mbit 50ms 0% 1000
-sudo ./setup_scp_netns.sh ping
-```
-
-### 回归冒烟测试
-
-`all` 用于检查所有 case 能否顺序跑通。它会混合多个独立实验和重新开始的时钟，因此输出**不能**用于绘制性能图。
-
-先运行 nodeB：
-
-```bash
-cd test/nodeB/build
-sudo ip netns exec scp-s ./nodeB all 10
-```
-
-再运行 nodeA：
-
-```bash
-cd test/nodeA/build
-sudo ip netns exec scp-c ./nodeA 10.0.2.1 all 10
-```
-
-最后一个参数是每项公平性实验的测量时间，单位为秒。
-
-### 性能与绘图实验
-
-每个实验必须单独运行，并分别保存 A/B 日志。下面以 `prob-prob` 为例，先运行接收端：
-
-```bash
-cd SCP/test/nodeB/build
-sudo ip netns exec scp-s ./nodeB prob-prob 300 \
-    | tee nodeB-prob-prob.log
-```
-
-再运行发送端：
-
-```bash
-cd SCP/test/nodeA/build
-sudo ip netns exec scp-c ./nodeA 10.0.2.1 prob-prob 300 \
-    | tee nodeA-prob-prob.log
-```
-
-其他测试使用对应文件名，例如 `nodeA-prob-100m.log`、`nodeA-aimd-100m.log` 和 `nodeA-prob-aimd.log`。不能把无关 case 追加到同一个性能日志。
-
-### 校验文件完整性
-
-```bash
-cd SCP
-stat -c '%n %s' \
-    test/nodeA/build/testA.bin \
-    test/nodeB/build/outB.bin
-
-md5sum \
-    test/nodeA/build/testA.bin \
-    test/nodeB/build/outB.bin
-```
-
-两个文件都必须为 104857600 字节，并且哈希值必须相同。由于输入文件由用户提供，因此 README 不再写死某个哈希值。
-
-## 当前验证快照
+## 早期验证记录
 
 以下结果来自 **2026-08-19** 的一次真实运行，只是透明记录，不是多轮基准测试，也不代表普遍性能结论。
 
@@ -264,34 +166,14 @@ md5sum \
 
 测试输出中的 `"status":"success"` 记录测试执行成功，并通过相应的协议或完整性检查；吞吐和公平性作为独立指标报告。
 
-## 日志分析
+## 日志与曲线
 
-开启 `SCP_DUMP_SS=1` 后，SCP 会输出 `type:"ss"` 状态记录。每条记录包含 `stream_fd`，因此可以分别绘制公平性实验中的两条流。
+`test/plot.py` 可绘制虚拟网络曲线、参数扫描结果或 SCP JSONL 状态日志；状态日志需启用 `SCP_DUMP_SS`。
 
-为发送端两条流分别生成完整诊断图：
-
-```bash
-cd SCP
-python3 test/analyze_scp.py test/nodeA/build/nodeA-prob-prob.log \
-    --stream-fd 1 --out test/nodeA/build/plots-prob-prob-flow1
-
-python3 test/analyze_scp.py test/nodeA/build/nodeA-prob-prob.log \
-    --stream-fd 2 --out test/nodeA/build/plots-prob-prob-flow2
+```sh
+python3 test/plot.py test/results/sweep
+python3 test/plot.py A.log --stream-fd 1 --out plots
 ```
-
-生成论文用紧凑图片：
-
-```bash
-python3 test/fig.py test/nodeA/build/nodeA-prob-prob.log \
-    --stream-fd 1 --out test/nodeA/build/paper-prob-prob-flow1
-
-python3 test/fig.py test/nodeA/build/nodeA-prob-prob.log \
-    --stream-fd 2 --out test/nodeA/build/paper-prob-prob-flow2
-```
-
-单流日志可以省略 `--stream-fd`。禁止把 `all` 日志直接交给绘图脚本，因为它包含互不相关的 case 和多次归零的时钟。
-
-拥塞窗口和性能曲线会随拓扑、算法版本和随机种子变化，因此 README 不再把旧图片当作当前证据。报告实验时应同时保存命令、源码版本、构建模式、netem 参数和原始日志。
 
 ## 适用场景与限制
 
