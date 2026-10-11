@@ -1182,44 +1182,61 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
     ss->sent_cnt++;
 }
 
-static void scp_output_to_pacing(struct scp_stream *ss,
-                                 uint32_t available,
-                                 uint32_t now,
-                                 uint32_t pacing_time_q16)
+static uint32_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
 {
-    uint32_t packet_index = 0;
+    uint32_t rtt;
+    uint32_t pacing_time;
 
+    rtt = ss->srtt ? ss->srtt : ss->rto;
+    if (rtt == 0)
+        rtt = SCP_RTO_MIN;
+
+    pacing_time = (uint32_t)((frag_len * rtt) / ss->cwnd);
+
+    return pacing_time;
+}
+
+/*
+ * The packet preceding `schedule_next` is the last pacing scheduling packet, 
+ * while `pacing_next` is the first pacing scheduling packet to be sent.
+ */
+static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
+{
     while (ss->schedule_next) {
-        struct scp_buf *sb = ss->schedule_next;
-        struct list_node *next = sb->list.next;
-        uint32_t frag_len =
-            sb->len - sizeof(struct scp_hdr);
-        uint64_t delta_q16;
+        struct scp_buf *sb;
+        struct scp_buf *last;
+        struct list_node *next;
+        uint32_t frag_len;
+        uint32_t pacing_next_sent_time;
+        uint32_t pacing_time;
+
+        sb = ss->schedule_next;
+        next = sb->list.next;
+        frag_len = sb->len - sizeof(struct scp_hdr);
 
         if (frag_len > available)
             break;
 
-        delta_q16 =
-            (uint64_t)packet_index * pacing_time_q16;
-
-        sb->sent_time =
-            now +
-            (uint32_t)((delta_q16 + (1U << 15)) >> 16);
-
-        if (!ss->pacing_next)
+        //Maybe data sent all, so we need to check it.
+        if (ss->pacing_next) {
+            last = container_of(ss->schedule_next->list.prev, struct scp_buf, list);
+            pacing_next_sent_time = last->sent_time;
+            pacing_time = scp_pacing_time(ss, frag_len); 
+        } else {
             ss->pacing_next = sb;
+            pacing_next_sent_time = scp_now_time();
+            pacing_time = 0;
+        }
+
+        sb->sent_time = pacing_next_sent_time + pacing_time;
 
         if (next == &ss->snd_q) {
             ss->schedule_next = NULL;
         } else {
-            ss->schedule_next =
-                container_of(next,
-                             struct scp_buf,
-                             list);
+            ss->schedule_next = container_of(next, struct scp_buf, list);
         }
 
         available -= frag_len;
-        packet_index++;
     }
 }
 
@@ -1227,10 +1244,8 @@ static int scp_output(struct scp_stream *ss)
 {
     uint32_t flight;
     uint32_t win;
-    uint32_t rtt;
-    uint32_t pacing_time_q16;
 
-    if (ss->pacing_next || !ss->schedule_next)
+    if (!ss->schedule_next)
         return 0;
 
     win = min(ss->snd_wnd, ss->cwnd);
@@ -1239,22 +1254,7 @@ static int scp_output(struct scp_stream *ss)
     if (win == 0 || flight >= win)
         return 0;
 
-    rtt = ss->srtt ? ss->srtt : ss->rto;
-    if (rtt == 0)
-        rtt = SCP_RTO_MIN;
-
-    pacing_time_q16 =
-        (uint32_t)(((((uint64_t)rtt * MSS) << 16) +
-                    ss->cwnd / 2U) /
-                   ss->cwnd);
-
-    if (pacing_time_q16 == 0)
-        pacing_time_q16 = 1;
-
-    scp_output_to_pacing(ss,
-                         win - flight,
-                         scp_now_time(),
-                         pacing_time_q16);
+    scp_output_to_pacing(ss, win - flight);
 
     if (ss->pacing_next && !ss->t_pacing.active) {
         scp_timer_create(&ss->t_pacing,
@@ -2239,8 +2239,7 @@ static void scp_aimd_on_loss(struct scp_stream *ss)
     uint32_t half = ss->cwnd / 2U;
     uint32_t minimum = 2U * MSS;
 
-    ss->ssthresh =
-        half > minimum ? half : minimum;
+    ss->ssthresh = half > minimum ? half : minimum;
 
     ss->cwnd = ss->ssthresh;
 }
