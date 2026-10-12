@@ -15,6 +15,10 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb);
 void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh);
 
 extern uint32_t scp_now_time(void);
+uint32_t scp_experiment_g_hundredths = 100;
+uint32_t scp_experiment_first_data_ms = UINT32_MAX;
+uint64_t scp_experiment_acked_bytes;
+uint32_t scp_experiment_ack_calls;
 
 static struct rb_root scp_timer_tree;
 static struct hashmap scp_stream_map;
@@ -314,7 +318,11 @@ void scp_timer_process(void)
     }
 #if SCP_DUMP_SS
     uint32_t now = scp_now_time();
-    if (now - scp_dump_time >= SCP_DUMP_INTERVAL_MS) {
+    uint32_t interval = SCP_DUMP_INTERVAL_MS;
+    if (scp_experiment_first_data_ms != UINT32_MAX &&
+        now - scp_experiment_first_data_ms < 5000)
+        interval = 1;
+    if (now - scp_dump_time >= interval) {
         struct list_node *node;
         scp_dump_time = now;
         for (node = scp_stream_queue.next; node != &scp_stream_queue; node = node->next)
@@ -1272,6 +1280,9 @@ static uint32_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
         rtt = SCP_RTO_MIN;
 
     pacing_time = (uint32_t)((frag_len * rtt) / ss->cwnd);
+    if (scp_experiment_g_hundredths != 100)
+        pacing_time = (uint32_t)((frag_len * rtt) * 100.0 /
+            (scp_experiment_g_hundredths * (double)ss->cwnd));
 
     return pacing_time;
 }
@@ -2301,28 +2312,9 @@ static void scp_aimd_on_ack(struct scp_stream *ss,
 
     uint64_t next_cwnd;
 
-    if (ss->cwnd < ss->ssthresh) {
-        next_cwnd =
-            (uint64_t)ss->cwnd +
-            (uint64_t)acked;
-    } else {
-        uint64_t numerator =
-            (uint64_t)MSS *
-            (uint64_t)acked;
-
-        uint32_t inc =
-            (uint32_t)(
-                numerator /
-                (ss->cwnd ? ss->cwnd : 1U)
-            );
-
-        if (inc == 0)
-            inc = 1;
-
-        next_cwnd =
-            (uint64_t)ss->cwnd +
-            inc;
-    }
+    next_cwnd = (uint64_t)ss->cwnd + acked;
+    scp_experiment_acked_bytes += acked;
+    ++scp_experiment_ack_calls;
 
     if (next_cwnd > CWND_WIN_MAX)
         next_cwnd = CWND_WIN_MAX;

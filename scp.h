@@ -38,10 +38,10 @@ struct scp_timer {
 #define SCP_RTO_MAX 2000
 #define RETRANS_RECO_MAX 1
 #define RETRANS_GAP_MAX  4
-#define SCP_RECV_LIMIT (1 << 24)
-#define SEND_WIN_INIT (1 << 24)
-#define RECV_WIN_INIT (1 << 24)
-#define CWND_WIN_MAX  (1 << 20)
+#define SCP_RECV_LIMIT (1 << 27)
+#define SEND_WIN_INIT (1 << 27)
+#define RECV_WIN_INIT (1 << 27)
+#define CWND_WIN_MAX  (1 << 26)
 #define MTU 1460
 #define PERSIST_INTERVAL 200
 #define SCP_PACING_TICK_MS 1U

@@ -18,7 +18,7 @@ if(SCP_TEST_TRANSFER)
       target_link_libraries(${target} PRIVATE m)
     endif()
   endfunction()
-  scp_test_target(scp_virtual virtual/case_transfer.c virtual/vnet.c common/transfer.c ../scp.c)
+  scp_test_target(scp_virtual virtual/case_transfer.c virtual/research.c virtual/vnet.c common/transfer.c ../scp.c)
   scp_test_target(scp_udp common/udp_main.c common/udp_runner.c
     common/real_clock.c common/transfer.c ../scp.c)
   scp_test_target(test_lifecycle virtual/case_lifecycle.c common/transfer.c)

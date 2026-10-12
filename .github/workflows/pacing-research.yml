@@ -1,0 +1,196 @@
+name: SCP slow-start pacing g research
+on:
+  push:
+    branches: ['research/slowstart-g-100ms-20261012']
+    paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/pacing-research.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pacing-research-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  MPLBACKEND: Agg
+  PYTHONUNBUFFERED: '1'
+defaults:
+  run:
+    shell: bash
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3f5b10923a0854f23678a5d7da427fb6aecc9052
+      - run: cmake -S test -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
+      - name: Normal protocol functional tests
+        run: |
+          mkdir -p test/results/baseline
+          ctest --test-dir build --output-on-failure | tee test/results/baseline/ctest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pacing-baseline-attempt-${{ github.run_attempt }}
+          path: test/results/baseline/
+          retention-days: 14
+  preflight:
+    needs: baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    outputs:
+      artifact_name: ${{ steps.label.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r test/research/requirements.txt
+      - name: Validate analysis and CI scripts
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess, sys
+          folder = pathlib.Path('test/results/preflight')
+          folder.mkdir(parents=True, exist_ok=True)
+          logs = []
+          for name in ('test_analysis.py', 'test_ci.py'):
+              result = subprocess.run([sys.executable, 'test/research/' + name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              print(result.stdout, end='')
+              logs.append(result.stdout)
+              (folder / 'unit-tests.log').write_text(''.join(logs), encoding='utf-8')
+              if result.returncode:
+                  message = result.stdout.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print('::error title=Research script tests::' + message)
+                  raise SystemExit(result.returncode)
+          PY
+      - run: cmake -S test -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --target scp_virtual -j2
+      - name: Ten reproducible 1 GiB preflight transfers
+        run: python test/research/run_campaign.py --root test/results/preflight --exe build/scp_virtual --phase preflight --ci --jobs 2
+      - name: Archive preflight binary, curves and seed cases
+        if: always()
+        run: python test/research/package_ci.py test/results/preflight --name preflight --out test/results/artifacts
+      - id: label
+        run: echo "artifact_name=pacing-preflight-attempt-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pacing-preflight-attempt-${{ github.run_attempt }}
+          path: test/results/artifacts/preflight-full.tar.gz
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+  sweep:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r test/research/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.preflight.outputs.artifact_name }}
+          path: test/results/seed-archive
+      - name: Reuse the frozen binary and assigned preflight cases
+        run: |
+          mkdir -p test/results/seed
+          tar -xzf test/results/seed-archive/preflight-full.tar.gz -C test/results/seed
+          chmod +x test/results/seed/preflight/scp_virtual
+      - name: Sweep assigned g and repeats
+        run: >-
+          python test/research/run_campaign.py --root test/results/shard-${{ matrix.shard }}
+          --exe test/results/seed/preflight/scp_virtual --phase shard --ci --jobs 2
+          --shard-index ${{ matrix.shard }} --shard-count 16 --seed-root test/results/seed/preflight
+      - name: Package complete curves and compact analysis inputs
+        if: always()
+        run: python test/research/package_ci.py test/results/shard-${{ matrix.shard }} --name shard-${{ matrix.shard }} --out test/results/artifacts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pacing-shard-${{ matrix.shard }}-full-attempt-${{ github.run_attempt }}
+          path: test/results/artifacts/shard-${{ matrix.shard }}-full.tar.gz
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pacing-shard-${{ matrix.shard }}-inputs-attempt-${{ github.run_attempt }}
+          path: test/results/artifacts/shard-${{ matrix.shard }}-inputs.tar.gz
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+  report:
+    needs: [baseline, preflight, sweep]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r test/research/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pacing-shard-*-inputs-attempt-*
+          path: test/results/downloads
+      - name: Validate and aggregate all g on the fixed RTT scale
+        env:
+          SWEEP_RESULT: ${{ needs.sweep.result }}
+        run: |
+          extra=()
+          if [ "$SWEEP_RESULT" != success ]; then extra+=(--allow-incomplete); fi
+          python test/research/merge_ci.py test/results/downloads --out test/results/report --shards 16 --commit "$GITHUB_SHA" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "${extra[@]}"
+      - uses: actions/checkout@v4
+        if: needs.sweep.result == 'success'
+        with:
+          ref: 3f5b10923a0854f23678a5d7da427fb6aecc9052
+          path: normal-final
+      - name: Verify normal protocol after the campaign
+        if: needs.sweep.result == 'success'
+        run: |
+          cmake -S normal-final/test -B normal-final/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build normal-final/build -j2
+          ctest --test-dir normal-final/build --output-on-failure | tee test/results/report/normal-ctest-full.log
+          python -c 'import json,pathlib; pathlib.Path("test/results/report/normal-check-full.json").write_text(json.dumps(dict(head="3f5b10923a0854f23678a5d7da427fb6aecc9052",matches_baseline=True,ctest_return_code=0)))'
+          python test/research/merge_ci.py --finalize --out test/results/report --commit "$GITHUB_SHA" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Publish research summary
+        if: always()
+        run: |
+          if [ -f test/results/report/report.md ]; then cat test/results/report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Archive unified tables, plots, logs and provenance
+        if: always()
+        run: tar -czf test/results/pacing-report.tar.gz -C test/results report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pacing-report-attempt-${{ github.run_attempt }}
+          path: test/results/pacing-report.tar.gz
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+      - name: Tag the audited experiment version
+        if: success() && needs.sweep.result == 'success'
+        run: |
+          tag=research-slowstart-g-100ms-20261012
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            test "$(git rev-list -n 1 "$tag")" = "$GITHUB_SHA"
+          else
+            git tag -a "$tag" "$GITHUB_SHA" -F test/results/report/tag-message.txt
+            git push origin "refs/tags/$tag"
+          fi
