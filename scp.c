@@ -1275,9 +1275,10 @@ static uint32_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
     uint32_t rtt;
     uint32_t pacing_time;
 
-    rtt = ss->srtt ? ss->srtt : ss->rto;
-    if (rtt == 0)
-        rtt = SCP_RTO_MIN;
+    if (!ss->srtt)
+        return 1;
+
+    rtt = ss->srtt;
 
     pacing_time = (uint32_t)((frag_len * rtt) / ss->cwnd);
     if (scp_experiment_g_hundredths != 100)
