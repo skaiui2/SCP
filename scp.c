@@ -9,6 +9,7 @@ static void scp_retransmit(struct scp_stream *ss);
 static int scp_output(struct scp_stream *ss);
 static void scp_finish_close(struct scp_stream *ss);
 static void scp_pacing_timer_cb(void *arg);
+static void scp_pacing_send_due(struct scp_stream *ss);
 static int scp_install_cc(struct scp_stream *ss,
                           enum scp_cc_id cc_id);
 void scp_output_data(struct scp_stream *ss, struct scp_buf *sb);
@@ -1336,7 +1337,10 @@ static int scp_output(struct scp_stream *ss)
         return 0;
 
     scp_output_to_pacing(ss, win - flight);
+    scp_pacing_send_due(ss);
 
+    if (!ss->pacing_next)
+        scp_timer_delete(&ss->t_pacing);
     if (ss->pacing_next && !ss->t_pacing.active) {
         scp_timer_create(&ss->t_pacing,
                          scp_pacing_timer_cb,
@@ -1347,9 +1351,8 @@ static int scp_output(struct scp_stream *ss)
     return 0;
 }
 
-static void scp_pacing_timer_cb(void *arg)
+static void scp_pacing_send_due(struct scp_stream *ss)
 {
-    struct scp_stream *ss = arg;
     uint32_t now;
     uint8_t sent_any = 0;
 
@@ -1396,6 +1399,15 @@ static void scp_pacing_timer_cb(void *arg)
                          ss,
                          ss->rto);
     }
+}
+
+static void scp_pacing_timer_cb(void *arg)
+{
+    struct scp_stream *ss = arg;
+
+    if (!ss || ss->state != SCP_ESTABLISHED)
+        return;
+    scp_pacing_send_due(ss);
 
     if (ss->pacing_next) {
         scp_timer_create(&ss->t_pacing,
