@@ -45,6 +45,7 @@ struct scp_timer {
 #define MTU 1460
 #define PERSIST_INTERVAL 200
 #define SCP_PACING_TICK_MS 1U
+#define SCP_PACING_SHIFT 32U
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
@@ -66,7 +67,7 @@ struct scp_buf {
     };
     size_t len;
     uint32_t seq; // save it from hdr.
-    uint32_t sent_time; // planned pacing send time, milliseconds
+    uint64_t sent_time; // planned pacing send time, Q32.32 milliseconds
     uint8_t dir:1;
     uint8_t *data;
     uint32_t payload_off;

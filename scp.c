@@ -1262,17 +1262,17 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
     ss->sent_cnt++;
 }
 
-static uint32_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
+static uint64_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
 {
     uint32_t rtt;
-    uint32_t pacing_time;
+    uint64_t pacing_time;
 
     if (!ss->srtt)
-        return 1;
+        return 1ULL << SCP_PACING_SHIFT;
 
     rtt = ss->srtt;
 
-    pacing_time = (uint32_t)((frag_len * rtt) / ss->cwnd);
+    pacing_time = ((uint64_t)frag_len * rtt << SCP_PACING_SHIFT) / ss->cwnd;
 
     return pacing_time;
 }
@@ -1288,8 +1288,8 @@ static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
         struct scp_buf *last;
         struct list_node *next;
         uint32_t frag_len;
-        uint32_t pacing_next_sent_time;
-        uint32_t pacing_time;
+        uint64_t pacing_next_sent_time;
+        uint64_t pacing_time;
 
         sb = ss->schedule_next;
         next = sb->list.next;
@@ -1305,7 +1305,7 @@ static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
             pacing_time = scp_pacing_time(ss, frag_len); 
         } else {
             ss->pacing_next = sb;
-            pacing_next_sent_time = scp_now_time();
+            pacing_next_sent_time = (uint64_t)scp_now_time() << SCP_PACING_SHIFT;
             pacing_time = 0;
         }
 
@@ -1359,7 +1359,7 @@ static void scp_pacing_timer_cb(void *arg)
     now = scp_now_time();
 
     while (ss->pacing_next &&
-           SEQ_LEQ(ss->pacing_next->sent_time, now)) {
+           SEQ_LEQ((uint32_t)(ss->pacing_next->sent_time >> SCP_PACING_SHIFT), now)) {
         struct scp_buf *sb = ss->pacing_next;
         struct list_node *next = sb->list.next;
         uint32_t frag_len =
