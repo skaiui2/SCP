@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import unittest
 import tempfile
+import run_scp_fixed_feedback as runner
 
 ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('analysis', ROOT / 'analyze_pacing_research.py')
@@ -13,6 +14,30 @@ spec.loader.exec_module(analysis)
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_native_summary_validation(self):
+        settings = json.loads((ROOT / 'scp_fixed_experiment.json').read_text())
+        settings['bytes'] = 2 * settings['mss_bytes'] + 17
+        gain = next(g for g in settings['gains'] if g['id'] == 'critical')
+        summary = dict(engine='scp_virtual', status='complete', g=gain['value'],
+                       transport='fixed_delay', rate_mbps=0, delay_ms=50, loss_ppm=0, seed=1,
+                       received_bytes=settings['bytes'], accepted_bytes=settings['bytes'],
+                       new_bytes=settings['bytes'], checksum_ok=True, checksum_a='same', checksum_b='same',
+                       mss_bytes=1430, data_payload_packet_counts={'1430': 2, '17': 1},
+                       new_packets=3, nonfinal_short_packets=0, last_new_payload_bytes=17,
+                       feedback_count=3, feedback_min_ms=100, feedback_max_ms=100,
+                       observer_errors=0, dropped=0, retrans_packets=0,
+                       **{field: settings[field] for field in
+                          ('cwnd_limit_bytes', 'send_window_bytes', 'recv_window_bytes')})
+        runner.validate(summary, settings, gain)
+        for changes in (dict(nonfinal_short_packets=1), dict(last_new_payload_bytes=1430),
+                        dict(data_payload_packet_counts={'1430': 1, '17': 1, '715': 2}),
+                        dict(feedback_count=2), dict(feedback_max_ms=102),
+                        dict(loss_ppm=1), dict(rate_mbps=1000), dict(transport='serialized_link')):
+            with self.subTest(changes=changes), self.assertRaises(RuntimeError):
+                runner.validate(dict(summary, **changes), settings, gain)
+        with self.assertRaises(RuntimeError):
+            runner.validate_settings(dict(settings, loss_ppm=1000))
+
     def test_hand_calculated_metrics(self):
         slots = [0] * 100
         slots[0], slots[50], slots[99] = 2, 1, 1
@@ -105,7 +130,20 @@ class AnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Incomplete'):
             analysis.analyze(root, out, False)
         analysis.analyze(root, root / 'partial-analysis', True)
-        (root / 'experiment.json').write_text(json.dumps(dict(manifest, repeats=2)))
+        critical = 1.3862943611198906
+        manifest.pop('g_hundredths')
+        manifest.update(repeats=2, gains=[dict(id='critical', value=critical), dict(id='g2', value=2)])
+        (root / 'experiment.json').write_text(json.dumps(manifest))
+        for path in (root / 'runs').glob('*/config.json'):
+            case = json.loads(path.read_text())
+            old = case.pop('g_hundredths')
+            case.update(gain_id='critical' if old == 100 else 'g2', g=critical if old == 100 else 2)
+            path.write_text(json.dumps(case))
+        analysis.analyze(root, root / 'critical-analysis', False)
+        with (root / 'critical-analysis/cwnd_by_rtt.csv').open(encoding='utf-8-sig') as source:
+            wide = list(csv.DictReader(source))
+        self.assertEqual(float(wide[1][f'g_{critical:.17g}']), 2860)
+        self.assertNotIn('g_1.39', wide[1])
 
 
 if __name__ == '__main__':

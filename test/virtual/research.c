@@ -13,11 +13,39 @@ struct bin {
 };
 static struct bin bins[3];
 static FILE *output;
+static FILE *events;
 static uint32_t bin_index, base_seq;
 extern uint32_t scp_now_time(void), scp_experiment_first_data_ms;
 uint32_t research_last_data_ms, research_new_bytes;
 uint64_t research_new_packets, research_retrans_packets, research_retrans_bytes;
 unsigned research_errors;
+uint32_t research_feedback_min_ms = UINT32_MAX, research_feedback_max_ms;
+uint64_t research_feedback_count;
+uint64_t research_payload_packets[MSS + 1], research_nonfinal_short_packets;
+uint32_t research_last_new_payload_bytes;
+
+void research_observe(unsigned direction, int arrival, const void *buf, size_t len, uint32_t now)
+{
+    struct scp_hdr hdr;
+    uint32_t echo;
+    if (len < sizeof(hdr)) { ++research_errors; return; }
+    memcpy(&hdr, buf, sizeof(hdr));
+    if (!events) {
+        events = fopen("network_events.csv", "w");
+        if (!events) { ++research_errors; return; }
+        fprintf(events, "event,direction,t_ms,fd,flags,seq,ack,payload_bytes,echo_send_ms\n");
+    }
+    echo = ntohl(hdr.time_val);
+    fprintf(events, "%s,%u,%u,%u,%u,%u,%u,%u,%u\n", arrival == 2 ? "input_returned" : arrival ? "arrival" : "send", direction,
+        now, hdr.fd, hdr.flags, ntohl(hdr.seq), ntohl(hdr.ack), ntohs(hdr.len), echo);
+    if (arrival == 1 && direction == 1 && hdr.flags == SCP_FLAG_ACK &&
+        scp_experiment_first_data_ms != UINT32_MAX && echo >= scp_experiment_first_data_ms) {
+        uint32_t elapsed = now - echo;
+        ++research_feedback_count;
+        if (elapsed < research_feedback_min_ms) research_feedback_min_ms = elapsed;
+        if (elapsed > research_feedback_max_ms) research_feedback_max_ms = elapsed;
+    }
+}
 
 static int flush_bin(void)
 {
@@ -61,7 +89,8 @@ int research_send(void *user, const void *buf, size_t len)
     if (((struct vnet_endpoint *)user)->direction != 0 || !(hdr.flags & SCP_FLAG_DATA))
         return vnet_send(user, buf, len);
     seq = ntohl(hdr.seq); bytes = ntohs(hdr.len);
-    if (bytes + sizeof(hdr) != len) { ++research_errors; return -1; }
+    if (!bytes || bytes > MSS || bytes + sizeof(hdr) != len) { ++research_errors; return -1; }
+    ++research_payload_packets[bytes];
     if (scp_experiment_first_data_ms == UINT32_MAX) {
         scp_experiment_first_data_ms = now; base_seq = seq;
         output = fopen("packet_rtt.csv", "w");
@@ -72,6 +101,9 @@ int research_send(void *user, const void *buf, size_t len)
     while (bin_index < target) if (flush_bin()) { ++research_errors; return -1; }
     offset = seq - base_seq;
     if (offset == research_new_bytes) {
+        if (research_new_packets && research_last_new_payload_bytes != MSS)
+            ++research_nonfinal_short_packets;
+        research_last_new_payload_bytes = bytes;
         scope = 1; research_new_bytes += bytes; ++research_new_packets;
     } else if (offset < research_new_bytes && bytes <= research_new_bytes - offset) {
         scope = 2; ++research_retrans_packets; research_retrans_bytes += bytes;
@@ -84,7 +116,9 @@ int research_send(void *user, const void *buf, size_t len)
 int research_finish(uint32_t end_ms)
 {
     int result = 0;
-    if (!output) return 0;
+    if (events && fclose(events)) result = -1;
+    events = NULL;
+    if (!output) return result;
     while (scp_experiment_first_data_ms + bin_index * RTT_MS < end_ms)
         if (flush_bin()) { result = -1; break; }
     if (fclose(output)) result = -1;

@@ -15,7 +15,7 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb);
 void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh);
 
 extern uint32_t scp_now_time(void);
-uint32_t scp_experiment_g_hundredths = 100;
+double scp_experiment_gain = 1;
 uint32_t scp_experiment_first_data_ms = UINT32_MAX;
 uint64_t scp_experiment_acked_bytes;
 uint32_t scp_experiment_ack_calls;
@@ -1281,9 +1281,9 @@ static uint32_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
     rtt = ss->srtt;
 
     pacing_time = (uint32_t)((frag_len * rtt) / ss->cwnd);
-    if (scp_experiment_g_hundredths != 100)
-        pacing_time = (uint32_t)((frag_len * rtt) * 100.0 /
-            (scp_experiment_g_hundredths * (double)ss->cwnd));
+    if (scp_experiment_gain != 1)
+        pacing_time = (uint32_t)((frag_len * rtt) /
+            (scp_experiment_gain * ss->cwnd));
 
     return pacing_time;
 }

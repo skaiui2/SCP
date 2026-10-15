@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Merge SCP cwnd curves and per-RTT DATA release histograms.
 
-Dependencies: numpy, matplotlib. See SCP-pacing-experiment-plan.md for the
-input contract. This script does not modify the protocol or run transfers.
+Dependencies: numpy, matplotlib. Reads native SCP state and transport logs.
+This script does not modify the protocol or run transfers.
 """
 import argparse
 import csv
@@ -143,7 +143,7 @@ def load_packets(path, case, summary):
             metrics = packet_metrics(slots, first, last, rtt, exposure)
             if int(raw["packet_count"]) != metrics["packet_count"]:
                 raise ValueError(f"{path}: packet_count differs from histogram sum")
-            row = dict(case_id=case["case_id"], g=float(case["g_hundredths"]) / 100,
+            row = dict(case_id=case["case_id"], g=float(case["g"]) if "g" in case else float(case["g_hundredths"]) / 100,
                        repeat=int(case["repeat"]), status=summary["status"],
                        rtt_index=k, start_rtt=k, first_tx_ms=first, last_tx_ms=last,
                        first_seq=raw["first_seq"], last_seq=raw["last_seq"],
@@ -217,7 +217,8 @@ def plot_windows(curves, settings, path):
             ax.axhline(cap / 2 ** 20, color="gray", linestyle=":", linewidth=1)
     if references:
         axes[1].legend(list(references.values()), [f"g={g:g}" for g in references], loc="lower right")
-    fig.suptitle(f"{settings['backend']} · {settings['bytes']/2**30:g} GiB · {settings['rate_mbps']} Mbps · "
+    link = 'unlimited fixed-delay transport' if settings.get('backend') == 'scp_virtual_fixed_delay' else f"{settings['rate_mbps']} Mbps"
+    fig.suptitle(f"{settings['backend']} · {settings['bytes']/2**30:g} GiB · {link} · "
                  f"base RTT {settings['rtt_ms']} ms · loss {settings['loss_ppm']/10000:g}%\n"
                  "All g curves; pointwise medians only on each group's common observed interval")
     fig.subplots_adjust(top=0.82, bottom=0.14, left=0.08, right=0.87, wspace=0.12)
@@ -258,18 +259,22 @@ def plot_dispersion(rows, path):
 
 def analyze(root, out, allow_incomplete):
     manifest = json.loads((root / "experiment.json").read_text(encoding="utf-8"))
-    expected_g = set(manifest["g_hundredths"])
-    if len(expected_g) != len(manifest["g_hundredths"]):
+    gains = {g['id']:float(g['value']) for g in manifest['gains']} if 'gains' in manifest else {g:g/100 for g in manifest['g_hundredths']}
+    expected_g = set(gains)
+    if len(expected_g) != len(manifest.get('gains', manifest.get('g_hundredths'))):
         raise ValueError("Duplicate gains in manifest")
     repeats = int(manifest["repeats"])
-    if repeats < 1 or not expected_g or any(type(g) is not int or g <= 0 for g in expected_g):
+    if repeats < 1 or not expected_g or any(not math.isfinite(g) or g <= 0 for g in gains.values()):
         raise ValueError("Invalid gain list or repeats")
     expected = {(gain, repeat) for gain in expected_g for repeat in range(1, repeats+1)}
     cases, audit, packet_rows, seen = defaultdict(list), [], [], set()
     state_rows = []
     for config in sorted((root / "runs").rglob("config.json")):
         case = json.loads(config.read_text(encoding="utf-8"))
-        gain_index, repeat = int(case["g_hundredths"]), int(case["repeat"])
+        gain_index = case['gain_id'] if 'gain_id' in case else int(case['g_hundredths'])
+        gain, repeat = float(case['g']) if 'g' in case else gain_index/100, int(case['repeat'])
+        if gain_index not in gains or gain != gains[gain_index]:
+            raise ValueError('Gain value or case identity disagrees with manifest')
         key = gain_index, repeat
         if key not in expected or key in seen:
             raise ValueError(f"{config}: unplanned or duplicate case {key}")
@@ -279,7 +284,7 @@ def analyze(root, out, allow_incomplete):
                 raise ValueError(f"{config}: mixed experimental condition {field}")
         summary_path = config.parent / "summary.json"
         if not summary_path.exists():
-            audit.append(dict(case_id=case["case_id"], g=gain_index/100, repeat=repeat, status="missing_summary"))
+            audit.append(dict(case_id=case["case_id"], g=gain, repeat=repeat, status="missing_summary"))
             continue
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         status = summary["status"]
@@ -290,7 +295,7 @@ def analyze(root, out, allow_incomplete):
         if status == "complete" and (int(summary["received_bytes"]) != int(case["bytes"])
                                      or not summary["checksum_ok"]):
             raise ValueError(f"{summary_path}: complete status contradicts integrity checks")
-        audit.append(dict(case_id=case["case_id"], g=gain_index/100, repeat=repeat, status=status,
+        audit.append(dict(case_id=case["case_id"], g=gain, repeat=repeat, status=status,
                           first_data_tx_ms=summary.get("first_data_tx_ms"),
                           data_acked_ms=summary.get("data_acked_ms"),
                           receiver_payload_complete_ms=summary.get("receiver_payload_complete_ms"),
@@ -308,11 +313,11 @@ def analyze(root, out, allow_incomplete):
         boundary = np.arange((end-anchor)//rtt+1, dtype=np.int64) * rtt
         values, ages = past_samples(times, windows, anchor + boundary)
         for k, (value, age) in enumerate(zip(values, ages)):
-            state_rows.append(dict(case_id=case["case_id"], g=gain_index/100, repeat=repeat,
+            state_rows.append(dict(case_id=case["case_id"], g=gain, repeat=repeat,
                                    status=status, rtt_index=k, elapsed_ms=k*rtt,
                                    cwnd_bytes=int(value) if np.isfinite(value) else None,
                                    sample_age_ms=int(age) if np.isfinite(age) else None))
-        cases[gain_index/100].append((anchor, end, times, windows))
+        cases[gain].append((anchor, end, times, windows))
         packet_rows.extend(load_packets(config.parent / case["packet_rtt_file"], case, summary))
     missing = sorted(expected - seen)
     unfinished = [row for row in audit if row["status"] == "missing_summary"]
@@ -342,8 +347,8 @@ def analyze(root, out, allow_incomplete):
                           cwnd_max_bytes=max(valid) if valid else None,
                           max_sample_age_ms=max((row["sample_age_ms"] for row in group
                                                 if row["sample_age_ms"] is not None), default=None)))
-        wide[k][f"g_{gain:.2f}"] = mid
-    fields = ["rtt_index", "elapsed_ms"] + [f"g_{g/100:.2f}" for g in sorted(expected_g)]
+        wide[k][f"g_{gain:.17g}" if 'gains' in manifest else f"g_{gain:.2f}"] = mid
+    fields = ["rtt_index", "elapsed_ms"] + [f"g_{g:.17g}" if 'gains' in manifest else f"g_{g:.2f}" for g in sorted(gains.values())]
     write_csv(out / "cwnd_by_rtt.csv", [dict(rtt_index=k, elapsed_ms=k*manifest["rtt_ms"], **row)
                                         for k, row in sorted(wide.items())], fields)
     write_csv(out / "cwnd_rtt_statistics.csv", stats)
@@ -362,7 +367,7 @@ def analyze(root, out, allow_incomplete):
     plot_dispersion(packet_summary, out / "packet_dispersion_all_g.png")
     report = dict(planned_runs=len(expected), recorded_configs=len(seen),
                   summaries=len(audit)-len(unfinished), observed_data_cases=sum(map(len, cases.values())),
-                  missing_cases=[dict(g_hundredths=g, repeat=r) for g, r in missing],
+                  missing_cases=[dict(gain_id=g, repeat=r) if 'gains' in manifest else dict(g_hundredths=g, repeat=r) for g, r in missing],
                   unfinished_cases=[row["case_id"] for row in unfinished],
                   statuses={status:sum(row["status"] == status for row in audit)
                             for status in sorted({row["status"] for row in audit})},

@@ -62,8 +62,9 @@ int transfer_step(struct transfer *t)
         printf("[%c][SCP] established\n", t->sender ? 'A' : 'B');
     }
     if (t->sender) {
-        while (t->sent < t->total && t->stream->snd_seq_q - t->stream->snd_una < (1U << 27)) {
-            size_t count = (size_t)min(t->total - t->sent, sizeof(buf));
+        while (t->sent < t->total && t->stream->snd_seq_q - t->stream->snd_una < (1U << 30)) {
+            size_t capacity = t->file ? sizeof(buf) : sizeof(buf) / MSS * MSS;
+            size_t count = (size_t)min(t->total - t->sent, capacity);
             int result;
             if (t->file) {
                 if (!t->pending_size) {
