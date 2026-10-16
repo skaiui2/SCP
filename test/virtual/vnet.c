@@ -15,20 +15,23 @@ uint64_t vnet_packets, vnet_dropped;
 uint32_t scp_now_time(void) { return now_ms; }
 void vnet_init(uint32_t delay_ms, uint32_t mbps, uint32_t loss_ppm, uint32_t seed)
 {
+    vnet_free();
+    now_ms = 0; next_us[0] = next_us[1] = 0;
+    vnet_packets = vnet_dropped = 0;
     delay = delay_ms; rate = mbps; loss = loss_ppm; random_state = seed ? seed : 1;
 }
 int vnet_send(void *user, const void *buf, size_t len)
 {
     unsigned d = ((struct vnet_endpoint *)user)->direction;
-    uint64_t due = (uint64_t)now_ms * 1000;
+    uint64_t start = (uint64_t)now_ms * 1000;
     struct packet *p;
     if (len > MTU) return -1;
     ++vnet_packets;
-    if (observer) observer(d, 0, buf, len, now_ms);
+    if (observer) observer(d, VNET_SEND, buf, len, now_ms);
     if (rate) {
-        if (due < next_us[d]) due = next_us[d];
-        next_us[d] = due + (len * 8 + rate - 1) / rate;
-        due = next_us[d];
+        if (start < next_us[d]) start = next_us[d];
+        next_us[d] = start + (len * 8 + rate - 1) / rate;
+        start = next_us[d];
     }
     random_state ^= random_state << 13;
     random_state ^= random_state >> 17;
@@ -36,7 +39,7 @@ int vnet_send(void *user, const void *buf, size_t len)
     if (random_state % 1000000 < loss) { ++vnet_dropped; return (int)len; }
     p = malloc(sizeof(*p));
     if (!p) abort();
-    p->next = NULL; p->due = due + (uint64_t)delay * 1000; p->len = len;
+    p->next = NULL; p->due = start + (uint64_t)delay * 1000; p->len = len;
     memcpy(p->data, buf, len);
     if (tail[d]) tail[d]->next = p; else head[d] = p;
     tail[d] = p;
@@ -52,13 +55,14 @@ int vnet_step(void)
             int result;
             head[d] = p->next;
             if (!head[d]) tail[d] = NULL;
-            if (observer) observer(d, 1, p->data, p->len, now_ms);
+            if (observer) observer(d, VNET_ARRIVAL, p->data, p->len, now_ms);
             {
                 const struct scp_hdr *hdr = (const struct scp_hdr *)p->data;
                 int fd = (int)hdr->fd;
                 result = apps[d] ? transfer_input(apps[d], p->data, p->len) : scp_input(NULL, p->data, p->len);
                 if (result < 0 && scp_is_closed(fd)) result = 0;
-                if (result >= 0 && observer) observer(d, 2, p->data, p->len, now_ms);
+                if (result >= 0 && observer)
+                    observer(d, VNET_INPUT_RETURNED, p->data, p->len, now_ms);
             }
             free(p);
             if (result < 0) return -1;
@@ -73,4 +77,7 @@ void vnet_free(void)
     for (d = 0; d < 2; ++d) while (head[d]) {
         struct packet *p = head[d]; head[d] = p->next; free(p);
     }
+    tail[0] = tail[1] = NULL;
+    apps[0] = apps[1] = NULL;
+    observer = NULL;
 }

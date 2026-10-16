@@ -2,6 +2,7 @@
 #define SCP_TEST_TRANSFER_H
 #include "scp.h"
 #include <stdio.h>
+#define TRANSFER_SEND_BACKLOG_BYTES (1U << 20)
 struct transfer {
     struct scp_stream *stream;
     uint64_t total, sent, received, hash, peer_hash;
@@ -9,6 +10,7 @@ struct transfer {
     unsigned char reply[16];
     size_t reply_size;
     uint32_t cwnd, flight;
+    uint32_t send_backlog_bytes;
     FILE *file;
     unsigned char pending[65536];
     size_t pending_size;

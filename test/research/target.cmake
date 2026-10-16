@@ -1,0 +1,11 @@
+set(SCP_RESEARCH_RECIPROCAL_Q32 "" CACHE STRING "Integer round(2^32 / target gain)")
+if(NOT SCP_RESEARCH_RECIPROCAL_Q32 MATCHES "^[0-9]+$" OR
+   SCP_RESEARCH_RECIPROCAL_Q32 LESS 1 OR SCP_RESEARCH_RECIPROCAL_Q32 GREATER 4294967296)
+  message(FATAL_ERROR "Set SCP_RESEARCH_RECIPROCAL_Q32 to an integer in [1,4294967296]")
+endif()
+scp_test_target(scp_research research/transfer_main.c research/observe.c
+  virtual/vnet.c common/transfer.c ../scp.c)
+target_compile_definitions(scp_research PRIVATE
+  SCP_PACING_RECIPROCAL_Q32=${SCP_RESEARCH_RECIPROCAL_Q32}ULL
+  SCP_RECV_LIMIT=1073741824U SEND_WIN_INIT=1073741824U
+  RECV_WIN_INIT=1073741824U CWND_WIN_MAX=2147483647U)

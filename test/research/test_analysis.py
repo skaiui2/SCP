@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 import tempfile
 import run_scp_fixed_feedback as runner
+import audit
 
 ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('analysis', ROOT / 'analyze_pacing_research.py')
@@ -14,11 +15,30 @@ spec.loader.exec_module(analysis)
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_transport_audit_rejects_changed_feedback_and_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'events.csv'
+            header = 'event,direction,t_ms,flags,seq,ack,payload_bytes,echo_send_ms,cwnd_bytes,planned_q32_ms\n'
+            trace = ('send,0,100,1,10,0,1430,100,1430,429496729600\n'
+                     'arrival,1,200,2,0,1440,0,100,1430,\n'
+                     'input_returned,1,200,2,0,1440,0,100,2860,\n')
+            summary = dict(data_acked_ms=200, received_bytes=1430, new_packets=1,
+                           first_data_tx_ms=100, gain_reciprocal_q32=4294967296)
+            path.write_text(header + trace)
+            self.assertTrue(audit.transport_events(path, summary, 1430)['core_window_per_ack_verified'])
+            for changed in (trace.replace('arrival,1,200', 'arrival,1,201'),
+                            trace.replace('100,2860', '100,4000'),
+                            trace.replace('429496729600', '433791696896')):
+                path.write_text(header + changed)
+                with self.assertRaises(RuntimeError):
+                    audit.transport_events(path, summary, 1430)
+
     def test_native_summary_validation(self):
         settings = json.loads((ROOT / 'scp_fixed_experiment.json').read_text())
         settings['bytes'] = 2 * settings['mss_bytes'] + 17
         gain = next(g for g in settings['gains'] if g['id'] == 'critical')
         summary = dict(engine='scp_virtual', status='complete', g=gain['value'],
+                       gain_reciprocal_q32=round(2**32 / gain['value']),
                        transport='fixed_delay', rate_mbps=0, delay_ms=50, loss_ppm=0, seed=1,
                        received_bytes=settings['bytes'], accepted_bytes=settings['bytes'],
                        new_bytes=settings['bytes'], checksum_ok=True, checksum_a='same', checksum_b='same',
@@ -32,7 +52,7 @@ class AnalysisTests(unittest.TestCase):
         for changes in (dict(nonfinal_short_packets=1), dict(last_new_payload_bytes=1430),
                         dict(data_payload_packet_counts={'1430': 1, '17': 1, '715': 2}),
                         dict(feedback_count=2), dict(feedback_max_ms=102),
-                        dict(loss_ppm=1), dict(rate_mbps=1000), dict(transport='serialized_link')):
+                        dict(gain_reciprocal_q32=1), dict(loss_ppm=1), dict(rate_mbps=1000), dict(transport='serialized_link')):
             with self.subTest(changes=changes), self.assertRaises(RuntimeError):
                 runner.validate(dict(summary, **changes), settings, gain)
         with self.assertRaises(RuntimeError):

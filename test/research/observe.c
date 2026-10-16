@@ -1,5 +1,5 @@
 #include "scp.h"
-#include "research.h"
+#include "observe.h"
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +15,9 @@ static struct bin bins[3];
 static FILE *output;
 static FILE *events;
 static uint32_t bin_index, base_seq;
-extern uint32_t scp_now_time(void), scp_experiment_first_data_ms;
+uint32_t research_first_data_ms = UINT32_MAX;
+struct scp_stream *research_sender;
+static void record_send(const void *buf, size_t len, uint32_t now);
 uint32_t research_last_data_ms, research_new_bytes;
 uint64_t research_new_packets, research_retrans_packets, research_retrans_bytes;
 unsigned research_errors;
@@ -28,18 +30,27 @@ void research_observe(unsigned direction, int arrival, const void *buf, size_t l
 {
     struct scp_hdr hdr;
     uint32_t echo;
+    struct scp_stream *ss = research_sender && !scp_is_closed(1) ? research_sender : NULL;
     if (len < sizeof(hdr)) { ++research_errors; return; }
     memcpy(&hdr, buf, sizeof(hdr));
     if (!events) {
         events = fopen("network_events.csv", "w");
         if (!events) { ++research_errors; return; }
-        fprintf(events, "event,direction,t_ms,fd,flags,seq,ack,payload_bytes,echo_send_ms\n");
+        fprintf(events, "event,direction,t_ms,fd,flags,seq,ack,payload_bytes,echo_send_ms,cwnd_bytes,flight_bytes,planned_q32_ms\n");
     }
+    if (arrival == VNET_SEND && direction == 0 && (hdr.flags & SCP_FLAG_DATA))
+        record_send(buf, len, now);
     echo = ntohl(hdr.time_val);
-    fprintf(events, "%s,%u,%u,%u,%u,%u,%u,%u,%u\n", arrival == 2 ? "input_returned" : arrival ? "arrival" : "send", direction,
+    fprintf(events, "%s,%u,%u,%u,%u,%u,%u,%u,%u", arrival == 2 ? "input_returned" : arrival ? "arrival" : "send", direction,
         now, hdr.fd, hdr.flags, ntohl(hdr.seq), ntohl(hdr.ack), ntohs(hdr.len), echo);
+    if (ss) fprintf(events, ",%u,%u,", ss->cwnd, ss->snd_nxt - ss->snd_una);
+    else fprintf(events, ",,,");
+    if (ss && arrival == VNET_SEND && direction == 0 && (hdr.flags & SCP_FLAG_DATA) &&
+        ss->pacing_next && ss->pacing_next->seq == ntohl(hdr.seq))
+        fprintf(events, "%" PRIu64, ss->pacing_next->sent_time);
+    fputc('\n', events);
     if (arrival == 1 && direction == 1 && hdr.flags == SCP_FLAG_ACK &&
-        scp_experiment_first_data_ms != UINT32_MAX && echo >= scp_experiment_first_data_ms) {
+        research_first_data_ms != UINT32_MAX && echo >= research_first_data_ms) {
         uint32_t elapsed = now - echo;
         ++research_feedback_count;
         if (elapsed < research_feedback_min_ms) research_feedback_min_ms = elapsed;
@@ -77,28 +88,26 @@ static void add_packet(unsigned scope, uint32_t now, uint32_t seq, uint32_t byte
     if (!b->count) { b->first_ms = now; b->first_seq = seq; }
     b->last_ms = now; b->last_seq = seq;
     ++b->count; b->bytes += bytes;
-    ++b->slots[(now - scp_experiment_first_data_ms) % RTT_MS];
+    ++b->slots[(now - research_first_data_ms) % RTT_MS];
 }
 
-int research_send(void *user, const void *buf, size_t len)
+static void record_send(const void *buf, size_t len, uint32_t now)
 {
     struct scp_hdr hdr;
-    uint32_t now = scp_now_time(), seq, offset, bytes, target;
+    uint32_t seq, offset, bytes, target;
     unsigned scope;
     memcpy(&hdr, buf, sizeof(hdr));
-    if (((struct vnet_endpoint *)user)->direction != 0 || !(hdr.flags & SCP_FLAG_DATA))
-        return vnet_send(user, buf, len);
     seq = ntohl(hdr.seq); bytes = ntohs(hdr.len);
-    if (!bytes || bytes > MSS || bytes + sizeof(hdr) != len) { ++research_errors; return -1; }
+    if (!bytes || bytes > MSS || bytes + sizeof(hdr) != len) { ++research_errors; return; }
     ++research_payload_packets[bytes];
-    if (scp_experiment_first_data_ms == UINT32_MAX) {
-        scp_experiment_first_data_ms = now; base_seq = seq;
+    if (research_first_data_ms == UINT32_MAX) {
+        research_first_data_ms = now; base_seq = seq;
         output = fopen("packet_rtt.csv", "w");
-        if (!output) { ++research_errors; return -1; }
+        if (!output) { ++research_errors; return; }
         fprintf(output, "rtt_index,scope,packet_count,payload_bytes,first_tx_ms,last_tx_ms,first_seq,last_seq,slot_counts\n");
     }
-    target = (now - scp_experiment_first_data_ms) / RTT_MS;
-    while (bin_index < target) if (flush_bin()) { ++research_errors; return -1; }
+    target = (now - research_first_data_ms) / RTT_MS;
+    while (bin_index < target) if (flush_bin()) { ++research_errors; return; }
     offset = seq - base_seq;
     if (offset == research_new_bytes) {
         if (research_new_packets && research_last_new_payload_bytes != MSS)
@@ -107,10 +116,9 @@ int research_send(void *user, const void *buf, size_t len)
         scope = 1; research_new_bytes += bytes; ++research_new_packets;
     } else if (offset < research_new_bytes && bytes <= research_new_bytes - offset) {
         scope = 2; ++research_retrans_packets; research_retrans_bytes += bytes;
-    } else { ++research_errors; return -1; }
+    } else { ++research_errors; return; }
     add_packet(0, now, seq, bytes); add_packet(scope, now, seq, bytes);
     research_last_data_ms = now;
-    return vnet_send(user, buf, len);
 }
 
 int research_finish(uint32_t end_ms)
@@ -119,7 +127,7 @@ int research_finish(uint32_t end_ms)
     if (events && fclose(events)) result = -1;
     events = NULL;
     if (!output) return result;
-    while (scp_experiment_first_data_ms + bin_index * RTT_MS < end_ms)
+    while (research_first_data_ms + bin_index * RTT_MS < end_ms)
         if (flush_bin()) { result = -1; break; }
     if (fclose(output)) result = -1;
     output = NULL;

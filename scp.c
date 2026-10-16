@@ -9,16 +9,13 @@ static void scp_retransmit(struct scp_stream *ss);
 static int scp_output(struct scp_stream *ss);
 static void scp_finish_close(struct scp_stream *ss);
 static void scp_pacing_timer_cb(void *arg);
+static void scp_pacing_send_due(struct scp_stream *ss);
 static int scp_install_cc(struct scp_stream *ss,
                           enum scp_cc_id cc_id);
 void scp_output_data(struct scp_stream *ss, struct scp_buf *sb);
 void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh);
 
 extern uint32_t scp_now_time(void);
-double scp_experiment_gain = 1;
-uint32_t scp_experiment_first_data_ms = UINT32_MAX;
-uint64_t scp_experiment_acked_bytes;
-uint32_t scp_experiment_ack_calls;
 
 static struct rb_root scp_timer_tree;
 static struct hashmap scp_stream_map;
@@ -318,11 +315,7 @@ void scp_timer_process(void)
     }
 #if SCP_DUMP_SS
     uint32_t now = scp_now_time();
-    uint32_t interval = SCP_DUMP_INTERVAL_MS;
-    if (scp_experiment_first_data_ms != UINT32_MAX &&
-        now - scp_experiment_first_data_ms < 5000)
-        interval = 1;
-    if (now - scp_dump_time >= interval) {
+    if (now - scp_dump_time >= SCP_DUMP_INTERVAL_MS) {
         struct list_node *node;
         scp_dump_time = now;
         for (node = scp_stream_queue.next; node != &scp_stream_queue; node = node->next)
@@ -1270,20 +1263,17 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
     ss->sent_cnt++;
 }
 
-static uint32_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
+static uint64_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
 {
     uint32_t rtt;
-    uint32_t pacing_time;
+    uint64_t pacing_time;
 
     if (!ss->srtt)
-        return 1;
+        return 1ULL << SCP_PACING_SHIFT;
 
     rtt = ss->srtt;
 
-    pacing_time = (uint32_t)((frag_len * rtt) / ss->cwnd);
-    if (scp_experiment_gain != 1)
-        pacing_time = (uint32_t)((frag_len * rtt) /
-            (scp_experiment_gain * ss->cwnd));
+    pacing_time = (uint64_t)frag_len * rtt * SCP_PACING_RECIPROCAL_Q32 / ss->cwnd;
 
     return pacing_time;
 }
@@ -1299,8 +1289,8 @@ static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
         struct scp_buf *last;
         struct list_node *next;
         uint32_t frag_len;
-        uint32_t pacing_next_sent_time;
-        uint32_t pacing_time;
+        uint64_t pacing_next_sent_time;
+        uint64_t pacing_time;
 
         sb = ss->schedule_next;
         next = sb->list.next;
@@ -1316,7 +1306,7 @@ static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
             pacing_time = scp_pacing_time(ss, frag_len); 
         } else {
             ss->pacing_next = sb;
-            pacing_next_sent_time = scp_now_time();
+            pacing_next_sent_time = (uint64_t)scp_now_time() << SCP_PACING_SHIFT;
             pacing_time = 0;
         }
 
@@ -1347,7 +1337,10 @@ static int scp_output(struct scp_stream *ss)
         return 0;
 
     scp_output_to_pacing(ss, win - flight);
+    scp_pacing_send_due(ss);
 
+    if (!ss->pacing_next)
+        scp_timer_delete(&ss->t_pacing);
     if (ss->pacing_next && !ss->t_pacing.active) {
         scp_timer_create(&ss->t_pacing,
                          scp_pacing_timer_cb,
@@ -1358,9 +1351,8 @@ static int scp_output(struct scp_stream *ss)
     return 0;
 }
 
-static void scp_pacing_timer_cb(void *arg)
+static void scp_pacing_send_due(struct scp_stream *ss)
 {
-    struct scp_stream *ss = arg;
     uint32_t now;
     uint8_t sent_any = 0;
 
@@ -1370,7 +1362,7 @@ static void scp_pacing_timer_cb(void *arg)
     now = scp_now_time();
 
     while (ss->pacing_next &&
-           SEQ_LEQ(ss->pacing_next->sent_time, now)) {
+           SEQ_LEQ((uint32_t)(ss->pacing_next->sent_time >> SCP_PACING_SHIFT), now)) {
         struct scp_buf *sb = ss->pacing_next;
         struct list_node *next = sb->list.next;
         uint32_t frag_len =
@@ -1407,6 +1399,15 @@ static void scp_pacing_timer_cb(void *arg)
                          ss,
                          ss->rto);
     }
+}
+
+static void scp_pacing_timer_cb(void *arg)
+{
+    struct scp_stream *ss = arg;
+
+    if (!ss || ss->state != SCP_ESTABLISHED)
+        return;
+    scp_pacing_send_due(ss);
 
     if (ss->pacing_next) {
         scp_timer_create(&ss->t_pacing,
@@ -2313,9 +2314,28 @@ static void scp_aimd_on_ack(struct scp_stream *ss,
 
     uint64_t next_cwnd;
 
-    next_cwnd = (uint64_t)ss->cwnd + acked;
-    scp_experiment_acked_bytes += acked;
-    ++scp_experiment_ack_calls;
+    if (ss->cwnd < ss->ssthresh) {
+        next_cwnd =
+            (uint64_t)ss->cwnd +
+            (uint64_t)acked;
+    } else {
+        uint64_t numerator =
+            (uint64_t)MSS *
+            (uint64_t)acked;
+
+        uint32_t inc =
+            (uint32_t)(
+                numerator /
+                (ss->cwnd ? ss->cwnd : 1U)
+            );
+
+        if (inc == 0)
+            inc = 1;
+
+        next_cwnd =
+            (uint64_t)ss->cwnd +
+            inc;
+    }
 
     if (next_cwnd > CWND_WIN_MAX)
         next_cwnd = CWND_WIN_MAX;

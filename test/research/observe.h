@@ -1,7 +1,9 @@
 #ifndef SCP_RESEARCH_H
 #define SCP_RESEARCH_H
-#include "vnet.h"
-int research_send(void *user, const void *buf, size_t len);
+#include "scp.h"
+#include "../virtual/vnet.h"
+extern uint32_t research_first_data_ms;
+extern struct scp_stream *research_sender;
 int research_finish(uint32_t end_ms);
 void research_observe(unsigned direction, int arrival, const void *buf, size_t len, uint32_t now);
 extern uint32_t research_feedback_min_ms, research_feedback_max_ms;

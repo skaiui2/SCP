@@ -20,6 +20,8 @@ jobs:
       gains: ${{ steps.matrix.outputs.gains }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -29,10 +31,11 @@ jobs:
       - name: Build the actual SCP core and virtual transport
         run: |
           cmake -S test -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-          cmake --build build --target scp_virtual -j2
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure
       - name: Actual 8 MiB SCP transfer at critical gain
         run: >-
-          python test/research/run_scp_fixed_feedback.py --exe build/scp_virtual
+          python test/research/run_scp_fixed_feedback.py --build-dir research-build
           --gain-id critical --repeats 1 --bytes 8388608 --out results/preflight
       - id: matrix
         run: |
@@ -42,13 +45,6 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('gains=' + json.dumps([g['id'] for g in settings['gains']]) + '\n')
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: scp-fixed-binary
-          path: |
-            build/scp_virtual
-            build/compile_commands.json
-            build/CMakeCache.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -67,18 +63,15 @@ jobs:
         gain: ${{ fromJSON(needs.build.outputs.gains) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: python -m pip install -r test/research/requirements.txt
-      - uses: actions/download-artifact@v4
-        with:
-          name: scp-fixed-binary
-          path: build
-      - run: chmod +x build/scp_virtual
       - name: Three actual 1 GiB SCP transfers
         run: >-
-          python test/research/run_scp_fixed_feedback.py --exe build/scp_virtual
+          python test/research/run_scp_fixed_feedback.py --build-dir research-build
           --gain-id '${{ matrix.gain }}' --out results/${{ matrix.gain }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -94,6 +87,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
