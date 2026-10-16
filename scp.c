@@ -1273,7 +1273,7 @@ static uint64_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
 
     rtt = ss->srtt;
 
-    pacing_time = ((uint64_t)frag_len * rtt << SCP_PACING_SHIFT) / ss->cwnd;
+    pacing_time = (uint64_t)frag_len * rtt * SCP_PACING_RECIPROCAL_Q32 / ss->cwnd;
 
     return pacing_time;
 }
