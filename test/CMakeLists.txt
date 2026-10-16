@@ -25,6 +25,7 @@ if(SCP_TEST_TRANSFER)
   scp_test_target(test_close virtual/case_close.c virtual/vnet.c common/transfer.c ../scp.c)
   scp_test_target(test_handshake virtual/case_handshake.c virtual/vnet.c common/transfer.c ../scp.c)
   scp_test_target(test_pacing_startup virtual/case_pacing_startup.c)
+  scp_test_target(test_network virtual/case_network.c virtual/vnet.c common/transfer.c)
   enable_testing()
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   foreach(drops 1 2)
@@ -47,7 +48,7 @@ if(SCP_TEST_TRANSFER)
     --file-test --bytes 8388625 --no-plot
     --out ${CMAKE_CURRENT_BINARY_DIR}/results/udp-file)
   set_tests_properties(udp_file PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS real)
-  foreach(case lifecycle close pacing_startup)
+  foreach(case lifecycle close pacing_startup network)
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
       target_compile_options(test_${case} PRIVATE -UNDEBUG)
     endif()
@@ -55,11 +56,15 @@ if(SCP_TEST_TRANSFER)
     set_tests_properties(${case} PROPERTIES LABELS virtual)
   endforeach()
   file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/smoke
-    ${CMAKE_CURRENT_BINARY_DIR}/results/loss)
+    ${CMAKE_CURRENT_BINARY_DIR}/results/loss
+    ${CMAKE_CURRENT_BINARY_DIR}/results/fixed-feedback)
   add_test(NAME transfer_smoke COMMAND scp_virtual --bytes 8388625)
   set_tests_properties(transfer_smoke PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/smoke LABELS virtual)
   add_test(NAME transfer_loss COMMAND scp_virtual --bytes 8388625 --loss-ppm 1000 --seed 7)
   set_tests_properties(transfer_loss PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/loss LABELS virtual)
+  add_test(NAME transfer_fixed_feedback COMMAND scp_virtual --bytes 8388625 --mbps 0 --delay-ms 50)
+  set_tests_properties(transfer_fixed_feedback PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/fixed-feedback LABELS virtual)
 endif()

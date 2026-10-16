@@ -21,6 +21,7 @@ int transfer_init(struct transfer *t, struct scp_transport_class *transport,
 {
     memset(t, 0, sizeof(*t));
     t->fd = local_fd; t->sender = sender; t->total = bytes;
+    t->send_backlog_bytes = TRANSFER_SEND_BACKLOG_BYTES;
     t->hash = UINT64_C(14695981039346656037);
     t->stream = scp_stream_alloc(transport, local_fd, remote_fd);
     if (!t->stream || scp_set_cc(local_fd, cc)) return -1;
@@ -62,7 +63,7 @@ int transfer_step(struct transfer *t)
         printf("[%c][SCP] established\n", t->sender ? 'A' : 'B');
     }
     if (t->sender) {
-        while (t->sent < t->total && t->stream->snd_seq_q - t->stream->snd_una < 1048576) {
+        while (t->sent < t->total && t->stream->snd_seq_q - t->stream->snd_una < t->send_backlog_bytes) {
             size_t count = (size_t)min(t->total - t->sent, sizeof(buf));
             int result;
             if (t->file) {
@@ -73,6 +74,10 @@ int transfer_step(struct transfer *t)
                 memcpy(buf, t->pending, t->pending_size);
                 count = t->pending_size;
             } else {
+                size_t available = t->send_backlog_bytes - (t->stream->snd_seq_q - t->stream->snd_una);
+                count = (size_t)min(t->total - t->sent, sizeof(buf) / MSS * MSS);
+                if (count > available) count = available / MSS * MSS;
+                if (!count) break;
                 for (i = 0; i < count; ++i) buf[i] = byte_at(t->sent + i);
             }
             result = scp_send(t->fd, buf, count);
