@@ -1,4 +1,21 @@
-# SCP (Simple Stream Control Protocol)
+# SCP pacing research: gain, slow-start growth, and transmission spread
+
+This research branch investigates a question encountered while implementing SCP: **why can adding pacing slow down slow start, and how does increasing the pacing gain change window growth and the concentration of packet transmissions?** The focus is the neighborhood of `g = 2 ln 2`, a reference value from the continuous model.
+
+The experiments execute the actual SCP C core with the baseline virtual network and transfer code. They measure cwnd at RTT boundaries and inside each RTT, and the first-to-last packet transmission span `L` within each RTT. The archived campaign contains 22 gains with three deterministic 1 GiB transfers each, a fixed actual send-to-ACK RTT of 100 ms, and zero loss. The protocol's 1 ms execution and integer pacing rules remain part of the experiment.
+
+**What can you reproduce here?** You can regenerate the paper's cwnd-versus-RTT and L-versus-RTT figures from the original native logs, verify the accompanying numerical tables, or compile SCP and repeat the transfers. This tests the implemented scheduler against the analytical references; it does not assume that the implementation and an idealized model are identical.
+
+| Start here | Purpose |
+|---|---|
+| [Step-by-step reproduction guide](reproduction/README.md) | Download and verify the archived evidence, redraw both figures, then build and rerun the native experiments |
+| [Pacing Gain and Slow-Start Growth: A Packet Model and SCP Experiments](https://github.com/skaiui2/SCP/blob/5d36b0fb3a0887ea930fd2e7d24d6fe11457e228/Pacing_and_Congestion_Window_Growth.pdf) | Read the six-page paper associated with these results |
+| [Original logs and build evidence](https://github.com/skaiui2/SCP/releases/tag/pacing-data-38893710287) | Inspect the archived campaign, with checksums recorded in [the manifest](reproduction/manifest.json) |
+| [Research implementation and settings](test/research/README.md) | Inspect the execution path, gain encoding, timing rules, and experiment runner |
+
+Branch: `research/slowstart-g-100ms-20261012`. The archived experiment used commit `70f170e`, sharing its core and virtual-network implementation with baseline `b591e9c`; research additions provide configuration, an experiment entry point, and observation/analysis. The [main branch](https://github.com/skaiui2/SCP/tree/main) remains the general protocol-development branch. The protocol overview below describes the wider SCP project.
+
+## SCP (Simple Stream Control Protocol)
 
 [中文说明](./docs/中文/README中文.md)
 
@@ -17,7 +34,7 @@ The current implementation also includes a sender-side pacing layer. Packets adm
 
 The probability-driven controller is described in [SCP-PROB: Probability-Driven Nonlinear Congestion Control](./SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf).
 
-The pacing study, [Pacing and Congestion-Window Growth: An Exact Packet-Level Analysis](./Pacing_and_Congestion_Window_Growth.pdf), analyzes a specified per-ACK append scheduler. It is a mathematical model, not an exact description of the current SCP implementation. [Pacing_and_Congestion_Window_Growth.tex](./papers/pacing/Pacing_and_Congestion_Window_Growth.tex) is the sole manuscript source: upload it to Overleaf and compile with pdfLaTeX. Proofs, references, and the analytical figure are all included; no experiment package or external figures are required.
+The current pacing paper is [Pacing Gain and Slow-Start Growth: A Packet Model and SCP Experiments](https://github.com/skaiui2/SCP/blob/5d36b0fb3a0887ea930fd2e7d24d6fe11457e228/Pacing_and_Congestion_Window_Growth.pdf). It compares analytical models with native SCP virtual-network observations. Its [manuscript and figure files](https://github.com/skaiui2/SCP/tree/5d36b0fb3a0887ea930fd2e7d24d6fe11457e228/papers/pacing) are pinned to the paper revision; use that complete directory for compilation. The manuscript files inherited by this research branch are an earlier model-only revision. For the current paper's experimental evidence and reproduction instructions, use [reproduction/](reproduction/README.md).
 
 ## Features
 
@@ -46,6 +63,8 @@ test/analyze_scp.py / fig.py    original state-log analyzer and publication figu
 .github/workflows/             Linux transfers and virtual-network CI
 setup_scp_netns.sh             Linux network-namespace topology
 papers/pacing/                 pacing manuscript source
+test/research/                 native SCP pacing experiment configuration and runner
+reproduction/                  paper-result reproduction guide, scripts and reference tables
 docs/                          user documentation
 ```
 
