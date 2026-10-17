@@ -1,0 +1,13 @@
+{
+  "packets": 750869,
+  "ACKs": 750869,
+  "bytes": 1073741824,
+  "feedback_ms": 100,
+  "all_ACK_cwnd_checks": true,
+  "fractional_reservations": 375477,
+  "max_early_ms": 0.9900188441388309,
+  "origin_absolute_ms": 100,
+  "data_duration_ms": 2048,
+  "g_target": 1.3862943611198906,
+  "g_effective": 1.386294361280859
+}

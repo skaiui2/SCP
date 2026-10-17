@@ -1,0 +1,11 @@
+{
+  "first_DATA_absolute_ms": 100,
+  "comparison_elapsed_ms_inclusive": [
+    800,
+    1899
+  ],
+  "maximum_abs_W_t_plus_R_minus_2W_t_bytes": 0,
+  "max_reserved_minus_flight_bytes_800_through_1899": 0,
+  "min_reserved_minus_flight_bytes_800_through_1899": 0,
+  "scope": "Observed 1 ms states, not an infinite-time theorem."
+}

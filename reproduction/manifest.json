@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "run_id": 38893710287,
+  "run_url": "https://github.com/skaiui2/SCP/actions/runs/38893710287",
+  "experiment_commit": "70f170ed505a55d83044eda2a2d5684fc80f382b",
+  "baseline_commit": "b591e9c3c0279b8d95e925066d3e87d10e7f0df6",
+  "paper_commit": "5d36b0fb3a0887ea930fd2e7d24d6fe11457e228",
+  "assets": [
+    {
+      "name": "scp-fixed-results.zip",
+      "bytes": 1339171184,
+      "sha256": "8d9162d7b3e47ad6ebd3d7812845ef68ec1142d817e71bdc14408f8c4cbff926",
+      "url": "https://github.com/skaiui2/SCP/releases/download/pacing-data-38893710287/scp-fixed-results.zip"
+    },
+    {
+      "name": "scp-fixed-preflight.zip",
+      "bytes": 3016401,
+      "sha256": "656901efe62f8e883647a608d7e94d8fdcd7173ea14549e057996c08e2f80c55",
+      "url": "https://github.com/skaiui2/SCP/releases/download/pacing-data-38893710287/scp-fixed-preflight.zip"
+    },
+    {
+      "name": "workflow-logs.zip",
+      "bytes": 394492,
+      "sha256": "bd4498abe425b97c6948d9fd20a735db7e04ed44f8402eae94270ee18af32bac",
+      "url": "https://github.com/skaiui2/SCP/releases/download/pacing-data-38893710287/workflow-logs.zip"
+    }
+  ],
+  "reference_files": {
+    "all_gain_cwnd_time.csv": "b7c38adc6919799b24c18d64f5af374d83038cf848278501dc76cb67fcad5366",
+    "all_gain_L_time.csv": "4be51f873891ce2eb86f59d437dae0a723145b57ad23d4753d1c6efba552c6a9",
+    "gain_summary_independent.csv": "86b15d5aeb5c1bd8626136bb3ee071fb23a0368439df555623f7f386a5f3f1e7",
+    "critical_boundaries_and_spans.csv": "9fd0c9cb43464f16e2deb8013191314abe12da35b6ef286aab423f1f8c493592",
+    "critical_phase_audit.json": "978b9fff022e84cfb351802c19487a2dd550be60c5a0d5cf9eab53188cdea8fe",
+    "critical_independent_audit.json": "cc9161ed4b1327d6b3eb60b81f82b2e88e484b7bb120b550fff55d7e7154d5a7"
+  },
+  "figure_inputs": "Native run.log.gz states and packet_rtt.csv.gz histograms from actual network events",
+  "repetitions": "Deterministic; not independent statistical samples"
+}
