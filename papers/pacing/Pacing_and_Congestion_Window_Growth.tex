@@ -1,764 +1,272 @@
-% Standalone manuscript: upload this .tex file to Overleaf and use pdfLaTeX.
-% All references, proofs and the analytical figure are contained here.
-\documentclass[11pt,a4paper]{article}
-\usepackage[margin=25mm]{geometry}
-\usepackage[T1]{fontenc}
-\usepackage{lmodern,microtype,amsmath,amssymb,amsthm,booktabs,tabularx}
-\usepackage{tikz}
-\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
-\usepackage{bookmark}
-\newtheorem{theorem}{Theorem}[section]
-\newtheorem{proposition}[theorem]{Proposition}
-\newtheorem{corollary}[theorem]{Corollary}
-\newcommand{\ind}{\mathbf{1}}
+\documentclass[sigconf,nonacm]{acmart}
+\usepackage{amsmath,booktabs,tabularx}
+\settopmatter{printacmref=false}
+\setcopyright{none}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\makeatletter
+\def\@secfont{\bfseries\Large\section@raggedright}
+\makeatother
+\settopmatter{printfolios=true}
+\setlength{\emergencystretch}{1em}
+\newcommand{\gc}{g_{\mathrm c}}
 \newcommand{\cwnd}{\mathrm{cwnd}}
-\newcommand{\gcrit}{g_{\mathrm c}}
-\setlength{\emergencystretch}{2em}
-\numberwithin{equation}{section}
-\title{Pacing and Congestion-Window Growth:\\An Exact Packet-Level Analysis}
+\newcommand{\ind}{\mathbf{1}}
+\newcommand{\pos}[1]{\left[#1\right]_+}
+\title{Pacing Gain and Slow-Start Growth: A Packet Model and SCP Experiments}
 \author{Skai Uijing}
-\date{October 8, 2026}
+\affiliation{\institution{Independent Researcher}\country{China}}
+\email{skaiuijing@gmail.com}
 \begin{document}
-\maketitle
-
 \begin{abstract}
-An unchanged per-ACK window update can produce different growth in physical
-time when newly available window credit passes through a pacer. We study this
-effect in a loss-free, fixed-delay packet model: each slow-start ACK reserves
-two packets, their spacing is set by the updated window and a fixed gain, and
-existing reservations retain their timestamps. We solve the transmission
-recurrence exactly for every gain $g\ge1$. A fixed-batch comparator supplies a
-Fibonacci lower bound, while immediate transmission supplies the doubling
-upper bound. The exact solution identifies a transition at $g=2\ln2$: below
-it, additional ACK waiting ends after a finite prefix; above it, each RTT
-contains a sending interval followed by persistent waiting. The sending span
-approaches $(2\ln2/g)R$, and the normalized window growth exponent is
-$\min\{g/2,\ln2\}$. Packet timestamps converge to those of the immediate-send
-model as gain tends to infinity. For loss-free congestion avoidance, we derive
-an exact event recurrence and a queue-clock decomposition with a logarithmic
-term, leaving the cumulative ACK-waiting contribution explicit. All results
-concern the specified scheduler; no equivalence to a deployed TCP stack or
-network-performance improvement is assumed.
+Pacing changes when new congestion-window credit becomes a transmission and, consequently, when it produces an ACK. This study began with slower startup after adding pacing to a TCP-like transport, SCP. We express slow-start growth through actual transmissions, construct Fibonacci and immediate-send comparison models, and solve an explicitly defined packet scheduler with immutable pacing reservations. Its asymptotic window multiplier is $\min(e^{g/2},2)$, with a transition at $g=2\ln2$. We then examine 66 transfers through the actual SCP C implementation and a fixed-feedback-delay virtual network. At seven low gains, late measured multipliers differ from the queued-model prediction by less than 0.01\%. Near the ideal transition, millisecond execution and empty-queue reset change the phase and the finite transition. At higher gains, sending becomes substantially more concentrated while completion time improves little. The results distinguish a window's growth multiplier, its accumulated startup deficit, and its within-RTT transmission span.
 \end{abstract}
+\begin{CCSXML}
+<ccs2012><concept><concept_id>10003033.10003039.10003041</concept_id><concept_desc>Networks~Transport protocols</concept_desc><concept_significance>500</concept_significance></concept></ccs2012>
+\end{CCSXML}
+\ccsdesc[500]{Networks~Transport protocols}
+\keywords{pacing, slow start, congestion window, packet scheduling, virtual-network experiments}
+\maketitle
+\fancypagestyle{standardpagestyle}{\fancyhf{}\renewcommand{\headrulewidth}{0pt}\fancyfoot[C]{\footnotesize\thepage}}
+\pagestyle{standardpagestyle}
 
-\section{The timing question}
-This work began while developing SCP, a TCP-like transport with a Reno-like
-controller. Replacing burst sending with pacing made transfers slower in the
-author's development runs, despite little change in the useful-data fraction.
-That observation motivated a narrower mathematical question: with the window
-update held fixed, how does transmission scheduling change the times at which
-ACKs return and the window grows? The observation is motivation, rather than
-evidence that the model below explains the full implementation's performance.
+\section{Introduction}
+While building SCP with Reno-style congestion control, I first used burst sending and then added pacing. Transfers slowed down even though the ratio of useful data to total transmitted data barely changed. Tracing packets and ACKs suggested a timing question: an ACK can enlarge the window immediately, but newly permitted packets still have to pass through the pacer before they produce feedback.
 
-Consider a one-packet initial window. Send that packet at time zero. Its ACK
-returns at $R$ and raises the window to two packets. If the next two packets
-leave at $R$ and $1.5R$, only the first has been acknowledged at $2R$: the
-window is three, not four. The window was updated immediately at each ACK.
-The difference comes from transmission times, not from postponing window
-updates to RTT boundaries.
+For example, send one packet at time zero. Its ACK returns at $R$, increasing the window to two packets. If the next packets leave at $R$ and $1.5R$, only one has been acknowledged at $2R$: the window is three, not four. All window updates occur on ACK arrival. This example motivates the analysis; it does not describe every pacer or imply that pacing generally harms network performance.
 
-The analysis follows three steps. We first specify a packet scheduler and
-separate actual flight from future reservations. We then compare its growth
-with two solvable extremes, before obtaining its exact transmission times
-for general pacing gain. Finally, we carry the same event accounting into
-congestion avoidance. The main object is $\cwnd(t)$ and its underlying packet
-trace, not an optimization of network throughput or a replacement congestion
-controller.
-
-\section{Model and event accounting}\label{sec:model}
-\subsection{Assumptions and units}
-Every packet has payload size $M$, and its ACK returns exactly $R>0$ after
-actual transmission. There is no loss, reordering, ACK aggregation, application
-limitation, receiver-window limitation, or link-serialization constraint.
-These assumptions isolate feedback timing. In particular, an instantaneous
-burst is an admissible comparison trace in this ideal model.
-
-Write $\tau=t/R$ and $w(\tau)=\cwnd(R\tau)/M$. All timestamps below are in
-units of $R$, and windows and packet counts are in units of $M$. The initial
-window is one packet; packet 0 is sent at $s_0=0$. During the slow-start
-analysis, the connection remains in slow start indefinitely and every ACK
-increases $w$ by one. This is the full-packet, one-ACK-per-packet specialization
-of the slow-start update; Section~\ref{sec:ca} treats a finite threshold and
-the real-valued congestion-avoidance update \cite{rfc5681}.
-
-At a shared timestamp, process ACKs before transmissions and sample after all
-events there. Sampling at integer $\tau$ does not change the event schedule.
-The gain $g\ge1$ is fixed. Notation used throughout is collected in
-Table~\ref{tab:notation}.
-
-\begin{table}[htbp]
-\centering\small
-\caption{Notation. Physical timestamps equal normalized timestamps times $R$.}
-\label{tab:notation}
-\begin{tabularx}{\linewidth}{@{}lX@{}}\toprule
-Symbol & Meaning\\\midrule
-$F,Q$ & Sent but unacknowledged packets; reserved but unsent packets\\
-$s_j$ & Actual send time of packet $j$, numbered from zero\\
-$a_k,w_k$ & Arrival time of ACK $k$, and window immediately after it\\
-$b_k,T_k$ & First send in ACK $k$'s batch; next free slot after that batch\\
-$N_g(\tau)$ & Number of actual transmissions by $\tau$, including packet 0\\
-$H_k$ & $\sum_{r=1}^k1/r$, with $H_0=0$\\
-$D(j)$ & $H_{2j}-H_j$; a harmonic sum, not a traffic counter\\
-$B_m$ & $b_{2^m}$, the first send associated with an ACK-index block\\
-$f_n$ & Fibonacci numbers, $f_0=0$, $f_1=1$\\\bottomrule
-\end{tabularx}
-\end{table}
-
-\subsection{Window credit and the append rule}
-After each reservation step, the scheduler maintains
+\section{ACK accounting and two comparison models}
+Assume a fixed send-to-ACK delay $R$, no loss, continuously available data, one ACK per full-sized packet, and indefinite slow start. Each ACK adds one MSS, denoted $M$, to the window. Normalize time and window as $\tau=t/R$ and $w=\cwnd/M$. With actual packet-send times $s_j$ in normalized units, including $s_0=0$,
 \begin{equation}
- F+Q=w.\label{eq:invariant}
+\begin{aligned}
+ w(\tau)&=1+\sum_{j\ge0}\ind_{\{s_j+1\le\tau\}},\\
+ W_{n+2}&=W_{n+1}+S_n.
+\end{aligned}\label{eq:account}
 \end{equation}
-An actual transmission transfers one packet from $Q$ to $F$, preserving the
-sum. An ACK reduces $F$ by one and increases $w$ by one, creating exactly two
-new reservation positions. Reserving two packets restores
-\eqref{eq:invariant}. Hence $F\le w$ at every transmission, and queued packets
-cannot consume the same credit twice.
+Here $W_n=w(n)$ is sampled after all boundary events, and $S_n$ counts sends in $(n,n+1]$. Sampling at RTT boundaries does not defer ACK processing.
 
-After ACK $k$, $w_k=k+1$. The two new packets are appended after every existing
-reservation, with spacing $1/[g(k+1)]$. Existing timestamps remain unchanged.
-The scheduler also retains one spacing after the last packet of each batch.
-With $T_0=1/g$, its complete recurrence is
+\textbf{Immediate sending.} ACKs in $(n,n+1]$ can only acknowledge packets already in flight just after $n$. If their number is $\mathcal F_n$, then $W_{n+1}-W_n\le\mathcal F_n\le W_n$. Thus $W_n\le2^n$. Sending both newly permitted packets immediately at every ACK attains $\cwnd(nR)=M2^n$ under these ideal assumptions.
+
+\textbf{Fixed batches.} A separate comparator reads its window $V_n$ at each boundary and sends at $n+i/V_n$, for $i=0,\ldots,V_n-1$. ACKs update the window immediately but leave that batch unchanged. The next boundary supplies the next batch's first packet, so $S_n=V_n$ and
+\begin{equation}
+\begin{aligned}
+ V_{n+2}&=V_{n+1}+V_n,\quad V_0=1,\ V_1=2,\\
+ \cwnd_{\rm fixed}(nR)&=M F_{n+2}
+ =\frac{M(\phi^{n+2}-\psi^{n+2})}{\sqrt5}.
+\end{aligned}\label{eq:fib}
+\end{equation}
+where $\phi=(1+\sqrt5)/2$, $\psi=(1-\sqrt5)/2$, and $F_0=0,F_1=1$. This gives $1,2,3,5,8,13,\ldots$. It is a deliberately simplified comparator. For any scheduler satisfying the additional service condition $S_n\ge W_n$, induction in \eqref{eq:account} gives $MF_{n+2}\le\cwnd(nR)\le M2^n$. The lower condition requires justification for the scheduler being studied; earlier reservation alone is not a proof. Appendix~\ref{app:comparison} proves the lower comparison for the specific queued reference below by comparing actual packet times. It is not assumed for every pacer. These bounds motivate exponential growth but do not establish an exact exponential solution.
+
+\section{An exact queued reference model}
+\subsection{Reservations, flight, and feedback}
+Consider the following particular scheduler, with a fixed gain $g\ge1$. After ACK $k$, the window is $k+1$. The ACK releases one flight position and adds one window position, permitting two new packets. Both are appended to the reservation queue with spacing $1/[g(k+1)]$; existing timestamps remain unchanged. Let $a_k$ be ACK time, $b_k$ the new batch's first send, and $T_k$ the next available slot after this batch. Then
+\begin{equation}\begin{aligned}
+ a_k&=s_{k-1}+1, & b_k&=\max(a_k,T_{k-1}),\\
+ s_{2k-1}&=b_k, & s_{2k}&=b_k+\frac1{g(k+1)},\\
+ T_k&=b_k+\frac2{g(k+1)}.
+\end{aligned}\label{eq:queued}\end{equation}
+Initialize $s_0=0$, $T_0=1/g$. Actual sends move packets from the reserved queue to flight. Consequently $F+Q=w$ after each ACK's reservations, and actual flight respects the window. This model retains the spacing after the last reserved packet, even if the queue becomes empty. Section~4 explains why the tested SCP implementation differs.
+
+\subsection{Solving the event recurrence}
+Write $c=2/g$, $H_k=\sum_{i=1}^k1/i$, and $D(q)=H_{2q}-H_q$. Group ACK indices as $q\le k<2q$, where $q=2^m$, and put $B_m=b_{2^m}$. These are analytical groups, not batches processed by the implementation. The exact solution is
 \begin{align}
- a_k&=s_{k-1}+1,& b_k&=\max\{a_k,T_{k-1}\},\label{eq:ack}\\
- s_{2k-1}&=b_k,&s_{2k}&=b_k+\frac1{g(k+1)},\label{eq:sends}\\
- T_k&=b_k+\frac2{g(k+1)}.&&\label{eq:tail}
+ B_{m+1}&=B_m+\max\{1,cD(2^m)\},\quad B_0=1,\label{eq:B}\\
+ b_k&=B_m+c(H_k-H_{2^m}),\quad 2^m\le k<2^{m+1}.\label{eq:b}
 \end{align}
-Here $T$ is the next free slot after the \emph{entire} queue, even when that
-queue is long. The rate is selected at reservation time. It is not recalculated
-at the eventual transmission of an already reserved packet. This distinction
-is part of the model, not a consequence of specifying $g\cwnd/R$ alone.
+To verify it, note that $b_k=\max(a_k,b_{k-1}+c/k)$ for $k\ge2$, and $a_{2j}=b_j+1$, $a_{2j+1}=b_j+1+c/[2(j+1)]$. At the first index $q$ of a group, the two candidate times are $B_{m-1}+1$ and $B_{m-1}+cD(q/2)$, proving \eqref{eq:B}. Set $\Delta=B_m-B_{m-1}\ge1$. At interior even indices,
+\begin{equation}
+ T_{2j-1}-a_{2j}=\Delta-1+c[D(j)-D(q/2)]>0.
+\end{equation}
+At interior odd indices the bracket additionally contains $1/(2j+1)-1/(2j+2)>0$. Since $D(j+1)-D(j)=1/[(2j+1)(2j+2)]>0$, the queue branch wins throughout each group's interior. Summing its increments proves \eqref{eq:b} by induction. In particular,
+\begin{equation}
+ b_k=cH_k+1-c+
+ \sum_{i=0}^{\lfloor\log_2 k\rfloor-1}\pos{1-cD(2^i)}.\label{eq:closed}
+\end{equation}
+Here $[x]_+=\max(x,0)$. Together with \eqref{eq:queued} and \eqref{eq:account}, this determines the window at every time without fitting a growth curve.
 
-Packet sends are strictly ordered for finite $g$. The fixed feedback delay
-therefore preserves their order, justifying $a_k=s_{k-1}+1$. Each reservation
-is causal because $b_k\ge a_k$. Also, $b_1=1$, and for $k\ge2$,
+\subsection{Gain, finite spans, and the limiting multiplier}
+Group $m$ contains packets $2q-1,\ldots,4q-2$. Its first-to-last send span $\Lambda_m$ and extra ACK waiting time $I_m$, excluding the nominal trailing spacing, are
 \begin{equation}
- b_k=\max\left\{a_k,b_{k-1}+\frac2{gk}\right\}.\label{eq:max}
+ \frac{\Lambda_m}{R}=\frac{2D(q)-1/(2q)}{g},\qquad
+ \frac{I_m}{R}=\pos{1-\frac{2D(q)}g}.\label{eq:span}
 \end{equation}
-In particular, the ACK branch can be written without packet timestamps:
+Because $D(q)\uparrow\ln2$, the limiting transition is $\gc=2\ln2\approx1.38629436112$. Below it, extra waiting eventually ends, $b_k=(2/g)H_k+\text{constant}$, and $w(\tau)=A_g e^{g\tau/2}+O(1)$. At or above it, $B_m=m+1$. Counting sends gives, for integer $n\ge1$ and $0\le u<1$,
 \begin{equation}
- a_{2j}=b_j+1,\qquad
- a_{2j+1}=b_j+1+\frac1{g(j+1)}\quad(j\ge1).\label{eq:parents}
+\begin{aligned}
+ w(n+u)&=2^{n-1}\min(e^{gu/2},2)+O_g(1),\\
+ r(g)&:=\lim_{n\to\infty}\frac{W_{n+1}}{W_n}=\min(e^{g/2},2).
+\end{aligned}\label{eq:growth}
 \end{equation}
+For finite $g\ge\gc$, the boundary value is exactly $W_n=1+2^{n-1}$, rather than $2^n$. The group span approaches $\Lambda_m/R\to\gc/g$: higher gain compresses the active part of each group. This is an asymptotic statement about packet-index groups, not a claim that every fixed RTT interval has this span.
 
-\subsection{From actual transmissions to the window}
-Equation~\eqref{eq:max} implies $b_k\ge1+(2/g)(H_k-1)\to\infty$,
-so only finitely many packets leave in any finite time interval.
-Set $N_g(x)=0$ for $x<0$. For $x\ge0$, count actual sends, not reservations:
-\begin{equation}
- N_g(x)=1+\sum_{k\ge1}\left(
- \ind_{\{b_k\le x\}}+
- \ind_{\{b_k+1/[g(k+1)]\le x\}}\right).
-\end{equation}
-The slow-start window is exactly
-\begin{equation}
- \boxed{w_g(\tau)=1+N_g(\tau-1).}\label{eq:count}
-\end{equation}
-Gain changes the times of ACKs, not the window $k+1$ after ACK $k$.
-
-For integer samples, write $W_n=w_g(n)$ and let $S_n$ count sends in
-$(n,n+1]$. Those packets are acknowledged in $(n+1,n+2]$, so
-\begin{equation}
- \boxed{W_{n+2}=W_{n+1}+S_n.}\label{eq:conservation}
-\end{equation}
-This identity is shared by the comparison models below. It neither assumes
-RTT-batched ACK processing nor determines $S_n$ without a scheduling rule.
-
-\section{Two comparison models}\label{sec:comparison}
-\subsection{Immediate transmission gives the upper bound}
-For any sender satisfying these slow-start assumptions and the flight
-constraint, the ACKs in $(n,n+1]$ can only come from packets in flight just
-after $n$. A packet sent strictly after $n$ is acknowledged strictly after
-$n+1$. Each returning ACK adds one window unit, hence
-\begin{equation}
- W_{n+1}-W_n\le F(n)\le W_n.
-\end{equation}
-Since $W_0=1$, induction gives $W_n\le2^n$. The sender that immediately sends
-both newly permitted packets at every ACK attains this bound. Its physical
-window at the boundaries is
-\begin{equation}
- \cwnd_{\mathrm{burst}}(nR)=M2^n.\label{eq:upper}
-\end{equation}
-This is a timing bound in a fixed-delay, unlimited-service model, not a claim
-that burst sending maximizes throughput on a congested network.
-
-\subsection{A fixed-batch comparator gives Fibonacci growth}
-Define a separate sender that reads its window $\widehat W_n$ at each integer time $n$
-after ACK processing, and sends $\widehat W_n$ packets at
-\begin{equation}
- n+\frac{i}{\widehat W_n},\qquad i=0,\ldots,\widehat W_n-1.\label{eq:fixed}
-\end{equation}
-ACKs still increase its window immediately, but do not change the current
-batch. In $(n,n+1]$ there are $\widehat W_n-1$ remaining packets of this batch and the
-first packet of the next batch. Equation~\eqref{eq:conservation} gives
-\begin{equation}
- \widehat W_{n+2}=\widehat W_{n+1}+\widehat W_n,\quad
- \widehat W_0=1,\quad \widehat W_1=2,
- \qquad \widehat W_n=f_{n+2}.\label{eq:fib}
-\end{equation}
-Its window sequence is $1,2,3,5,8,13,\ldots$. Its explicit boundary formula is
-\begin{equation}
- \cwnd_{\mathrm{fixed}}(nR)
- =\frac{M}{\sqrt5}(\phi^{n+2}-\psi^{n+2}),\qquad
- \phi=\frac{1+\sqrt5}{2},\quad\psi=\frac{1-\sqrt5}{2}.\label{eq:binet}
-\end{equation}
-The sender respects the actual-flight limit. Indeed, in a batch with previous
-size $p=f_{n+1}$ and current size $q=f_{n+2}$, its flight just after phase
-$0\le u<1$ is $p+\lfloor qu\rfloor-\lfloor pu\rfloor\le q$, while its
-window is at least $q$. Unlike the append scheduler, it permits future plans
-to rely on future flight releases; it does not enforce the same reservation
-invariant $F+Q=w$ at planning time.
-
-Solving this comparator alone does not make it a lower bound. The needed
-comparison is between \emph{actual} send times.
-\begin{theorem}[Fibonacci-to-doubling sandwich]\label{thm:sandwich}
-For the append scheduler of Section~\ref{sec:model}, every fixed $g\ge1$
-satisfies, for integers $n\ge0$,
-\begin{equation}
- \boxed{Mf_{n+2}\le\cwnd_g(nR)\le M2^n.}\label{eq:sandwich}
-\end{equation}
-\end{theorem}
-The upper bound was proved above. Appendix~\ref{app:fib} proves that at $g=1$
-each packet leaves no later than its fixed-batch counterpart. Fixed feedback
-delay then preserves the ordering of ACKs and windows. The gain monotonicity
-proved in Section~\ref{sec:limit} extends the lower bound to $g\ge1$.
-The comparison is not justified merely by reserving packets earlier, and it
-does not assert the local service condition $S_n\ge W_n$ for arbitrary pacers.
-
-\section{Exact transmission times for every gain}\label{sec:exact}
-Let $c=2/g$ and $D(j)=H_{2j}-H_j$. Two elementary facts will identify which
-branch of \eqref{eq:max} is active:
-\begin{equation}
- D(j+1)-D(j)=\frac1{(2j+1)(2j+2)}>0,\qquad
- D(j)<\ln2,\qquad D(j)\longrightarrow\ln2.\label{eq:harmonic}
-\end{equation}
-The inequality follows by comparing the sum with $\int_j^{2j}dx/x$; the limit
-follows from $H_j=\ln j+\gamma_E+O(1/j)$, where $\gamma_E$ is Euler's constant.
-
-Group ACK indices as $q\le k<2q$, where $q=2^m$, and write $B_m=b_{2^m}$.
-These groups are analytical partitions of the event indices. The sender does
-not wait for a group or an RTT boundary to process an ACK.
-
-\begin{theorem}[Unified exact solution]\label{thm:exact}
-For every fixed $g\ge1$,
-\begin{align}
- B_0&=1,&
- B_{m+1}&=B_m+\max\{1,cD(2^m)\},\label{eq:block}\\
- b_k&=B_m+c(H_k-H_{2^m}),&&2^m\le k<2^{m+1}.\label{eq:within}
-\end{align}
-Equivalently, with $[x]_+=\max(x,0)$ and an empty sum equal to zero,
-\begin{equation}
- \boxed{b_k=cH_k+1-c+
- \sum_{i=0}^{\lfloor\log_2k\rfloor-1}[1-cD(2^i)]_+.}\label{eq:closed}
-\end{equation}
-Together with \eqref{eq:sends}, this determines every packet timestamp.
-\end{theorem}
-
-\begin{proof}
-The first group contains only $k=1$, for which $b_1=1$. Assume the formulas
-hold before a group with $q=2^m$, $m\ge1$. At its first index,
-\begin{align*}
- a_q&=b_{q/2}+1=B_{m-1}+1,\\
- T_{q-1}&=b_{q-1}+c/q=B_{m-1}+c(H_q-H_{q/2}).
-\end{align*}
-Their maximum proves the formula for $B_m$. Set
-$\Delta=B_m-B_{m-1}\ge1$.
-
-Within this group, proceed in increasing $k$. For an even $k=2j>q$, the
-already established formulas give
-\begin{equation}
- T_{2j-1}-a_{2j}
- =\Delta-1+c[D(j)-D(q/2)]>0.\label{eq:even}
-\end{equation}
-Here $q/2<j<q$, and $D$ strictly increases. For an odd $k=2j+1>q$,
-\begin{equation}
- \begin{split}
- T_{2j}-a_{2j+1}
- =\Delta-1+c\left[D(j)-D(q/2)
-          +\frac1{2j+1}-\frac1{2j+2}\right]>0.
- \end{split}\label{eq:odd}
-\end{equation}
-The last difference is positive even when $j=q/2$. Thus every interior step
-selects the queue-tail branch of \eqref{eq:max}. Summing $c/k$ from the group
-start proves \eqref{eq:within} and completes strong induction.
-
-Finally expand \eqref{eq:block}, use $\max(1,x)=x+[1-x]_+$ and telescope
-$\sum_{i<m}D(2^i)=H_{2^m}-1$ to obtain \eqref{eq:closed}.
-\end{proof}
-
-The proof also identifies all possible extra waiting: apart from the initial
-ACK, it can occur only at ACK indices $2^m$. This conclusion follows from the
-two branches of the actual recurrence, rather than an assumption that the
-pacer stays busy.
-
-\section{Sending spans, waiting, and the gain transition}\label{sec:span}
-\subsection{Finite-group formulas}
-Group $m$, with $q=2^m$, consists of $q$ two-packet batches. Its $2q$ packets
-have indices $2q-1,\ldots,4q-2$. The first leaves at $B_m$; the last leaves at
-\begin{equation}
- s_{4q-2}=b_{2q-1}+\frac1{2gq}
-         =B_m+\frac2gD(q)-\frac1{2gq}.
-\end{equation}
-Let $L_m$ be the physical time from that first send to that last send.
-Let $I_m$ be the extra wait between the final reserved slot of this group and
-the start of the next, and let $G_m$ be the actual last-to-next-first gap.
-Then
-\begin{equation}
- \boxed{\begin{aligned}
- L_m/R&=\frac2gD(q)-\frac1{2gq},\\
- I_m/R&=\left[1-\frac2gD(q)\right]_+,\\
- G_m/R&=I_m/R+\frac1{2gq}.
- \end{aligned}}\label{eq:span}
-\end{equation}
-The first line is a timestamp span, not link busy time. The second excludes
-the nominal last-packet spacing. The third includes that spacing.
-
-An extra wait occurs after this finite group exactly when
-\begin{equation}
- g>g_m:=2D(2^m).\label{eq:finitecritical}
-\end{equation}
-The first thresholds are $g_0=1$, $g_1=7/6$, and $g_2=533/420$.
-They increase to $2\ln2$. Thus gains below the limiting threshold can still
-produce waiting during a finite initial part of the trace.
-
-\subsection{The three limiting regimes}
-\begin{corollary}[Transition at $\gcrit=2\ln2$]\label{cor:transition}
-For $1\le g<\gcrit$, additional ACK waiting ends after finitely many groups.
-For $g=\gcrit$, every group has a positive additional wait, but its length
-tends to zero. For $g>\gcrit$, the additional wait tends to the positive
-fraction $1-\gcrit/g$ of an RTT.
-\end{corollary}
-\begin{proof}
-Use $D(2^m)\uparrow\ln2$ in \eqref{eq:block} and \eqref{eq:span}. If
-$g<\gcrit$, then $cD(2^m)>1$ eventually, so $I_m=0$ thereafter. Equations
-\eqref{eq:even}--\eqref{eq:odd} exclude additional waiting inside each group.
-If $g\ge\gcrit$, then $cD(2^m)<1$ for every finite $m$, so $B_m=m+1$ and
-$I_m/R=1-cD(2^m)$, with the stated limits.
-\end{proof}
-
-Below the threshold, the inter-group duration tends to
-$2\ln2/g>1$ in RTT units. These index groups may span more than an RTT, but
-their separating gaps tend to zero. Thus they do not form persistent
-RTT-separated bursts. Indeed the eventual consecutive packet spacings are
-$1/[g(k+1)]$, repeated twice, and decrease to zero; a fixed RTT observation
-interval has first-to-last send span tending to $R$.
-
-At and above the threshold, group $m$ starts at $(m+1)R$ and ends before
-$(m+2)R$. Only in this regime can its span be identified directly with the
-span of the packets in that integer RTT. Equation~\eqref{eq:span} gives
-\begin{equation}
- \boxed{\lim_{m\to\infty}L_m/R=\frac{2\ln2}{g},\qquad
- \lim_{m\to\infty}I_m/R=1-\frac{2\ln2}{g}.}\label{eq:spanlimit}
-\end{equation}
-For $g=2$ the limiting sending span is $\ln2\simeq0.69315$ RTT; for $g=4$
-it is about $0.34657$ RTT. A regular local pacing interval therefore does not
-prevent global concentration: the sender finishes its available packets
-earlier and then waits for feedback. The proof of this statement is the exact
-recurrence, not the heuristic integral $\int_W^{2W}2\,dx/(gx)$.
-
-\section{Window growth in physical time}\label{sec:growth}
-\subsection{Below the threshold: exponent and amplitude}
-For $g<\gcrit$, the positive-part sum in \eqref{eq:closed} eventually stops
-changing. Define the finite sum
-\begin{equation}
- \delta_g=1-c+\sum_{i\ge0}[1-cD(2^i)]_+.
-\end{equation}
-For every sufficiently large $k$, the equality $b_k=cH_k+\delta_g$ is exact.
-Both packets in batch $k$ consequently have times
-$c\ln k+c\gamma_E+\delta_g+O(1/k)$. Inverting this relation changes the
-corresponding batch count by only $O(1)$, and there are two packets per batch.
-Therefore
-\begin{align}
- N_g(\tau)&=2e^{(\tau-\delta_g)/c-\gamma_E}+O(1),\\
- w_g(\tau)&=A_g e^{g\tau/2}+O(1),\qquad
- A_g=2e^{-(1+\delta_g)/c-\gamma_E}>0.\label{eq:lowgrowth}
-\end{align}
-The second line uses the exact one-RTT shift in \eqref{eq:count}.
-
-For $g=1$, $c=2$ and $2D(2^i)\ge1$, so $\delta_1=-1$. In fact, for all
-$k\ge1$,
-\begin{equation}
- b_k=2H_k-1,\qquad
- w_1(\tau)=2e^{\tau/2-\gamma_E}+O(1).\label{eq:unity}
-\end{equation}
-The asymptotic multiplier per RTT is $\sqrt e$. It exceeds the Fibonacci
-multiplier $\phi$, but is smaller than the immediate-send multiplier 2.
-
-\subsection{At and above the threshold: the within-RTT trajectory}
-When $g\ge\gcrit$, the exact solution reduces to
-\begin{equation}
- b_k=m+1+\frac2g(H_k-H_{2^m}),\qquad 2^m\le k<2^{m+1}.\label{eq:high}
-\end{equation}
-For $n\ge2$, ACK $2^{n-1}$ arrives at $n$ because
-$a_{2^{n-1}}=b_{2^{n-2}}+1=n$; the next ACK arrives later. The case $n=1$
-follows from the initial packet. Thus every finite $g\ge\gcrit$ has the same
-integer-boundary window:
-\begin{equation}
- \boxed{w_g(n)=1+2^{n-1}\quad(n\ge1).}\label{eq:boundary}
-\end{equation}
-The trajectories between those boundaries are different.
-
-To see their shape, let $P_{n,g}(u)$ be the fraction of packets in
-$[n,n+1)$ that have been sent by $n+u$, $0\le u<1$; set $P_{n,g}(1)=1$.
-For high gain the interval contains $2^n=2q$ packets, where $q=2^{n-1}$.
-Uniformly for $q\le k<2q$,
-\begin{equation}
- b_k-n=\frac2g\ln(k/q)+O_g(1/q).
-\end{equation}
-Hence the number of batches reached by phase $u$ is
-$q\min\{e^{gu/2}-1,1\}+O_g(1)$. Counting two packets per batch gives
-\begin{equation}
- P_{n,g}(u)\longrightarrow\min\{e^{gu/2}-1,1\}.\label{eq:highcdf}
-\end{equation}
-The endpoint error affects at most $O_g(1)$ packets. The previous round's
-packets provide the present round's ACKs, so \eqref{eq:count} yields
-\begin{equation}
- \boxed{w_g(n+u)=2^{n-1}\min\{e^{gu/2},2\}+O_g(1),\quad0\le u<1.}
- \label{eq:phase}
-\end{equation}
-For fixed finite $g$, the error can be bounded uniformly in $u$. At
-$g=\gcrit$, this simplifies to $w_g(\tau)=2^{\tau-1}+O(1)$. Above the
-threshold, growth followed by a plateau persists within each RTT; one
-constant times $2^\tau$ does not describe all phases with relative error
-tending to zero.
-
-For comparison, \eqref{eq:lowgrowth} gives the lower-gain send distribution
-by taking differences of cumulative sends at the endpoints:
-\begin{equation}
- P_{n,g}(u)\longrightarrow
- \frac{e^{gu/2}-1}{e^{g/2}-1},\qquad1\le g<\gcrit.\label{eq:lowcdf}
-\end{equation}
-The two limits agree at $\gcrit$. They describe the fraction of this RTT's
-packets sent, not the normalized window. Figure~\ref{fig:phase} plots the
-high-gain expression directly.
-
-\begin{figure}[htbp]
+\begin{figure*}[t]
 \centering
-\begin{tikzpicture}[x=9cm,y=4.1cm]
- \draw[gray!35] (0,0) rectangle (1,1);
- \draw[gray!20] (0,.5)--(1,.5);
- \draw[gray!20] (.5,0)--(.5,1);
- \foreach \x/\lab in {0/0,.5/0.5,1/1}{
-   \draw (\x,0)--(\x,-.018) node[below,font=\small]{\lab};}
- \foreach \y/\lab in {0/0,.5/0.5,1/1}{
-   \draw (0,\y)--(-.009,\y) node[left,font=\small]{\lab};}
- \draw[thick,domain=0:1,samples=65] plot (\x,{exp(ln(2)*\x)-1});
- \draw[blue,thick,dashed,domain=0:1,samples=100] plot (\x,{min(exp(\x)-1,1)});
- \draw[gray,thick,dash dot,domain=0:1,samples=100] plot (\x,{min(exp(2*\x)-1,1)});
- \draw[thick] (1.04,.86)--(1.14,.86) node[right,font=\small] {$g=2\ln2$};
- \draw[blue,thick,dashed] (1.04,.70)--(1.14,.70) node[right,font=\small] {$g=2$};
- \draw[gray,thick,dash dot] (1.04,.54)--(1.14,.54) node[right,font=\small,text=black] {$g=4$};
- \node[below,font=\small] at (.5,-.12) {Within-RTT phase $u$};
- \node[rotate=90,font=\small] at (-.13,.5) {Fraction of the round's packets sent};
-\end{tikzpicture}
-\caption{Limiting send-time distributions from \eqref{eq:highcdf}, drawn
-from the formula, not experimental traces. Increasing gain compresses the
-sending portion of an RTT while preserving positive local packet spacing
-at every finite window and gain.}\label{fig:phase}
-\end{figure}
-
-\begin{corollary}[Growth exponent and one-RTT multiplier]
-For the specified scheduler and any fixed $g\ge1$,
+\includegraphics[width=0.90\textwidth]{figures/cwnd-rtt.pdf}
+\caption{Congestion-window evolution from actual SCP core logs, for all 22 gains. The horizontal coordinate is elapsed time divided by the 100 ms feedback RTT; the window axis is linear in MSS. Curves retain the measured within-RTT evolution. Overlap is an experimental result, not an omitted gain.}\label{fig:cwnd}
+\Description{All 22 gain curves show measured cwnd on linear axes. Low gains grow more slowly; higher gains overlap near a doubling envelope with increasingly concentrated within-RTT growth.}
+\end{figure*}
+\section{From the reference model to an SCP experiment}
+\subsection{What an instantaneous-rate approximation predicts}
+A different idealization updates the entire sending rate continuously: in normalized units $x(\tau)=gw(\tau)$, while window credit remains available. Fixed feedback gives $w'(\tau)=x(\tau-1)=gw(\tau-1)$. Substitution of $w=Ae^{\lambda\tau}$ yields
 \begin{equation}
- \boxed{\begin{aligned}
- \lim_{\tau\to\infty}\frac{\ln w_g(\tau)}{\tau}&=\min\{g/2,\ln2\},\\
- \lim_{\tau\to\infty}\frac{w_g(\tau+1)}{w_g(\tau)}&=\min\{e^{g/2},2\}.
- \end{aligned}}\label{eq:exponent}
+\begin{aligned}
+ \lambda e^\lambda&=g,\\
+ F(\tau)&=\int_{\tau-1}^{\tau}x(v)\,dv=(e^\lambda-1)w(\tau).
+\end{aligned}
 \end{equation}
-\end{corollary}
-\begin{proof}
-Below the threshold apply \eqref{eq:lowgrowth}. At and above it apply
-\eqref{eq:phase}: the coefficient is bounded between $1/2$ and 1, and
-advancing exactly one RTT preserves phase and doubles its leading term.
-The uniform bounded remainder vanishes relative to that term.
-\end{proof}
-The physical-time growth exponent is the first limit divided by $R$.
-All slow-start formulas describe an indefinitely continued growth phase.
-With finite ssthresh they apply only up to the transition, not to the later
-connection as $t$ tends to infinity.
+The flight constraint requires $e^\lambda\le2$, reaching equality at $g=2\ln2$. Thus the two idealizations share a transition value but differ below it. At $g=1$, the instantaneous-rate multiplier is approximately $1.763223$, while the immutable-queue multiplier is $\sqrt e\approx1.648721$. Previously reserved packets retain older, wider spacings in the latter model. An exponential ansatz also fixes a compatible history; it does not determine the amplitude generated by a single initial packet.
 
-\section{Gain monotonicity and the burst limit}\label{sec:limit}
-For fixed packet index, increasing $g$ never delays its send. To prove this,
-compare $g_2\ge g_1$ using \eqref{eq:ack}--\eqref{eq:tail}. Initially both
-send packet 0 at zero and $T_0(g_2)\le T_0(g_1)$. If preceding corresponding
-sends and queue tails are no later at $g_2$, the next corresponding ACK is
-also no later. The maximum defining $b_k$ is no larger, and the two new
-spacings are no larger. Induction proves the claim for sends and tails.
-Equation~\eqref{eq:count} then gives $w_{g_2}(\tau)\ge w_{g_1}(\tau)$.
-The monotonicity need not be strict, as \eqref{eq:boundary} demonstrates.
-
-For $g\ge\gcrit$, every packet $j$ in group $m$ has
-$s_j(g)=m+1+d_j/g$, with $d_j\ge0$ independent of gain. These packets have
-$2^{m+1}-1\le j\le2^{m+2}-2$. Consequently, including $j=0$,
+\subsection{Integer scheduling in the tested core}
+The experiment executes the SCP C sender, receiver, pacing callback, and ACK processing. The virtual network transports their packets; it does not compute the window from a mathematical recurrence. The tested core stores reservation times in unsigned 64-bit Q32.32 milliseconds. For payload length $\ell$, measured RTT $R_{\rm ms}$, window $C$ in bytes, and compile-time integer reciprocal $G$, the spacing is
 \begin{equation}
- \boxed{\lim_{g\to\infty}s_j(g)=\lfloor\log_2(j+1)\rfloor.}\label{eq:burstlimit}
+\begin{aligned}
+ d_{\rm Q32}&=\left\lfloor\frac{\ell R_{\rm ms}G}{C}\right\rfloor,\\
+ G&\simeq 2^{32}/g,\qquad g_{\rm effective}=2^{32}/G.
+\end{aligned}
 \end{equation}
-This is precisely the immediate-send trace: one packet at zero, two at one,
-four at two, and so on. Local pacing and global concentration coexist for
-finite gain; only the limit collapses each group's spacing to zero.
+An appended packet adds this spacing to the last reservation. Fractional parts accumulate while the queue persists, instead of truncating each spacing to whole milliseconds. The send routine uses the reservation's integer part: a packet reserved for $1.8$ ms is eligible at $1$ ms. The virtual clock advances by 1 ms, allowing multiple packets in a tick. ACK-triggered scheduling and the pacing timer share the due-send routine.
 
-There is a boundary subtlety. For finite high gain,
-$w_g(n)=1+2^{n-1}$, whereas the burst sender has $w_{\mathrm{burst}}(n)=2^n$.
-There is no contradiction: ACKs that arrive just after $n$ for finite gain
-coalesce at $n$ in the limit. Counting at a jump is not continuous under
-convergence of event times. Equation~\eqref{eq:burstlimit} is a packet-time
-limit, not pointwise convergence of the window at every burst jump.
+When the queue is empty, its first new packet is assigned the current time. The previous queue's trailing interval is not retained. This reset and the execution grid are intentional implementation rules. They distinguish the experiment from \eqref{eq:queued}, particularly when the interval falls below a millisecond. The absence of SRTT uses the core's 1 ms fallback; established feedback supplies the measured RTT.
 
-\section{Extension to loss-free congestion avoidance}\label{sec:ca}
-\subsection{A continuous event history across the threshold}
-Take an integer threshold $\theta\ge2$ and choose the phase by the window
-before the ACK:
+\subsection{Configuration and verification}
+\begin{table}[t]\small
+\caption{SCP virtual-network experiment configuration.}\label{tab:setup}
+\begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{0.24\columnwidth}>{\raggedright\arraybackslash}X@{}}\toprule
+Quantity & Configuration \\\midrule
+Data and packet size & 1 GiB generated data; MSS 1430 bytes; final payload 584 bytes \\
+Window and mode & Initial window 1 MSS; sustained slow start \\
+Network & 50 ms per direction; no loss, rate cap, or serialization delay \\
+Feedback RTT & 100 ms from actual DATA send to returning ACK input \\
+Observation & Core state every 1 ms; actual DATA and ACK events logged \\
+Gains & $\gc+0.05k$, $k=-6,\ldots,6$; $1,1.1,1.75,2,2.5,3,4,6,8$ \\
+Repetitions & 22 gains, three deterministic repetitions each \\
+Limits & cwnd cap $2^{31}-1$ bytes; buffer/window settings 1 GiB \\\bottomrule
+\end{tabularx}\end{table}
+All 66 transfers completed with 750,869 DATA packets and matching endpoint checksums. No loss, retransmission, or cwnd-cap contact was observed. Fifteen functional tests passed. The shared core, library, network, and common-test files matched the reviewed baseline in the recorded audit. Campaign records and repeat hashes were checked across all runs; the critical-gain first run also received independent packet-level reprocessing.
+
+At the target $\gc$, $G=3098164009$, so the effective gain is $1.386294361280859$. The first DATA transmission defines time zero; the preceding handshake is excluded. The three repetitions reproduce identical traces, so no random-error bars are appropriate. Finite data availability affects the final intervals and is marked separately in the span figure.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.90\textwidth]{figures/span-rtt.pdf}
+\caption{First-to-last actual DATA transmission span in each fixed RTT interval, for all gains. The faint dotted final segments indicate intervals shortened by exhaustion of the finite transfer. The spans come from packet timestamps; they are not calculated by dividing a window by a nominal rate.}\label{fig:span}
+\Description{For 22 gains, measured first-to-last packet spans rise over early RTTs then plateau. Larger gains have shorter spans. Faint final segments identify finite-transfer exhaustion.}
+\end{figure*}
+\section{Measured congestion-window growth}
+
+
+\textbf{The low-gain regime.} Figure~\ref{fig:cwnd} shows slower growth at low gain. For the seven sampled gains from $1$ through $\gc-0.10$, the measured late boundary ratio $W_{18}/W_{17}$ has less than 0.01\% relative error against $e^{g_{\rm effective}/2}$. For example, at $g=1$ it is $1.648883$. This is close agreement with the queued reference and a clear distinction from the instantaneous-rate prediction $1.763223$. It supports that reference's growth multiplier in this regime, without asserting equality of every timestamp or window value.
+
+\begin{table}[t]\small\centering
+\caption{Measured growth and completion for selected gains.}\label{tab:results}
+\begin{tabular}{@{}rrrr@{}}\toprule
+Target gain & $W_{18}/W_{17}$ & $W_{18}$ (MSS) & Last ACK ($t/R$) \\\midrule
+$1$ & 1.648883 & 12,548 & 26.19 \\
+$\gc-0.10$ & 1.902493 & 82,260 & 21.44 \\
+$\gc-0.05$ & 2.000000 & 132,096 & 20.50 \\
+$\gc$ & 2.000000 & 132,096 & 20.48 \\
+$2$ & 2.000000 & 133,120 & 20.32 \\
+$8$ & 2.000000 & 139,264 & 20.06 \\\bottomrule
+\end{tabular}\end{table}
+
+\textbf{Doubling does not remove the startup deficit.} At the critical target, the first eight boundary windows are $1,2,3,5,9,17,33,65$ MSS. The window reaches 129 MSS at RTT 8, after which the measured samples satisfy
 \begin{equation}
- w_k=\begin{cases}
- w_{k-1}+1,&w_{k-1}<\theta,\\
- w_{k-1}+1/w_{k-1},&w_{k-1}\ge\theta.
- \end{cases}\label{eq:phaseupdate}
+ W_n=129\,2^{n-8},\qquad 8\le n\le20.
 \end{equation}
-The CA expression is the real-valued full-packet form of RFC 5681,
-Section 3.1, equation (3), not every possible Reno byte-counting
-implementation \cite{rfc5681}. For example, at $\theta=10$, ACK 9 raises
-the window to 10 using SS, and ACK 10 raises it to 10.1 using CA. Flight,
-the existing reservations, and the queue clock are retained at the transition.
+The multiplier is exactly two in this range, but $W_n/2^n=129/256$: the window is still 49.609375\% below the immediate-send reference. Earlier timing differences persist as an amplitude difference. At all observed 1 ms samples from 800 through 1899 ms, this run also satisfies $w(\tau+1)=2w(\tau)$. This finite trace demonstrates repetition of the internal phase, not merely equality at RTT boundaries. It does not prove an infinite-time identity or a universal transition for other implementations.
 
-For a real-valued window, use every available whole-packet reservation:
-$F+Q=\lfloor w\rfloor$. An ACK reduces the previous count by one, so the
-number of new packets is exactly
+\section{Within-RTT sending span and concentration}
+
+For this figure, let $\mathcal{P}_n$ contain sends in the half-open interval $[nR,(n+1)R)$, measured from the first DATA transmission. Define
 \begin{equation}
- \boxed{m_k=1+\lfloor w_k\rfloor-\lfloor w_{k-1}\rfloor.}\label{eq:mk}
+ L_n=\max_{j\in\mathcal{P}_n}t_j-\min_{j\in\mathcal{P}_n}t_j.
 \end{equation}
-In CA this is one or two: the replacement packet and, when an integer window
-threshold is crossed, one additional packet. Let $J_k$ be the total number
-of packets ever reserved after ACK $k$, including the initial one. Then
-$J_k=k+\lfloor w_k\rfloor$, and the full recurrence is
-\begin{align}
- a_k&=s_{k-1}+1,& b_k&=\max\{a_k,T_{k-1}\},\\
- s_{J_{k-1}+j}&=b_k+\frac{j}{gw_k}\quad(0\le j<m_k),&
- T_k&=b_k+\frac{m_k}{gw_k}.\label{eq:carecurrence}
-\end{align}
-It defines the whole SS-to-CA trace without clearing outstanding packets.
-With $K(\tau)=\#\{k:a_k\le\tau\}$, the exact observed window is
-$\cwnd(t)=M w_{K(t/R)}$.
+A singleton has span zero; an empty interval has no defined span. This bin convention differs from the right-closed send-count intervals in \eqref{eq:account}. It also differs from the packet-index groups defining $\Lambda_m$ in \eqref{eq:span}. These measurements cannot be interchanged near a phase boundary.
 
-\subsection{Window growth indexed by ACK count}
-At CA entry use a local index $j$ and initial window $u_0=a\ge1$.
-Squaring $u_j=u_{j-1}+1/u_{j-1}$ gives
-\begin{equation}
- \boxed{u_j^2=a^2+2j+\sum_{i=0}^{j-1}\frac1{u_i^2}.}\label{eq:casquare}
-\end{equation}
-Since $u_i^2\ge a^2+2i$, the sum is $O(\ln(j+1))$, and
-$u_j^2=a^2+2j+O(\ln(j+1))$. This is an ACK-count result. Replacing $j$ with
-$t/R$ would lose the many ACKs that can arrive within one RTT.
+\textbf{Evolution within one run.} At the critical target, $L_n$ initially takes values $0,36,54,74,78,91$ ms for $n=0,\ldots,5$, then remains 96 ms for $n=6,\ldots,18$. The next interval has span 48 ms because the finite transfer ends. The measured plateau is reached in finitely many rounds. By contrast, the exact reference group's span approaches its limit through harmonic corrections.
 
-\subsection{A proved logarithmic term in the queue clock}
-Let $k_0$ be the last SS update and define, over subsequent CA ACKs,
-\begin{equation}
- \ell_k=[a_k-T_{k-1}]_+,\qquad
- \mathcal I_K=\sum_{k=k_0+1}^K\ell_k.
-\end{equation}
-The calligraphic $\mathcal I_K$ is cumulative waiting; it differs from the
-single slow-start group wait $I_m$ of Section~\ref{sec:span}. Telescoping
-\eqref{eq:carecurrence} and substituting \eqref{eq:mk} gives the exact identity
-\begin{equation}
- \begin{split}
- T_K-T_{k_0}=\mathcal I_K
- +\frac1g\sum_{k=k_0+1}^K\frac1{w_k}
- +\frac1g\sum_{k=k_0+1}^K
- \frac{\lfloor w_k\rfloor-\lfloor w_{k-1}\rfloor}{w_k}.
- \end{split}\label{eq:cadecomp}
-\end{equation}
-The sums account respectively for replacing acknowledged packets and for
-additional packets made possible by whole-MSS window growth.
+\textbf{Variation across gains.} At RTT 18, the span is 99 ms for the sampled gains through $\gc-0.05$, then 96 ms at $\gc$, 63 ms at $g=2$, and 12 ms at $g=8$. A 100 ms interval sampled on a 1 ms grid has a largest possible first-to-last span of 99 ms. A 99 ms result therefore means sends reach both edge bins, not that the pacer fills every instant or even every bin.
 
-\begin{theorem}[CA queue-clock asymptotic]\label{thm:ca}
-For this scheduler, fixed $g\ge1$, and an indefinitely continued loss-free
-CA phase,
-\begin{equation}
- \boxed{T_K=\mathcal I_K+\frac1g(w_K+\ln w_K)+C+O(1/w_K),}\label{eq:catheorem}
-\end{equation}
-where $C$ depends on the finite initial history and fixed parameters.
-\end{theorem}
-\begin{proof}
-The update gives the exact identity
-\begin{equation}
- \frac1{w_k}=(w_k-w_{k-1})-\frac1{w_{k-1}^2w_k}.
-\end{equation}
-By \eqref{eq:casquare}, $w_k=\Theta(\sqrt{k})$ after the finite initial
-history. The correction series therefore converges, with tail $O(K^{-1/2})
-=O(1/w_K)$. The first sum in \eqref{eq:cadecomp} is
-$w_K+C_1+O(1/w_K)$.
+\textbf{Why the execution rule matters.} Near $\gc$, the nominal full-packet spacing falls below 1 ms at a window of 73 MSS. Fractional accumulation prevents a continuously queued stream from becoming unlimited-rate simply through per-packet truncation. However, empty-queue resets can still place newly permitted packets in the current millisecond. The critical trace exhibits no reserved backlog at the 1 ms samples from 800 through 1899 ms; its repeating ACK phases can consequently reproduce a doubled transmission pattern on the grid.
 
-For the second sum, each sufficiently large integer threshold $n$ is crossed
-exactly once. If $v_n$ is the first window at or above $n$, its preceding
-value $x$ obeys $n-1<x<n$, and
-\begin{equation}
- n\le v_n=x+1/x<n+\frac1{n-1}.
-\end{equation}
-Hence $v_n=n+O(1/n)$ and $1/v_n=1/n+O(1/n^3)$. The extra-packet sum is
-$\ln w_K+C_2+O(1/w_K)$: the reciprocal-error series converges, and replacing
-$\ln\lfloor w_K\rfloor$ with $\ln w_K$ changes only the stated remainder.
-Substitution proves \eqref{eq:catheorem}.
-\end{proof}
+From $\gc$ to $g=8$, the last DATA ACK moves from 2048 to 2006 ms, an improvement of about 2.05\%. In the same comparison, $L_{18}$ falls eightfold, while the largest millisecond bin's share of RTT-18 packets rises from 1.5625\% to 12.5\%. Faster completion and more concentrated sending are distinct effects. Span alone does not describe the internal density, so both quantities are needed when evaluating smoothing.
 
-The logarithm here comes from additional whole packets at successive integer
-window thresholds. Equation~\eqref{eq:catheorem} is a queue-clock theorem,
-not yet a closed asymptotic for $\cwnd(t)$. One still needs the growth of
-$\mathcal I_K$ and the relation between the queue tail and observation time.
-For instance, at $g=1$ the two further estimates
-\begin{equation}
- \mathcal I_K=\tfrac12\ln w_K+O(1),\qquad
- T_{K(\tau)}-\tau=O(1)\label{eq:openconditions}
-\end{equation}
-would imply $\tau=w+\tfrac32\ln w+O(1)$ and thus
-$w(\tau)=\tau-\tfrac32\ln\tau+O(1)$. Those estimates are not proved here;
-the coefficient $3/2$ is an open candidate, not a theorem of this paper.
-The CA model has an increasing window and is not a statistical steady state.
+\section{Interpretation, scope, and reproducibility}
+\textbf{What the transition explains.} The exact reference gives a simple mechanism: when a group's required pacing time exceeds an RTT, reservations accumulate and the window multiplier is below two. Once it fits, ACK availability limits further growth and additional gain chiefly compresses transmission times. The finite threshold is $2D(2^m)$ and approaches $2\ln2$; it is not equal to that limit for every group. The instantaneous-rate model reaches the same limiting value through the flight constraint, despite predicting a different low-gain exponent.
 
-\section{Relation to implementations and earlier work}\label{sec:related}
-Pacing-related timing and performance effects are established topics.
-Aggarwal, Savage, and Anderson analyze pacing's benefits and failures,
-including feedback and synchronization effects and loss-free short-flow
-latency caused by spreading transmissions \cite{aggarwal}. The premise that
-pacing can delay feedback is therefore not itself a novelty claim. The
-specific result here is an exact solution and comparison proof for the
-declared immutable-reservation scheduler.
+\textbf{What the SCP measurements establish.} The native-core experiment reproduces the queued model's low-gain multiplier very closely and exhibits a nearby change to doubled phase patterns. It also shows a finite plateau of fixed-interval spans. The sampled gain $\gc-0.10$ is still below a doubling multiplier, while $\gc-0.05$ already doubles. Thus this campaign does not identify $2\ln2$ as the implementation's exact critical gain. At the ideal critical gain and group size $q=131072$, \eqref{eq:span} gives approximately 99.99945 ms; the implementation's late fixed-interval span is 96 ms. Different scheduling rules and different group definitions must both be accounted for before interpreting that difference as an approximation error.
 
-RFC 9002, Section 7.7, gives pacing-rate and interval examples with a gain
-above one and explicitly permits different pacer architectures \cite{quic}.
-The pacing Internet-Draft describes implementation choices and their
-consequences \cite{pacingdraft}. These describe a broader design space than
-the recurrence solved here. A nominal rate $gW/R$ does not specify whether
-old deadlines are changed, whether service is reserved at admission or
-transmission, or how idle intervals and batching are handled.
+\textbf{Relation to existing work.} Reno's slow-start update is specified in RFC 5681~\cite{rfc5681}. Pacing's interaction with TCP dynamics has been studied well before this work~\cite{aggarwal}. RFC 9002 gives a cwnd/RTT-based pacing example with a multiplicative factor~\cite{rfc9002}, and the ICCRG pacing draft discusses practical pacing behavior, including compensation for slow-start growth~\cite{pacing}. The contribution here is a compact event-level solution for a particular reservation rule, together with a reproducible examination of how an actual integer implementation changes its predictions. It is not a claim to have first observed that insufficient pacing rate can throttle slow start.
 
-As a concrete versioned example, Linux v6.12's generic TCP pacing path uses
-a slow-start ratio when $\cwnd<\lfloor\mathrm{ssthresh}/2\rfloor$ (both
-values in segments) and the other ratio otherwise; the documented defaults are 200\% and 120\%
-\cite{linux}. The threshold $2\ln2$ proved here neither derives those
-engineering defaults nor proves that a smaller value is sufficient in Linux.
-The actual SCP revision that motivated this study also differs: its
-\texttt{scp\_output} returns while an older pacing batch remains, and its
-timer can release several due packets together. It is not the per-ACK append
-scheduler of Section~\ref{sec:model} \cite{scp}.
+\textbf{Limits.} The study isolates one flow, an initial window of one packet, fixed complete feedback delay, and loss-free slow start. The virtual network intentionally has no bottleneck serialization, propagation variation, cross traffic, delayed ACK policy, or receiver pressure. It therefore measures feedback and scheduling dynamics rather than performance on a real path. The sender executes genuine SCP code, but the environment remains an idealized virtual network. A different initial window, timer granularity, queue policy, or ACK policy can change finite behavior. No conclusion here establishes an optimal Internet pacing gain, an improvement in fairness, or a congestion-avoidance formula.
 
-A continuously repriced fluid model would differ as well. If its active
-send rate were $x(\tau)=gw(\tau)$, fixed-delay slow-start feedback would give
-$w'(\tau)=gw(\tau-1)$. An exponential mode would satisfy $ze^z=g$, not
-$z=g/2$. This follows directly by substitution. It is not a conflicting
-solution of our packet recurrence: the fluid equation assumes immediate
-realization of the current rate, whereas our old reservations keep their
-intervals and timestamps. A flight-feasibility analysis would also be needed
-before treating that fluid mode as an admissible sender. Results from these
-different models should not be combined as if they described one scheduler.
-
-The limits of the present results are consequently specific. Finite initial
-windows other than one, delayed ACKs, variable RTT, finite link capacity,
-loss recovery, and mutable reservations can change the trace. The model has
-no network penalty for a large gain, so it cannot identify an optimal gain
-balancing delay, loss, fairness, and throughput. Equal growth exponents also
-do not establish equal finite-transfer completion times.
+\textbf{Reproduction and provenance.} The results are from GitHub Actions run \href{https://github.com/skaiui2/SCP/actions/runs/38893710287}{38893710287}, at experiment commit \href{https://github.com/skaiui2/SCP/tree/70f170ed505a55d83044eda2a2d5684fc80f382b}{\texttt{70f170e}}, with shared implementation files checked against baseline \href{https://github.com/skaiui2/SCP/tree/b591e9c3c0279b8d95e925066d3e87d10e7f0df6}{\texttt{b591e9c}}. The downloaded run records contain configuration, effective integer gains, packet logs, state logs, checksums, and audit outputs. The two figures are generated by \texttt{plot\_paper\_rtt.py} from those logs and packet bins; neither curve is generated by the analytical model. The plotting procedure preserves the physical first-send time origin and applies no curve fitting or smoothing. Deterministic repetitions are reproducibility checks, not independent statistical samples. The final short DATA packet is included in transfer validation but the ideal full-MSS assumptions apply to the slow-start analysis before exhaustion.
 
 \section{Conclusion}
-For an explicitly defined per-ACK append pacer, the transmission times admit
-an exact harmonic-sum solution for every fixed gain $g\ge1$. The solution
-establishes the Fibonacci comparison bound, the transition from eventual
-continuous pacing to persistent RTT-separated sending intervals, and the
-burst limit of individual packet timestamps. It also determines the growth
-exponent and the within-RTT window trajectory, showing why those two notions
-of growth must be distinguished. In congestion avoidance, exact packet
-accounting isolates a logarithmic queue-clock term, while the accumulated
-ACK-waiting term remains the missing part of a full physical-time asymptotic.
+The ACK update alone does not determine a window's growth in time. The scheduling of newly available credit matters. An immutable-reservation model yields an exact gain-dependent solution and separates below-doubling growth from compressed sending at higher gain. Actual SCP transfers agree closely with its low-gain exponent, while millisecond execution and empty-queue resets explain why its precise phase and critical behavior cannot be copied unchanged into the implementation. In these experiments, raising gain well beyond the transition produces much greater concentration for little completion-time benefit. This gives a concrete reason to examine both cwnd evolution and within-RTT packet timing when choosing or implementing a pacer.
 
+\begin{thebibliography}{9}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\bibitem{rfc5681} M. Allman, V. Paxson, and E. Blanton. \emph{TCP Congestion Control}. RFC 5681, 2009. \url{https://www.rfc-editor.org/rfc/rfc5681}.
+\bibitem{aggarwal} A. Aggarwal, S. Savage, and T. Anderson. Understanding the performance of TCP pacing. \emph{IEEE INFOCOM}, 2000, pp. 1157--1165.
+\bibitem{rfc9002} J. Iyengar and I. Swett. \emph{QUIC Loss Detection and Congestion Control}. RFC 9002, Section 7.7, 2021. \url{https://www.rfc-editor.org/rfc/rfc9002}.
+\bibitem{pacing} M. Welzl et al. \emph{Pacing in Transport Protocols}. Internet-Draft, draft-irtf-iccrg-pacing-02, 2026. Work in progress. \url{https://datatracker.ietf.org/doc/html/draft-irtf-iccrg-pacing-02}.
+\end{thebibliography}
+
+\clearpage
 \appendix
-\section{Proof of the Fibonacci lower comparison}\label{app:fib}
-This appendix completes Theorem~\ref{thm:sandwich} without assuming that
-earlier reservations necessarily produce earlier sends.
+\section{Packet-Time Comparison and the Burst Limit}\label{app:comparison}
+This appendix supplies the lower-comparison argument for the reference scheduler in Section~3. It does not transfer that theorem to SCP's empty-queue-reset scheduler. Both comparison systems use the same fixed feedback delay and one-MSS increase per ACK.
 
-At $g=1$, equation~\eqref{eq:unity} gives
+\subsection{The Fixed-Batch Comparator Respects Flight}
+Let the preceding and current batch sizes be $p=F_{n+1}$ and $q=F_{n+2}$ in round $n\ge1$. After phase $0\le u<1$, its flight is
 \begin{equation}
- s_0=0,\qquad s_{2k-1}=2H_k-1,\qquad
- s_{2k}=2H_k-1+\frac1{k+1}.\label{eq:fibsends}
+ F(n+u)=p+\lfloor qu\rfloor-\lfloor pu\rfloor\le q.
 \end{equation}
-Its consecutive spacings are
+Its current window is at least $q$, so the comparator respects the actual-flight limit. It does not reserve all future flight positions at planning time: it can rely on ACKs arriving during the batch. This distinguishes its planning rule from the reference scheduler's invariant $F+Q=w$.
+
+\subsection{Every Reference Packet Leaves No Later at Unit Gain}
+At $g=1$, $2D(q)\ge1$ for all $q\ge1$. Equation~\eqref{eq:closed} reduces to $b_k=2H_k-1$, giving
+\begin{align}
+ s_0&=0, & s_{2k-1}&=2H_k-1,\nonumber\\
+ &&s_{2k}&=2H_k-1+\frac1{k+1}.\label{eq:unit-send}
+\end{align}
+The consecutive spacings decrease with packet index:
 \begin{equation}
- s_{j+1}-s_j=\frac1{\lfloor(j+1)/2\rfloor+1}\quad(j\ge0).
+ s_{j+1}-s_j=\frac1{\lfloor(j+1)/2\rfloor+1},\qquad j\ge0.
 \end{equation}
-For fixed-batch round $n\ge1$, put $p=f_{n+1}$, $q=f_{n+2}$. Its first
-packet index is $J_n=p+q-2$, and its send times are
+The fixed batch of size $q$ starts with packet index $J_n=p+q-2$. Its timestamps are
 \begin{equation}
  \widehat s_j=n+\frac{j-J_n}{q},\qquad J_n\le j<J_n+q.
 \end{equation}
-Within this range the consecutive differences of $s_j-\widehat s_j$ are
-the above decreasing spacings minus $1/q$. They are positive before
-$j=2q-3$, zero for $j=2q-3,2q-2$, and negative afterwards. A maximum is
-therefore attained at $j_*=2q-3$. This index is in the batch because
-$j_*-J_n=q-p-1\ge0$ and $J_n+q-1-j_*=p\ge1$.
-
-Substitute $j_*$ into the two send formulas to obtain
+Within this batch, the successive differences of $s_j-\widehat s_j$ are the decreasing spacings above minus $1/q$. A maximum is attained at $j_*=2q-3$. This index belongs to the batch because $j_*-J_n=q-p-1\ge0$ and $J_n+q-1-j_*=p\ge1$. Substitution yields
 \begin{equation}
- \begin{split}
- \max_{J_n\le j<J_n+q}(s_j-\widehat s_j)
- &=2H_q-n-2+\frac{p-1}{q}=-E_n,\\
- E_n&=n+2-\frac{p-1}{q}-2H_q.
- \end{split}
+ \max_{J_n\le j<J_n+q}(s_j-\widehat s_j)=-E_n,\qquad
+ E_n=n+2-\frac{p-1}{q}-2H_q.
 \end{equation}
-Initially $p=1$, $q=2$, and $E_1=0$. In the next batch the pair becomes
-$(q,p+q)$. Direct subtraction gives
-\begin{equation}
+Initially $p=1,q=2$, and $E_1=0$. In the next batch, $(p,q)$ becomes $(q,p+q)$, so
+\begin{align}
  E_{n+1}-E_n
- =1-\frac{q-1}{p+q}+\frac{p-1}{q}
-       -2\sum_{i=1}^p\frac1{q+i}.
-\end{equation}
-Use the elementary identity
+ &=1-\frac{q-1}{p+q}+\frac{p-1}{q}
+       -2\sum_{i=1}^{p}\frac1{q+i}\nonumber\\
+ &=2\sum_{i=1}^{p}\frac{i(p-i)}{q(q+p)(q+i)}\ge0.\label{eq:lower-proof}
+\end{align}
+For the second equality, subtract $1/(q+i)$ from $(q+p-i)/[q(q+p)]$; the difference is $i(p-i)/[q(q+p)(q+i)]$. Summing these identities gives the second line of \eqref{eq:lower-proof}. Thus $E_n\ge0$, proving $s_j\le\widehat s_j$ in every batch. Packet zero is common to both systems. Earlier corresponding sends give earlier corresponding ACKs, hence no smaller window at any observation time.
+
+\subsection{Extension to Larger Gains}
+For $g_2\ge g_1\ge1$, induction over ACK batches gives $s_j(g_2)\le s_j(g_1)$. The initial send is common. If earlier packet times are ordered, their fixed-delay ACK times are ordered. The previous reservation tail is also ordered, since every newly added spacing decreases as gain increases. Taking the maximum of the ACK time and the previous tail preserves the order, and so does adding the second packet's spacing.
+
+Combining this monotonicity with the unit-gain comparison and the flight upper bound proves, specifically for \eqref{eq:queued},
 \begin{equation}
- \frac{q+p-i}{q(q+p)}-\frac1{q+i}
- =\frac{i(p-i)}{q(q+p)(q+i)}\ge0\quad(1\le i\le p).
+ M F_{n+2}\le\cwnd_g(nR)\le M2^n,\qquad g\ge1.
 \end{equation}
-The sum of twice the first terms on the left is
-$(p-1)/q+(p+1)/(p+q)$. Consequently,
+The actual-time comparison is essential. Merely appending more packets earlier does not order their departures under arbitrary queue or timestamp rules.
+
+\subsection{Approaching Burst Sending}
+For $g\ge\gc$, $B_m=m+1$. For any fixed packet index $j$ in group $m$, its timestamp therefore has the form $s_j=m+1+d_j/g$, with $d_j\ge0$ independent of gain. Including packet zero,
 \begin{equation}
- E_{n+1}-E_n
- =2\sum_{i=1}^p\frac{i(p-i)}{q(q+p)(q+i)}\ge0.
+ \lim_{g\to\infty}s_j(g)=\lfloor\log_2(j+1)\rfloor.
 \end{equation}
-Thus $E_n\ge0$ for all $n$, and $s_j\le\widehat s_j$ for every packet
-in every batch. Packet 0 is common to both senders. Actual transmission
-counts, and then ACK counts by the common delay, are therefore ordered.
-Equation~\eqref{eq:count} proves $w_1(\tau)\ge w_{\mathrm{fixed}}(\tau)$
-at every time. Section~\ref{sec:limit} extends this to $g\ge1$, and the
-fixed-batch boundary values \eqref{eq:fib} finish the proof.
+This is the immediate-send sequence: one packet at time zero, two at one RTT, four at two RTTs, and so on. For finite gain, packets remain locally spaced, yet their group occupies a shrinking fraction of an RTT. Uniform spacing within a group therefore coexists with growing concentration across time.
 
-\begin{thebibliography}{9}
-\raggedright
-\bibitem{rfc5681}
-M. Allman, V. Paxson, and E. Blanton.
-\emph{TCP Congestion Control}. RFC 5681, September 2009.
-\url{https://www.rfc-editor.org/rfc/rfc5681}.
+There is a boundary subtlety. At finite high gain, $W_n=1+2^{n-1}$, whereas the immediate-send window is $2^n$. ACKs just after a boundary coalesce onto that boundary as gain tends to infinity. Counting events at a jump is not continuous under convergence of their timestamps. The packet-time burst limit is valid without asserting pointwise convergence of the window at every integer RTT.
 
-\bibitem{aggarwal}
-A. Aggarwal, S. Savage, and T. Anderson.
-Understanding the Performance of TCP Pacing.
-\emph{IEEE INFOCOM}, pp. 1157--1165, 2000.
-\url{https://cseweb.ucsd.edu/~savage/papers/Infocom2000pacing.pdf}.
-
-\bibitem{quic}
-J. Iyengar and I. Swett.
-\emph{QUIC Loss Detection and Congestion Control}. RFC 9002, May 2021.
-\url{https://www.rfc-editor.org/rfc/rfc9002}.
-
-\bibitem{pacingdraft}
-M. Welzl, W. Eddy, V. Goel, and M. T\"uxen.
-\emph{Pacing in Transport Protocols}.
-\texttt{draft-irtf-iccrg-pacing-02}, June 26, 2026. Work in progress;
-this citation fixes the version discussed.
-\url{https://datatracker.ietf.org/doc/html/draft-irtf-iccrg-pacing-02}.
-
-\bibitem{linux}
-Linux v6.12. \texttt{tcp\_update\_pacing\_rate} and TCP pacing ratio
-documentation.
-\href{https://github.com/torvalds/linux/blob/v6.12/net/ipv4/tcp_input.c}{Versioned source};
-\href{https://docs.kernel.org/6.12/networking/ip-sysctl.html}{parameter documentation}.
-
-\bibitem{scp}
-Skai Uijing. SCP source, \texttt{scp.c},
-\href{https://github.com/skaiui2/SCP/tree/bf9d8873b0f8815073f661b4606b7de4bd9bed71}{revision \texttt{bf9d8873b0f8}}.
-\end{thebibliography}
 \end{document}
