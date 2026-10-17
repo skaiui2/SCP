@@ -1,2 +1,2 @@
 # Reference hashes identify archived bytes, including their original line endings.
-reference/* -text
+reference/* -text whitespace=cr-at-eol
