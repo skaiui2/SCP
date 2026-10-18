@@ -17,7 +17,14 @@ SCP 不依赖内核 TCP 栈，自行实现序号、ACK/SACK、重传、流量控
 
 概率驱动控制器的理论见：[SCP-PROB：概率驱动的非线性拥塞控制](../../SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf)。
 
-Pacing 研究见：[Pacing and Congestion-Window Growth: An Exact Packet-Level Analysis](../../Pacing_and_Congestion_Window_Growth.pdf)。论文分析明确规定的逐 ACK 追加调度器，不等同于当前 SCP 实现。[Pacing_and_Congestion_Window_Growth.tex](../../papers/pacing/Pacing_and_Congestion_Window_Growth.tex) 是唯一论文源码，直接上传 Overleaf 并使用 pdfLaTeX 编译即可；证明、参考文献和公式绘制的图均包含在其中，不依赖实验包或外部图片。
+Pacing 研究见：[Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](../../Pacing_and_Congestion_Window_Growth.pdf)。论文研究发送调度怎样改变慢启动与拥塞避免阶段的窗口增长和数据包分散，将明确的包级模型与 SCP 的 C 实现在固定 100 ms 反馈、无丢包虚拟网络中的两批独立实验结合起来，并分析整数窗口更新的影响。在 Overleaf 中使用时，上传 [papers/pacing/](../../papers/pacing/) 目录及其中的 `figures/`，使用 pdfLaTeX 编译 `Pacing_and_Congestion_Window_Growth.tex`。
+
+| 研究 | 复现代码与步骤 | Actions 数据 |
+|---|---|---|
+| 慢启动 | [冻结研究分支](https://github.com/skaiui2/SCP/tree/research/slowstart-g-100ms-20261012/reproduction) | [运行 38893710287](https://github.com/skaiui2/SCP/actions/runs/38893710287) |
+| 拥塞避免 | [CA 指南与论文绘图脚本](https://github.com/skaiui2/SCP/tree/research/ca-g-100ms-20261018/reproduction/ca) | [已通过运行 39122340171](https://github.com/skaiui2/SCP/actions/runs/39122340171) |
+
+数据从 Actions 附件下载；历史慢启动 Release 归档已删除。附件过期后，按指南从源码重新运行。各研究分支保留自己的复现材料，主分支提供共同论文与入口。
 
 ## 特性
 
