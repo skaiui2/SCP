@@ -40,6 +40,13 @@ jobs:
           path: |
             results/transfers/
             !results/transfers/**/*.bin
+            !results/transfers/**/*.log
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transfer-1g-logs
+          path: results/transfers/**/*.log
           retention-days: 14
   sweep:
     runs-on: ubuntu-latest
@@ -82,5 +89,8 @@ jobs:
         if: always()
         with:
           name: network-report
-          path: results/
+          path: |
+            results/report.md
+            results/sweep.csv
+            results/sweep.png
           retention-days: 14

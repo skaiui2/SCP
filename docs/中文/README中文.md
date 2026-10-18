@@ -128,7 +128,7 @@ python3 test/run.py test/build/scp_udp --out test/results/udp-1g
 - **共用传输逻辑：**真实 UDP 与虚拟网络使用同一套传输实现。生成数据逐字节校验并核对流校验和；文件传输额外核对长度与 SHA-256。双方都必须完成关闭。
 - **Linux 与虚拟传输：**GitHub Actions 运行 CTest、1 GiB 虚拟传输及 Linux localhost UDP 上的 1 GiB 文件传输。localhost 未施加 WAN 带宽或延迟限制；Linux 网络命名空间提供另一套受控网络环境。
 - **网络场景扫描：**默认 CI 执行 150 组虚拟测试：三种 100 Mbps 场景，基础 RTT 分别为 10、50、200 ms，十档 0% 至 5% 的独立随机丢包、五个种子，每组 64 MiB。手动选择 `scenarios-1g` 可运行 36 组 1 GiB 测试。这些是配置出的仿真条件；简化 Wi-Fi 场景不模拟竞争与链路层重试。
-- **可检查的结果：**每种参数、每条连接分别保存协议栈状态日志与原分析器生成的曲线。报告保留失败项和成功运行的有效吞吐统计。CI 产物为 `transfer-1g-curves` 与 `network-report`。
+- **可检查的结果：**每种参数、每条连接分别保存协议栈状态日志与原分析器生成的曲线。报告保留失败项和成功运行的有效吞吐统计。图表与汇总下载 `transfer-1g-curves`、`network-report`；原始证据单独保留在 `transfer-1g-logs`、`network-shard-*`，有效期为 14 天。过期后可按[测试说明](../../test/README.md)重跑。
 
 这些测试为实际覆盖的配置提供证据，不证明协议在所有网络条件下正确，也不能把仿真结果当成真实链路测量。
 

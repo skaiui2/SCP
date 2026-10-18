@@ -201,12 +201,16 @@ include failures; goodput includes startup, ACK drain and close time.
 
 GitHub Actions first reports functional/integrity PASS/FAIL, then runs two
 1 GiB transfers: a virtual network with a 1000 Mbps link and a real Linux UDP
-file transfer over localhost. Both save protocol logs, reports and curves in the
-`transfer-1g-curves` artifact; generated input/output files are not uploaded.
+file transfer over localhost. `transfer-1g-curves` contains reports, summaries and
+curves; `transfer-1g-logs` contains the original protocol logs for redrawing.
+Generated input/output files are not uploaded.
 The real UDP link has no imposed bandwidth/delay cap and is not a WAN measurement.
 Eight virtual-network shards sweep configured parameters. The report job uses
 the original analyzer in each sweep shard to draw every case's core-state curves;
-the report job adds the sweep overview; download `network-report` for the plots. Local Linux real
+the report job adds the sweep overview. `network-report` contains only the aggregate
+`report.md`, `sweep.csv` and `sweep.png`; download `network-shard-*` for individual
+case configurations, raw logs and per-connection plots. Artifacts are retained for
+14 days; after expiration, rerun the workflow or the commands above. Local Linux real
 network tests remain available (`ctest --test-dir test/build -L real`).
 Relevant pushes run `scenarios`; manual runs can select any configured profile. Missing cases in recovered shards or failed
 case reports make the merge step fail.
