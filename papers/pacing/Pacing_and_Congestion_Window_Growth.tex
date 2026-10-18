@@ -12,19 +12,19 @@
 \newcommand{\cwnd}{\mathrm{cwnd}}
 \newcommand{\ind}{\mathbf{1}}
 \newcommand{\pos}[1]{\left[#1\right]_+}
-\title{Pacing Gain and Slow-Start Growth: A Packet Model and SCP Experiments}
+\title{Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments}
 \author{Skai Uijing}
 \affiliation{\institution{Independent Researcher}\country{China}}
 \email{skaiuijing@gmail.com}
 \begin{document}
 \begin{abstract}
-Pacing changes when new congestion-window credit becomes a transmission and, consequently, when it produces an ACK. This study began with slower startup after adding pacing to a TCP-like transport, SCP. We express slow-start growth through actual transmissions, construct Fibonacci and immediate-send comparison models, and solve an explicitly defined packet scheduler with immutable pacing reservations. Its asymptotic window multiplier is $\min(e^{g/2},2)$, with a transition at $g=2\ln2$. We then examine 66 transfers through the actual SCP C implementation and a fixed-feedback-delay virtual network. At seven low gains, late measured multipliers differ from the queued-model prediction by less than 0.01\%. Near the ideal transition, millisecond execution and empty-queue reset change the phase and the finite transition. At higher gains, sending becomes substantially more concentrated while completion time improves little. The results distinguish a window's growth multiplier, its accumulated startup deficit, and its within-RTT transmission span.
+Pacing changes when new congestion-window credit becomes a transmission and, consequently, when it produces an ACK. This study began with slower startup after adding pacing to a TCP-like transport, SCP. We express slow-start growth through actual transmissions, construct Fibonacci and immediate-send comparison models, and solve an explicitly defined packet scheduler with immutable pacing reservations. Its asymptotic window multiplier is $\min(e^{g/2},2)$, with a transition at $g=2\ln2$. We then examine 66 transfers through the actual SCP C implementation and a fixed-feedback-delay virtual network. At seven low gains, late measured multipliers differ from the queued-model prediction by less than 0.01\%. Near the ideal transition, millisecond execution and empty-queue reset change the phase and the finite transition. A separate 66-transfer congestion-avoidance campaign isolates ACK-count growth from transmission timing: integer-byte updates produce a 15.719\% final full-packet window deficit relative to the real-valued ACK recurrence. In both phases, higher gain substantially concentrates sending while completion time improves little. The results distinguish growth in time, ACK-indexed growth, and within-RTT transmission span.
 \end{abstract}
 \begin{CCSXML}
 <ccs2012><concept><concept_id>10003033.10003039.10003041</concept_id><concept_desc>Networks~Transport protocols</concept_desc><concept_significance>500</concept_significance></concept></ccs2012>
 \end{CCSXML}
 \ccsdesc[500]{Networks~Transport protocols}
-\keywords{pacing, slow start, congestion window, packet scheduling, virtual-network experiments}
+\keywords{pacing, slow start, congestion avoidance, congestion window, virtual-network experiments}
 \maketitle
 \fancypagestyle{standardpagestyle}{\fancyhf{}\renewcommand{\headrulewidth}{0pt}\fancyfoot[C]{\footnotesize\thepage}}
 \pagestyle{standardpagestyle}
@@ -33,6 +33,8 @@ Pacing changes when new congestion-window credit becomes a transmission and, con
 While building SCP with Reno-style congestion control, I first used burst sending and then added pacing. Transfers slowed down even though the ratio of useful data to total transmitted data barely changed. Tracing packets and ACKs suggested a timing question: an ACK can enlarge the window immediately, but newly permitted packets still have to pass through the pacer before they produce feedback.
 
 For example, send one packet at time zero. Its ACK returns at $R$, increasing the window to two packets. If the next packets leave at $R$ and $1.5R$, only one has been acknowledged at $2R$: the window is three, not four. All window updates occur on ACK arrival. This example motivates the analysis; it does not describe every pacer or imply that pacing generally harms network performance.
+
+We also isolate loss-free congestion avoidance from one MSS to examine how its smaller ACK increments and integer-byte storage change this timing problem.
 
 \section{ACK accounting and two comparison models}
 Assume a fixed send-to-ACK delay $R$, no loss, continuously available data, one ACK per full-sized packet, and indefinite slow start. Each ACK adds one MSS, denoted $M$, to the window. Normalize time and window as $\tau=t/R$ and $w=\cwnd/M$. With actual packet-send times $s_j$ in normalized units, including $s_0=0$,
@@ -190,6 +192,54 @@ A singleton has span zero; an empty interval has no defined span. This bin conve
 
 From $\gc$ to $g=8$, the last DATA ACK moves from 2048 to 2006 ms, an improvement of about 2.05\%. In the same comparison, $L_{18}$ falls eightfold, while the largest millisecond bin's share of RTT-18 packets rises from 1.5625\% to 12.5\%. Faster completion and more concentrated sending are distinct effects. Span alone does not describe the internal density, so both quantities are needed when evaluating smoothing.
 
+\section{Loss-free congestion avoidance}\label{sec:ca}
+\textbf{ACK count and elapsed time.} In the real-valued full-packet form of RFC~5681, Section~3.1, equation~(3)~\cite{rfc5681}, let $u_k$ be the window in MSS after CA ACK $k$, with $u_0=a\ge1$. Then
+\begin{equation}\begin{aligned}
+ u_{k+1}&=u_k+\frac1{u_k},\\
+ u_K^2&=a^2+2K+\sum_{i=0}^{K-1}\frac1{u_i^2}.
+\end{aligned}\label{eq:caack}\end{equation}
+The identity follows by squaring each update. Since $u_i^2\ge a^2+2i$, it gives $u_K^2=a^2+2K+O(\ln(K+1))$. Gain does not enter this ACK-indexed recurrence. The window at time $t$ is $M u_{K(t)}$, where $K(t)$ counts actual returning ACKs; substituting $t/R$ for $K$ would discard the many ACKs within an RTT.
+
+\textbf{What the retained-tail model proves.} Extend the ideal scheduler of Section~3 with whole-packet credit $F+Q=\lfloor u\rfloor$. After ACK $k$ it reserves
+\begin{equation}\begin{aligned}
+ m_k&=1+\lfloor u_k\rfloor-\lfloor u_{k-1}\rfloor,\\
+ T_k&=\max(a_k,T_{k-1})+\frac{m_k}{g u_k}.
+\end{aligned}\label{eq:careserve}\end{equation}
+Here time is normalized by $R$, $a_k$ is the corresponding packet's send time plus one, and $T_k$ retains the trailing interval. Put $\mathcal I_K=\sum_{k=1}^K[a_k-T_{k-1}]_+$. Telescoping \eqref{eq:careserve} splits service into $\sum1/u_k$ for replacement packets and $\sum(\lfloor u_k\rfloor-\lfloor u_{k-1}\rfloor)/u_k$ for extra whole packets. For fixed $g\ge1$ and indefinitely continued CA,
+\begin{equation}
+ T_K=\mathcal I_K+\frac{u_K+\ln u_K}{g}+C+O(1/u_K).
+ \label{eq:caclock}
+\end{equation}
+Indeed, $1/u_k=(u_k-u_{k-1})-1/(u_{k-1}^2u_k)$ makes the first sum $u_K+C_1+O(1/u_K)$. Each sufficiently large integer threshold $n$ is crossed at a window $v_n=n+O(1/n)$, so the second sum is harmonic: $\ln u_K+C_2+O(1/u_K)$. This proves \eqref{eq:caclock}, but does not determine $\mathcal I_K$ or a closed window law in time. It applies to the retained-tail model, not directly to SCP's empty-queue reset.
+
+\textbf{Integer-byte updates in SCP.} A new campaign uses Table~\ref{tab:setup}'s conditions but sets both initial cwnd and ssthresh to $M$. This artificial initial state isolates CA; it is not ordinary TCP startup. The research target changes threshold initialization while reusing the shared core, virtual network, and pacing rules. For an ACK covering $N_k$ new bytes, the core uses
+\begin{equation}
+ C_k=C_{k-1}+\max\!\left(1,\left\lfloor\frac{M N_k}{C_{k-1}}\right\rfloor\right),
+ \qquad C_0=M.\label{eq:cabyte}
+\end{equation}
+This differs from the real-valued recurrence, even for full-MSS ACKs. RFC~5681 also discusses the integer-zero increment and rounding it to one byte; its equation~(3) is one allowed CA method, not every implementation of Reno. For full packets, once $C>M^2/2=1{,}022{,}450$ bytes, \eqref{eq:cabyte} adds exactly one byte per ACK. Discarded fractional increments accumulate into a measurable difference.
+
+All 66 CA transfers completed with matching checksums, exactly 100~ms feedback, no retransmission, and no cap contact. Every observed ACK update matched \eqref{eq:cabyte} with zero byte error. At full-packet ACK $K=750868$, the actual window was $1{,}476{,}947$ bytes, versus $1{,}752{,}403.2934$ bytes from \eqref{eq:caack}: measured minus reference, divided by reference, is $-15.719\%$. The final 584-byte ACK then raises the actual window to $1{,}476{,}948$ bytes and is excluded from this full-packet comparison.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/ca-growth.pdf}
+\caption{CA from one MSS, five representative gains. (a) Observed RTT-boundary windows. (b) Differences from gain~1. (c) Native critical-target windows and the real-valued reference at matching ACK counts, sampled at RTT boundaries plus the last full-packet ACK. (d) Actual fixed-interval spans, excluding the final-send interval. Lines connect observations; none are fitted.}\label{fig:ca}
+\Description{Four panels separate the small gain-dependent timing effect from the common ACK-indexed integer window deficit, and show shorter within-RTT spans at larger gains.}
+\end{figure*}
+At the same full-packet ACK count, the verified integer window sequence is identical across gains; gain changes when those ACKs occur. Among the five gains in Figure~\ref{fig:ca}, the largest RTT-boundary window difference from gain~1 is 0.629~MSS. Completion changes little, while transmission spans differ strongly (Table~\ref{tab:ca}). Each reported span is unchanged in all 1101 full intervals $n=100,\ldots,1200$, within each run. These are finite observations on a millisecond grid. They neither prove infinite periodicity nor make the slow-start reference value $2\ln2$ a CA transition.
+
+\begin{table}[t]\small\centering
+\caption{CA completion and observed within-run span plateaus.}\label{tab:ca}
+\begin{tabular}{@{}rrr@{}}\toprule
+Target gain & Last ACK ($t/R$) & $L_{100},\ldots,L_{1200}$ (ms) \\\midrule
+$1$ & 1339.97 & 99 \\
+$\gc$ & 1339.40 & 99 \\
+$2$ & 1339.27 & 67 \\
+$4$ & 1339.13 & 31 \\
+$8$ & 1339.06 & 13 \\\bottomrule
+\end{tabular}\end{table}
+
 \section{Interpretation, scope, and reproducibility}
 \textbf{What the transition explains.} The exact reference gives a simple mechanism: when a group's required pacing time exceeds an RTT, reservations accumulate and the window multiplier is below two. Once it fits, ACK availability limits further growth and additional gain chiefly compresses transmission times. The finite threshold is $2D(2^m)$ and approaches $2\ln2$; it is not equal to that limit for every group. The instantaneous-rate model reaches the same limiting value through the flight constraint, despite predicting a different low-gain exponent.
 
@@ -197,12 +247,13 @@ From $\gc$ to $g=8$, the last DATA ACK moves from 2048 to 2006 ms, an improvemen
 
 \textbf{Relation to existing work.} Reno's slow-start update is specified in RFC 5681~\cite{rfc5681}. Pacing's interaction with TCP dynamics has been studied well before this work~\cite{aggarwal}. RFC 9002 gives a cwnd/RTT-based pacing example with a multiplicative factor~\cite{rfc9002}, and the ICCRG pacing draft discusses practical pacing behavior, including compensation for slow-start growth~\cite{pacing}. The contribution here is a compact event-level solution for a particular reservation rule, together with a reproducible examination of how an actual integer implementation changes its predictions. It is not a claim to have first observed that insufficient pacing rate can throttle slow start.
 
-\textbf{Limits.} The study isolates one flow, an initial window of one packet, fixed complete feedback delay, and loss-free slow start. The virtual network intentionally has no bottleneck serialization, propagation variation, cross traffic, delayed ACK policy, or receiver pressure. It therefore measures feedback and scheduling dynamics rather than performance on a real path. The sender executes genuine SCP code, but the environment remains an idealized virtual network. A different initial window, timer granularity, queue policy, or ACK policy can change finite behavior. No conclusion here establishes an optimal Internet pacing gain, an improvement in fairness, or a congestion-avoidance formula.
+\textbf{Limits.} The study isolates one flow, an initial window of one packet, fixed complete feedback delay, and separate loss-free SS and CA phases. The virtual network intentionally has no bottleneck serialization, propagation variation, cross traffic, delayed ACK policy, or receiver pressure. It therefore measures feedback and scheduling dynamics rather than performance on a real path. The sender executes genuine SCP code, but the environment remains an idealized virtual network. A different initial window, timer granularity, queue policy, or ACK policy can change finite behavior. No conclusion here establishes an optimal Internet pacing gain, an improvement in fairness, or a universal CA window law in time.
 
-\textbf{Reproduction and provenance.} The results are from GitHub Actions run \href{https://github.com/skaiui2/SCP/actions/runs/38893710287}{38893710287}, at experiment commit \href{https://github.com/skaiui2/SCP/tree/70f170ed505a55d83044eda2a2d5684fc80f382b}{\texttt{70f170e}}, with shared implementation files checked against baseline \href{https://github.com/skaiui2/SCP/tree/b591e9c3c0279b8d95e925066d3e87d10e7f0df6}{\texttt{b591e9c}}. The downloaded run records contain configuration, effective integer gains, packet logs, state logs, checksums, and audit outputs. The two figures are generated by \texttt{plot\_paper\_rtt.py} from those logs and packet bins; neither curve is generated by the analytical model. The plotting procedure preserves the physical first-send time origin and applies no curve fitting or smoothing. Deterministic repetitions are reproducibility checks, not independent statistical samples. The final short DATA packet is included in transfer validation but the ideal full-MSS assumptions apply to the slow-start analysis before exhaustion.
+\textbf{Reproduction.}\par
+SS uses Actions run \href{https://github.com/skaiui2/SCP/actions/runs/38893710287}{38893710287}, source \texttt{70f170e}, and its \href{https://github.com/skaiui2/SCP/tree/research/slowstart-g-100ms-20261012/reproduction}{research-branch guide}. CA uses successful run \href{https://github.com/skaiui2/SCP/actions/runs/39122340171}{39122340171}, source \texttt{2b48f8f}, and a separate \href{https://github.com/skaiui2/SCP/tree/research/ca-g-100ms-20261018/reproduction/ca}{guide and plotting script}. Shared files match baseline \texttt{b591e9c}, except the declared CA initialization change. Per-gain artifacts preserve native logs, identities and audits; the CA summary contains tables and figures. Artifacts expire, so the guides supply rerun commands and plotting scripts. Figures preserve the first-send origin without fitting or smoothing. Repetitions are deterministic checks; full-packet comparisons exclude the short ACK.
 
 \section{Conclusion}
-The ACK update alone does not determine a window's growth in time. The scheduling of newly available credit matters. An immutable-reservation model yields an exact gain-dependent solution and separates below-doubling growth from compressed sending at higher gain. Actual SCP transfers agree closely with its low-gain exponent, while millisecond execution and empty-queue resets explain why its precise phase and critical behavior cannot be copied unchanged into the implementation. In these experiments, raising gain well beyond the transition produces much greater concentration for little completion-time benefit. This gives a concrete reason to examine both cwnd evolution and within-RTT packet timing when choosing or implementing a pacer.
+The ACK update alone does not determine growth in time. The immutable-reservation SS model has an exact gain-dependent solution; native transfers closely match its low-gain exponent while differing in phase and finite transition. In CA, gain changes ACK timing while integer-byte updates produce a substantial deficit against the real-valued ACK reference. In both campaigns, higher gain chiefly concentrates transmissions with little completion-time benefit. Evaluating pacing requires the window update rule, its integer representation, and actual packet timing.
 
 \begin{thebibliography}{9}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
 \bibitem{rfc5681} M. Allman, V. Paxson, and E. Blanton. \emph{TCP Congestion Control}. RFC 5681, 2009. \url{https://www.rfc-editor.org/rfc/rfc5681}.
@@ -211,7 +262,6 @@ The ACK update alone does not determine a window's growth in time. The schedulin
 \bibitem{pacing} M. Welzl et al. \emph{Pacing in Transport Protocols}. Internet-Draft, draft-irtf-iccrg-pacing-02, 2026. Work in progress. \url{https://datatracker.ietf.org/doc/html/draft-irtf-iccrg-pacing-02}.
 \end{thebibliography}
 
-\clearpage
 \appendix
 \section{Packet-Time Comparison and the Burst Limit}\label{app:comparison}
 This appendix supplies the lower-comparison argument for the reference scheduler in Section~3. It does not transfer that theorem to SCP's empty-queue-reset scheduler. Both comparison systems use the same fixed feedback delay and one-MSS increase per ACK.

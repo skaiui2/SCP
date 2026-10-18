@@ -17,7 +17,14 @@ The current implementation also includes a sender-side pacing layer. Packets adm
 
 The probability-driven controller is described in [SCP-PROB: Probability-Driven Nonlinear Congestion Control](./SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf).
 
-The pacing study, [Pacing and Congestion-Window Growth: An Exact Packet-Level Analysis](./Pacing_and_Congestion_Window_Growth.pdf), analyzes a specified per-ACK append scheduler. It is a mathematical model, not an exact description of the current SCP implementation. [Pacing_and_Congestion_Window_Growth.tex](./papers/pacing/Pacing_and_Congestion_Window_Growth.tex) is the sole manuscript source: upload it to Overleaf and compile with pdfLaTeX. Proofs, references, and the analytical figure are all included; no experiment package or external figures are required.
+The pacing study, [Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](./Pacing_and_Congestion_Window_Growth.pdf), examines how scheduling changes window growth and packet spreading in slow start and congestion avoidance. It combines explicit packet models with separate campaigns through the SCP C implementation at fixed 100 ms feedback and zero loss. The CA study also measures the effect of integer-byte window updates. For Overleaf, upload [papers/pacing/](./papers/pacing/), including `figures/`, and compile `Pacing_and_Congestion_Window_Growth.tex` with pdfLaTeX.
+
+| Research | Reproduction code and steps | Actions data |
+|---|---|---|
+| Slow start | [Frozen research branch](https://github.com/skaiui2/SCP/tree/research/slowstart-g-100ms-20261012/reproduction) | [Run 38893710287](https://github.com/skaiui2/SCP/actions/runs/38893710287) |
+| Congestion avoidance | [CA guide and paper plotting script](https://github.com/skaiui2/SCP/tree/research/ca-g-100ms-20261018/reproduction/ca) | [Successful run 39122340171](https://github.com/skaiui2/SCP/actions/runs/39122340171) |
+
+Download data from Actions artifacts; the historical slow-start Release archive was removed. If artifacts have expired, use the source-based rerun steps. Each research branch keeps its own reproduction material; this branch contains the common paper and these entry points.
 
 ## Features
 
