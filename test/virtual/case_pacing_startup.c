@@ -33,6 +33,7 @@ static void test_fractional_queue(uint32_t start)
     sent_count = 0;
     s = scp_stream_alloc(&transport, 1, 2);
     assert(s);
+    assert(s->pacing_next_time == base);
     s->state = SCP_ESTABLISHED;
     s->srtt = 100;
     s->cwnd = 400 * MSS;
@@ -43,6 +44,7 @@ static void test_fractional_queue(uint32_t start)
     assert(!scp_send(1, data, sizeof(data)));
     last = container_of(s->snd_q.prev, struct scp_buf, list);
     assert(last->sent_time == base + 15 * quarter);
+    assert(s->pacing_next_time == base + 16 * quarter);
     assert(sent_count == 4 && s->t_pacing.expire == start + 1);
     assert(scp_timer_tree.count == 2);
 
@@ -55,21 +57,68 @@ static void test_fractional_queue(uint32_t start)
     for (i = 0; i < 16; ++i)
         assert(sent_at[i] == start + (uint32_t)(i / 4));
 
-    /* Empty queue starts at now, without retaining the previous tail gap. */
     assert(!scp_send(1, data, sizeof(data)));
-    assert(sent_count == 20 && s->t_pacing.active);
-    for (i = 16; i < 20; ++i)
-        assert(sent_at[i] == now);
+    assert(sent_count == 16 && s->t_pacing.active);
+    assert(s->pacing_next->sent_time == base + 16 * quarter);
 
-    /* Output can drain a pending timer's queue before timer processing. */
-    now += 2;
+    now += 3;
     assert(!scp_send(1, data, 4 * MSS));
     assert(sent_count == 28 && !s->pacing_next && !s->t_pacing.active);
-    for (i = 20; i < 28; ++i)
+    for (i = 16; i < 28; ++i)
         assert(sent_at[i] == now);
     assert(scp_timer_tree.count == 1 && s->t_retrans.active);
     scp_timer_process();
     assert(sent_count == 28);
+    scp_stream_free(s);
+    assert(!scp_timer_tree.count);
+}
+
+static void test_rate_change(uint32_t start)
+{
+    struct scp_transport_class transport = {.send = capture};
+    struct scp_stream *s;
+    struct scp_buf *last;
+    unsigned char data[MSS] = {0};
+    uint64_t base;
+    uint64_t ms;
+
+    base = (uint64_t)start << SCP_PACING_SHIFT;
+    ms = 1ULL << SCP_PACING_SHIFT;
+    now = start;
+    sent_count = 0;
+    s = scp_stream_alloc(&transport, 1, 2);
+    assert(s && s->pacing_next_time == base);
+    s->state = SCP_ESTABLISHED;
+    s->srtt = 20;
+    s->cwnd = 4 * MSS;
+    assert(!scp_send(1, data, sizeof(data)));
+    assert(sent_count == 1 && sent_at[0] == start);
+    assert(s->pacing_next_time == base + 5 * ms);
+
+    now = start + 1;
+    s->cwnd = 8 * MSS;
+    assert(!scp_send(1, data, sizeof(data)));
+    last = container_of(s->snd_q.prev, struct scp_buf, list);
+    assert(last->sent_time == base + 5 * ms);
+    assert(s->pacing_next_time == base + 7 * ms + ms / 2);
+    assert(sent_count == 1);
+
+    s->cwnd = 2 * MSS;
+    assert(!scp_send(1, data, sizeof(data)));
+    assert(s->schedule_next);
+    assert(s->pacing_next_time == base + 7 * ms + ms / 2);
+    now = start + 5;
+    scp_timer_process();
+    assert(sent_count == 2 && sent_at[1] == now);
+
+    now = start + 8;
+    s->cwnd = 8 * MSS;
+    assert(!scp_output(s));
+    last = container_of(s->snd_q.prev, struct scp_buf, list);
+    assert(last->sent_time == base + 8 * ms);
+    assert(s->pacing_next_time == base + 10 * ms + ms / 2);
+    assert(sent_count == 3 && sent_at[2] == now);
+    assert(!s->schedule_next && !s->pacing_next);
     scp_stream_free(s);
     assert(!scp_timer_tree.count);
 }
@@ -95,6 +144,8 @@ int main(void)
     assert(!scp_init(4));
     test_fractional_queue(0);
     test_fractional_queue(UINT32_MAX);
-    puts("PASS: integer scaling, immediate send, fractional append, floor dispatch, timer cleanup, empty queue, wrap");
+    test_rate_change(0);
+    test_rate_change(UINT32_MAX);
+    puts("PASS: integer scaling, fractional append, floor dispatch, tail gap, rate change, window credit, idle restart, wrap");
     return 0;
 }
