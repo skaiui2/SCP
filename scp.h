@@ -172,6 +172,7 @@ struct scp_stream {
     uint32_t snd_q_count;
     struct scp_buf *pacing_next;        // next scheduled packet to send
     struct scp_buf *schedule_next;      // next packet not handed to pacing
+    uint64_t pacing_next_time;
 
     struct rb_root rcv_buf_q;           // out-of-order receive tree
     struct list_node rcv_data_q;        // in-order delivered data

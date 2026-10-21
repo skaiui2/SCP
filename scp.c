@@ -484,6 +484,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .rcv_wnd  = RECV_WIN_INIT,
             .snd_wnd  = SEND_WIN_INIT,
             .st_class = st_class,
+            .pacing_next_time = (uint64_t)scp_now_time() << SCP_PACING_SHIFT,
             .state = SCP_CLOSED,
             .iss = 0,
             .rcv_nxt = 0,
@@ -1284,13 +1285,15 @@ static uint64_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
  */
 static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
 {
+    uint32_t now;
+
+    now = scp_now_time();
+    if (SEQ_LT((uint32_t)(ss->pacing_next_time >> SCP_PACING_SHIFT), now))
+        ss->pacing_next_time = (uint64_t)now << SCP_PACING_SHIFT;
     while (ss->schedule_next) {
         struct scp_buf *sb;
-        struct scp_buf *last;
         struct list_node *next;
         uint32_t frag_len;
-        uint64_t pacing_next_sent_time;
-        uint64_t pacing_time;
 
         sb = ss->schedule_next;
         next = sb->list.next;
@@ -1300,17 +1303,12 @@ static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
             break;
 
         //Maybe data sent all, so we need to check it.
-        if (ss->pacing_next) {
-            last = container_of(ss->schedule_next->list.prev, struct scp_buf, list);
-            pacing_next_sent_time = last->sent_time;
-            pacing_time = scp_pacing_time(ss, frag_len); 
-        } else {
+        if (!ss->pacing_next) {
             ss->pacing_next = sb;
-            pacing_next_sent_time = (uint64_t)scp_now_time() << SCP_PACING_SHIFT;
-            pacing_time = 0;
         }
 
-        sb->sent_time = pacing_next_sent_time + pacing_time;
+        sb->sent_time = ss->pacing_next_time;
+        ss->pacing_next_time += scp_pacing_time(ss, frag_len);
 
         if (next == &ss->snd_q) {
             ss->schedule_next = NULL;
