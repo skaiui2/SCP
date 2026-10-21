@@ -9,6 +9,12 @@ uint32_t scp_now_time(void)
     return now;
 }
 
+static uint32_t unit_gain(struct scp_stream *ss)
+{
+    (void)ss;
+    return SCP_GAIN_ONE_Q16;
+}
+
 static int capture(void *user, const void *buf, size_t len)
 {
     const struct scp_hdr *hdr = buf;
@@ -34,6 +40,7 @@ static void test_fractional_queue(uint32_t start)
     s = scp_stream_alloc(&transport, 1, 2);
     assert(s);
     assert(s->pacing_next_time == base);
+    s->cc_pacing_gain = unit_gain;
     s->state = SCP_ESTABLISHED;
     s->srtt = 100;
     s->cwnd = 400 * MSS;
@@ -88,6 +95,7 @@ static void test_rate_change(uint32_t start)
     sent_count = 0;
     s = scp_stream_alloc(&transport, 1, 2);
     assert(s && s->pacing_next_time == base);
+    s->cc_pacing_gain = unit_gain;
     s->state = SCP_ESTABLISHED;
     s->srtt = 20;
     s->cwnd = 4 * MSS;
@@ -123,11 +131,53 @@ static void test_rate_change(uint32_t start)
     assert(!scp_timer_tree.count);
 }
 
+static void test_pacing_gain(void)
+{
+    struct scp_stream ss = {0};
+    uint64_t ms;
+    uint64_t gap;
+
+    ms = 1ULL << SCP_PACING_SHIFT;
+    assert(!scp_install_cc(&ss, SCP_CC_AIMD));
+    assert(ss.cc_pacing_gain == scp_aimd_pacing_gain);
+    assert(ss.cc_pacing_gain(&ss) == 90852U);
+    assert(scp_pacing_time(&ss, MSS) == ms);
+    ss.srtt = 100;
+    assert(scp_pacing_time(&ss, MSS) == UINT64_C(309817039400));
+
+    ss.ssthresh = MSS;
+    assert(ss.cc_pacing_gain(&ss) == 98304U);
+    gap = scp_pacing_time(&ss, MSS);
+    assert(gap == UINT64_C(286331153000));
+    assert(gap % ms != 0);
+    ss.ssthresh = 4 * MSS;
+    ss.cwnd = 3 * MSS;
+    assert(ss.cc_pacing_gain(&ss) == 90852U);
+    ss.cwnd = ss.ssthresh;
+    assert(ss.cc_pacing_gain(&ss) == 73728U);
+    ss.cwnd = 10 * MSS;
+    assert(ss.cc_pacing_gain(&ss) == 68812U);
+    assert(scp_pacing_time(&ss, MSS) == UINT64_C(40904925980));
+
+    assert(!scp_install_cc(&ss, SCP_CC_PROB));
+    assert(ss.cc_pacing_gain == scp_prob_pacing_gain);
+    ss.srtt = 100;
+    ss.cwnd = MSS;
+    assert(ss.cc_pacing_gain(&ss) == 98304U);
+    ss.ssthresh = 100 * MSS;
+    assert(ss.cc_pacing_gain(&ss) == 98304U);
+    assert(scp_pacing_time(&ss, MSS) == UINT64_C(286331153000));
+    ss.cwnd = 10 * MSS;
+    assert(ss.cc_pacing_gain(&ss) == 68812U);
+    assert(scp_pacing_time(&ss, MSS) == UINT64_C(40904925980));
+}
+
 int main(void)
 {
     struct scp_stream ss = {0};
     uint64_t ms = 1ULL << SCP_PACING_SHIFT;
 
+    ss.cc_pacing_gain = unit_gain;
     ss.cwnd = MSS;
     ss.rto = 200;
     assert(scp_pacing_time(&ss, MSS) == ms);
@@ -141,6 +191,7 @@ int main(void)
     ss.cwnd = MSS;
     assert(scp_pacing_time(&ss, MSS) == 100 * ms);
     assert(scp_pacing_time(&ss, 1) > 0 && scp_pacing_time(&ss, 1) < ms);
+    test_pacing_gain();
     assert(!scp_init(4));
     test_fractional_queue(0);
     test_fractional_queue(UINT32_MAX);

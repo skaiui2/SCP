@@ -54,9 +54,8 @@ struct scp_timer {
 #define PERSIST_INTERVAL 200
 #define SCP_PACING_TICK_MS 1U
 #define SCP_PACING_SHIFT 32U
-#ifndef SCP_PACING_RECIPROCAL_Q32
-#define SCP_PACING_RECIPROCAL_Q32 (1ULL << SCP_PACING_SHIFT)
-#endif
+#define SCP_GAIN_ONE_Q16 (1U << 16)
+#define SCP_GAIN_SS_Q16 90852U     /* round(2 * ln(2) * 2^16). */
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))
@@ -219,6 +218,7 @@ struct scp_stream {
     void (*cc_init)(struct scp_stream *ss);
     void (*cc_on_ack)(struct scp_stream *ss, uint32_t acked);
     uint32_t (*cc_on_rtt)(struct scp_stream *ss);
+    uint32_t (*cc_pacing_gain)(struct scp_stream *ss);
     void (*cc_on_loss)(struct scp_stream *ss);
     void (*cc_on_timeout)(struct scp_stream *ss);
 };
