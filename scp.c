@@ -1267,14 +1267,19 @@ void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
 static uint64_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
 {
     uint32_t rtt;
+    uint32_t gain_q16;
     uint64_t pacing_time;
+    uint64_t reciprocal_q32;
 
     if (!ss->srtt)
         return 1ULL << SCP_PACING_SHIFT;
 
     rtt = ss->srtt;
+    gain_q16 = ss->cc_pacing_gain(ss);
+    reciprocal_q32 = (uint64_t)SCP_GAIN_ONE_Q16 << SCP_PACING_SHIFT;
+    reciprocal_q32 /= gain_q16;
 
-    pacing_time = (uint64_t)frag_len * rtt * SCP_PACING_RECIPROCAL_Q32 / ss->cwnd;
+    pacing_time = ((uint64_t)frag_len * rtt * reciprocal_q32) / ss->cwnd;
 
     return pacing_time;
 }
@@ -2241,6 +2246,14 @@ static void scp_update_cwnd_fast(struct scp_stream *ss,
     ss->cwnd = (uint32_t)w;
 }
 
+static uint32_t scp_prob_pacing_gain(struct scp_stream *ss)
+{
+    uint32_t gain_q16;
+
+    gain_q16 = ((uint32_t)MSS * SCP_GAIN_ONE_Q16) / (ss->cwnd << 1);
+    return SCP_GAIN_ONE_Q16 + gain_q16;
+}
+
 static void scp_prob_init(struct scp_stream *ss)
 {
     ss->cwnd = MSS;
@@ -2289,6 +2302,16 @@ static uint32_t scp_prob_on_rtt(struct scp_stream *ss)
     loss_rtt = (ss->p_ema * SCP_RTO_MIN) >> 16;
     rtt = ss->rtt_sample + loss_rtt;
     return rtt;
+}
+
+static uint32_t scp_aimd_pacing_gain(struct scp_stream *ss)
+{
+    uint32_t gain_q16;
+
+    if (ss->cwnd < ss->ssthresh)
+        return SCP_GAIN_SS_Q16;
+    gain_q16 = ((uint32_t)MSS * SCP_GAIN_ONE_Q16) / (ss->cwnd << 1);
+    return SCP_GAIN_ONE_Q16 + gain_q16;
 }
 
 static void scp_aimd_init(struct scp_stream *ss)
@@ -2383,6 +2406,7 @@ static int scp_install_cc(struct scp_stream *ss,
         ss->cc_on_loss    = scp_prob_on_loss;
         ss->cc_on_timeout = scp_prob_on_timeout;
         ss->cc_on_rtt     = scp_prob_on_rtt;
+        ss->cc_pacing_gain = scp_prob_pacing_gain;
         break;
 
     case SCP_CC_AIMD:
@@ -2391,6 +2415,7 @@ static int scp_install_cc(struct scp_stream *ss,
         ss->cc_on_loss    = scp_aimd_on_loss;
         ss->cc_on_timeout = scp_aimd_on_timeout;
         ss->cc_on_rtt     = scp_aimd_on_rtt;
+        ss->cc_pacing_gain = scp_aimd_pacing_gain;
         break;
 
     default:
