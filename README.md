@@ -1,5 +1,10 @@
 # SCP (Simple Stream Control Protocol)
 
+> **Next-slot congestion-avoidance research branch.** This campaign reruns the fixed-100 ms,
+> zero-loss gain study with the reviewed Q16 gain callbacks and next-slot scheduler.
+> See the [experiment code, review map and reproduction steps](test/research/README.md).
+> New results are pending; the papers below describe earlier experiments.
+
 [中文说明](./docs/中文/README中文.md)
 
 SCP is a compact, stream-oriented reliable transport protocol implemented over UDP or another unreliable packet transport. The project focuses on network transport research: exploring reliable delivery, congestion control, pacing, and connection behavior with an inspectable C implementation.

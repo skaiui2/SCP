@@ -1,0 +1,144 @@
+name: SCP congestion-avoidance next-slot Q16 gain sweep
+on:
+  push:
+    branches: ['research/ca-nextslot-q16-20261022']
+    paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/pacing-research.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: scp-nextslot-feedback-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  MPLBACKEND: Agg
+  PYTHONUNBUFFERED: '1'
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    outputs:
+      gains: ${{ steps.matrix.outputs.gains }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r test/research/requirements.txt
+      - name: Check protocol-log analysis
+        run: python test/research/test_analysis.py
+      - name: Build the actual SCP core and virtual transport
+        run: |
+          cmake -S test -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure
+      - name: Actual 8 MiB SCP transfer at critical gain
+        run: >-
+          python test/research/run_scp_fixed_feedback.py --build-dir research-build
+          --gain-id critical --repeats 1 --bytes 8388608 --out results/preflight
+      - name: Actual 8 MiB SCP transfer with native AIMD gain
+        run: >-
+          python test/research/run_scp_fixed_feedback.py --build-dir research-build
+          --gain-id native --repeats 1 --bytes 8388608 --out results/native-preflight
+      - id: matrix
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          settings = json.loads(pathlib.Path('test/research/scp_fixed_experiment.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('gains=' + json.dumps([g['id'] for g in settings['gains']]) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scp-ca-preflight
+          path: |
+            results/preflight/
+            results/native-preflight/
+          retention-days: 14
+          compression-level: 1
+  sweep:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        gain: ${{ fromJSON(needs.build.outputs.gains) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r test/research/requirements.txt
+      - name: Three actual 1 GiB SCP transfers
+        run: >-
+          python test/research/run_scp_fixed_feedback.py --build-dir research-build
+          --gain-id '${{ matrix.gain }}' --out results/${{ matrix.gain }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scp-ca-gain-${{ matrix.gain }}
+          path: results/${{ matrix.gain }}/
+          retention-days: 14
+          compression-level: 1
+          if-no-files-found: error
+  native:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r test/research/requirements.txt
+      - name: Three actual 1 GiB transfers with native AIMD gain
+        run: >-
+          python test/research/run_scp_fixed_feedback.py --build-dir research-build
+          --gain-id native --out results/native
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scp-ca-native
+          path: results/native/
+          retention-days: 14
+          compression-level: 1
+          if-no-files-found: error
+  analyze:
+    needs: sweep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r test/research/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scp-ca-gain-*
+          path: results/downloads
+      - name: Analyze only native SCP observations
+        run: >-
+          python test/research/run_scp_fixed_feedback.py --merge results/downloads
+          --out results/merged
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scp-ca-results
+          path: |
+            results/merged/analysis/
+            results/merged/experiment.json
+            !results/merged/analysis/cwnd_every_ms.csv.gz
+          retention-days: 14
+          compression-level: 1
+          if-no-files-found: error

@@ -1,6 +1,7 @@
 name: SCP transfer curves and network sweep
 on:
   push:
+    branches-ignore: ['research/slowstart-nextslot-q16-20261022', 'research/ca-nextslot-q16-20261022']
     paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/virtual-network.yml']
   pull_request:
     paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/virtual-network.yml']
