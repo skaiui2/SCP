@@ -17,14 +17,14 @@ The current implementation also includes a sender-side pacing layer. Packets adm
 
 The probability-driven controller is described in [SCP-PROB: Probability-Driven Nonlinear Congestion Control](./SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf).
 
-The pacing study, [Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](./Pacing_and_Congestion_Window_Growth.pdf), examines how scheduling changes window growth and packet spreading in slow start and congestion avoidance. It combines explicit packet models with separate campaigns through the SCP C implementation at fixed 100 ms feedback and zero loss. The CA study also measures the effect of integer-byte window updates. For Overleaf, upload [papers/pacing/](./papers/pacing/), including `figures/`, and compile `Pacing_and_Congestion_Window_Growth.tex` with pdfLaTeX.
+The pacing study, [Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](./Pacing_and_Congestion_Window_Growth.pdf), examines how scheduling changes window growth and packet spreading in slow start and congestion avoidance. It compares mathematical predictions, an independent Python packet model, and the actual SCP C core at fixed 100 ms feedback and zero loss. The current campaigns use retained next-slot scheduling and Q16 controller gains: each phase has 22 fixed gains × three repetitions, plus three native-policy transfers, all at 1 GiB. The CA study also measures integer-byte window updates; its adaptive gain is a continuous-model candidate, not a proved discrete optimum. For Overleaf, upload [papers/pacing/](./papers/pacing/), including `figures/`, and compile `Pacing_and_Congestion_Window_Growth.tex` with pdfLaTeX.
 
 | Research | Reproduction code and steps | Actions data |
 |---|---|---|
-| Slow start | [Frozen research branch](https://github.com/skaiui2/SCP/tree/research/slowstart-g-100ms-20261012/reproduction) | [Run 38893710287](https://github.com/skaiui2/SCP/actions/runs/38893710287) |
-| Congestion avoidance | [CA guide and paper plotting script](https://github.com/skaiui2/SCP/tree/research/ca-g-100ms-20261018/reproduction/ca) | [Successful run 39122340171](https://github.com/skaiui2/SCP/actions/runs/39122340171) |
+| Slow start | [Next-slot SS guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) | [Successful run 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304) |
+| Congestion avoidance | [Next-slot CA guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [Successful run 39697576064](https://github.com/skaiui2/SCP/actions/runs/39697576064) |
 
-Download data from Actions artifacts; the historical slow-start Release archive was removed. If artifacts have expired, use the source-based rerun steps. Each research branch keeps its own reproduction material; this branch contains the common paper and these entry points.
+Each research branch keeps only its own compact plotting tables and reproduction scripts. Download large logs from Actions artifacts; if they have expired, follow the rerun steps. This branch contains the common paper and these entry points. Earlier research branches remain frozen as historical experiments; their different scheduling rules should not be mixed with the current results.
 
 ## Features
 

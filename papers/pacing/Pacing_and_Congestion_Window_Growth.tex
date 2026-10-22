@@ -18,7 +18,7 @@
 \email{skaiuijing@gmail.com}
 \begin{document}
 \begin{abstract}
-Pacing changes when new congestion-window credit becomes a transmission and, consequently, when it produces an ACK. This study began with slower startup after adding pacing to a TCP-like transport, SCP. We express slow-start growth through actual transmissions, construct Fibonacci and immediate-send comparison models, and solve an explicitly defined packet scheduler with immutable pacing reservations. Its asymptotic window multiplier is $\min(e^{g/2},2)$, with a transition at $g=2\ln2$. We then examine 66 transfers through the actual SCP C implementation and a fixed-feedback-delay virtual network. At seven low gains, late measured multipliers differ from the queued-model prediction by less than 0.01\%. Near the ideal transition, millisecond execution and empty-queue reset change the phase and the finite transition. A separate 66-transfer congestion-avoidance campaign isolates ACK-count growth from transmission timing: integer-byte updates produce a 15.719\% final full-packet window deficit relative to the real-valued ACK recurrence. In both phases, higher gain substantially concentrates sending while completion time improves little. The results distinguish growth in time, ACK-indexed growth, and within-RTT transmission span.
+Pacing changes when new congestion-window credit becomes a transmission and, consequently, when it produces an ACK. Motivated by slower startup in SCP, we express slow-start growth through actual transmissions, construct Fibonacci and immediate-send comparisons, and solve a packet scheduler with immutable reservations. Its asymptotic window multiplier is $\min(e^{g/2},2)$, with a transition at $g=2\ln2$. Two campaigns execute the actual SCP C core over a loss-free, fixed-100-ms-feedback virtual network: each has 66 fixed-gain transfers and three native-policy transfers. Eight low slow-start gains match the predicted late multiplier within 0.003\%. Retained next-slot scheduling brings packet-group spans close to the ideal model, while execution precision still changes finite trajectories. In congestion avoidance, integer-byte updates produce a 15.719\% full-packet window deficit against the real-valued ACK recurrence. We separate these native observations from an independent Python model and from mathematical predictions, and distinguish window growth, ACK-indexed growth, and transmission dispersion.
 \end{abstract}
 \begin{CCSXML}
 <ccs2012><concept><concept_id>10003033.10003039.10003041</concept_id><concept_desc>Networks~Transport protocols</concept_desc><concept_significance>500</concept_significance></concept></ccs2012>
@@ -66,7 +66,7 @@ Consider the following particular scheduler, with a fixed gain $g\ge1$. After AC
  s_{2k-1}&=b_k, & s_{2k}&=b_k+\frac1{g(k+1)},\\
  T_k&=b_k+\frac2{g(k+1)}.
 \end{aligned}\label{eq:queued}\end{equation}
-Initialize $s_0=0$, $T_0=1/g$. Actual sends move packets from the reserved queue to flight. Consequently $F+Q=w$ after each ACK's reservations, and actual flight respects the window. This model retains the spacing after the last reserved packet, even if the queue becomes empty. Section~4 explains why the tested SCP implementation differs.
+Initialize $s_0=0$, $T_0=1/g$. Actual sends move packets from the reserved queue to flight. Consequently $F+Q=w$ after each ACK's reservations, and actual flight respects the window. This model retains the spacing after the last reserved packet, even if the queue becomes empty. The tested SCP implementation now uses this same next-slot rule; Section~4 specifies its integer execution.
 
 \subsection{Solving the event recurrence}
 Write $c=2/g$, $H_k=\sum_{i=1}^k1/i$, and $D(q)=H_{2q}-H_q$. Group ACK indices as $q\le k<2q$, where $q=2^m$, and put $B_m=b_{2^m}$. These are analytical groups, not batches processed by the implementation. The exact solution is
@@ -103,8 +103,8 @@ For finite $g\ge\gc$, the boundary value is exactly $W_n=1+2^{n-1}$, rather than
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.90\textwidth]{figures/cwnd-rtt.pdf}
-\caption{Congestion-window evolution from actual SCP core logs, for all 22 gains. The horizontal coordinate is elapsed time divided by the 100 ms feedback RTT; the window axis is linear in MSS. Curves retain the measured within-RTT evolution. Overlap is an experimental result, not an omitted gain.}\label{fig:cwnd}
-\Description{All 22 gain curves show measured cwnd on linear axes. Low gains grow more slowly; higher gains overlap near a doubling envelope with increasingly concentrated within-RTT growth.}
+\caption{Actual SCP slow-start windows at RTT boundaries: all 22 gains in gray, six representative gains highlighted, with early and full-growth views. Time is measured from the first DATA send in units of the 100 ms feedback RTT; windows are in MSS on a base-two logarithmic axis. Lines connect samples.}\label{fig:cwnd}
+\Description{Early and full-growth views distinguish slower growth at low gains from a near-doubling envelope at higher gains.}
 \end{figure*}
 \section{From the reference model to an SCP experiment}
 \subsection{What an instantaneous-rate approximation predicts}
@@ -118,16 +118,16 @@ A different idealization updates the entire sending rate continuously: in normal
 The flight constraint requires $e^\lambda\le2$, reaching equality at $g=2\ln2$. Thus the two idealizations share a transition value but differ below it. At $g=1$, the instantaneous-rate multiplier is approximately $1.763223$, while the immutable-queue multiplier is $\sqrt e\approx1.648721$. Previously reserved packets retain older, wider spacings in the latter model. An exponential ansatz also fixes a compatible history; it does not determine the amplitude generated by a single initial packet.
 
 \subsection{Integer scheduling in the tested core}
-The experiment executes the SCP C sender, receiver, pacing callback, and ACK processing. The virtual network transports their packets; it does not compute the window from a mathematical recurrence. The tested core stores reservation times in unsigned 64-bit Q32.32 milliseconds. For payload length $\ell$, measured RTT $R_{\rm ms}$, window $C$ in bytes, and compile-time integer reciprocal $G$, the spacing is
+The experiment executes the SCP C sender, receiver, pacing callback, and ACK processing. The virtual network transports their packets; it does not compute the window from a recurrence. The core stores reservation times in unsigned 64-bit Q32.32 milliseconds. Each congestion controller supplies a Q16 gain $K$. For a fixed target $g$, payload length $\ell$, measured RTT $R_{\rm ms}$, and byte window $C$, scheduling uses
 \begin{equation}
 \begin{aligned}
  d_{\rm Q32}&=\left\lfloor\frac{\ell R_{\rm ms}G}{C}\right\rfloor,\\
- G&\simeq 2^{32}/g,\qquad g_{\rm effective}=2^{32}/G.
+ K&=\operatorname{round}(2^{16}g),\quad G=\left\lfloor 2^{48}/K\right\rfloor.
 \end{aligned}
 \end{equation}
-An appended packet adds this spacing to the last reservation. Fractional parts accumulate while the queue persists, instead of truncating each spacing to whole milliseconds. The send routine uses the reservation's integer part: a packet reserved for $1.8$ ms is eligible at $1$ ms. The virtual clock advances by 1 ms, allowing multiple packets in a tick. ACK-triggered scheduling and the pacing timer share the due-send routine.
+Write $g_Q=K/2^{16}$; reciprocal rounding adds the smaller difference between $g_Q$ and $2^{32}/G$. At each output call the next slot becomes $\max(T,\mathrm{now})$. A packet receives that timestamp, then advances $T$ by its own spacing. Fractional parts and the trailing slot survive an empty queue. Thus a packet constrains the next packet's earliest slot. The send routine uses the reservation's integer part: a reservation at $1.8$ ms is eligible at $1$ ms. The virtual clock advances by 1 ms, allowing multiple sends per tick. ACK-triggered scheduling and the pacing timer share the due-send routine.
 
-When the queue is empty, its first new packet is assigned the current time. The previous queue's trailing interval is not retained. This reset and the execution grid are intentional implementation rules. They distinguish the experiment from \eqref{eq:queued}, particularly when the interval falls below a millisecond. The absence of SRTT uses the core's 1 ms fallback; established feedback supplies the measured RTT.
+The absence of SRTT uses a 1 ms fallback. Once feedback is available, the measured RTT is 100 ms. An independent Python model uses the same next-slot rule but a 1 $\mu$s clock, truncates each spacing to whole microseconds, and uses the unquantized target gain. Its CA window is real-valued. These are declared differences, not interchangeable implementations: native Q32 accumulation retains fractions that the Python model discards. Python sends only full MSS packets, totaling 1 GiB plus 846 bytes; native SCP sends exactly 1 GiB with a short final packet.
 
 \subsection{Configuration and verification}
 \begin{table}[t]\small
@@ -135,46 +135,42 @@ When the queue is empty, its first new packet is assigned the current time. The 
 \begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{0.24\columnwidth}>{\raggedright\arraybackslash}X@{}}\toprule
 Quantity & Configuration \\\midrule
 Data and packet size & 1 GiB generated data; MSS 1430 bytes; final payload 584 bytes \\
-Window and mode & Initial window 1 MSS; sustained slow start \\
+Window and mode & Initial window 1 MSS; separate sustained SS and CA campaigns \\
 Network & 50 ms per direction; no loss, rate cap, or serialization delay \\
 Feedback RTT & 100 ms from actual DATA send to returning ACK input \\
 Observation & Core state every 1 ms; actual DATA and ACK events logged \\
 Gains & $\gc+0.05k$, $k=-6,\ldots,6$; $1,1.1,1.75,2,2.5,3,4,6,8$ \\
-Repetitions & 22 gains, three deterministic repetitions each \\
+Repetitions & Per phase: 22 fixed gains $\times$ 3, plus native policy $\times$ 3 \\
 Limits & cwnd cap $2^{31}-1$ bytes; buffer/window settings 1 GiB \\\bottomrule
 \end{tabularx}\end{table}
-All 66 transfers completed with 750,869 DATA packets and matching endpoint checksums. No loss, retransmission, or cwnd-cap contact was observed. Fifteen functional tests passed. The shared core, library, network, and common-test files matched the reviewed baseline in the recorded audit. Campaign records and repeat hashes were checked across all runs; the critical-gain first run also received independent packet-level reprocessing.
+All 138 native transfers completed with 750,869 DATA packets each and matching endpoint checksums. No loss, retransmission, or cwnd-cap contact occurred. Fifteen functional tests passed in each campaign. The shared core, library, virtual network, and common-transfer files exactly matched baseline \texttt{e41ac88}. CA is selected at the research entry by setting ssthresh to one MSS, without a core patch. Audits follow every DATA send through the receiver's input and ACK generation to the sender's ACK input, verify 100 ms feedback and every window update, and check actual sends against reserved timestamps. Three repetitions per configuration produced identical raw traces.
 
-At the target $\gc$, $G=3098164009$, so the effective gain is $1.386294361280859$. The first DATA transmission defines time zero; the preceding handshake is excluded. The three repetitions reproduce identical traces, so no random-error bars are appropriate. Finite data availability affects the final intervals and is marked separately in the span figure.
+At target $\gc$, $K=90852$, $g_Q=1.38629150390625$, and $G=3098170394$. The Q16 value is slightly below $\gc$, so the exact $g\ge\gc$ theorem cannot simply be assigned to this finite run. The first DATA send defines time zero; the handshake is excluded. Repetitions are determinism checks, without random-error bars. Span summaries require complete, non-final-send intervals with at least two packets; all other intervals remain in the raw tables. Middle--late summaries use bins from 50\% through 90\% of the final-send bin index.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.90\textwidth]{figures/span-rtt.pdf}
-\caption{First-to-last actual DATA transmission span in each fixed RTT interval, for all gains. The faint dotted final segments indicate intervals shortened by exhaustion of the finite transfer. The spans come from packet timestamps; they are not calculated by dividing a window by a nominal rate.}\label{fig:span}
-\Description{For 22 gains, measured first-to-last packet spans rise over early RTTs then plateau. Larger gains have shorter spans. Faint final segments identify finite-transfer exhaustion.}
+\caption{Actual SCP slow-start sending spans. Representative within-run curves are accompanied by the middle--late summary across all 22 gains. Incomplete, singleton, and final-send intervals are excluded from the summaries. Spans come from packet timestamps, not a nominal rate.}\label{fig:span}
+\Description{Measured spans rise over early RTTs; larger gains shorten the plateau. A separate panel compares middle--late spans across all gains.}
 \end{figure*}
 \section{Measured congestion-window growth}
 
 
-\textbf{The low-gain regime.} Figure~\ref{fig:cwnd} shows slower growth at low gain. For the seven sampled gains from $1$ through $\gc-0.10$, the measured late boundary ratio $W_{18}/W_{17}$ has less than 0.01\% relative error against $e^{g_{\rm effective}/2}$. For example, at $g=1$ it is $1.648883$. This is close agreement with the queued reference and a clear distinction from the instantaneous-rate prediction $1.763223$. It supports that reference's growth multiplier in this regime, without asserting equality of every timestamp or window value.
+\textbf{The low-gain regime.} Figure~\ref{fig:cwnd} shows slower growth at low gain. For the eight sampled gains from $1$ through $\gc-0.05$, the measured boundary ratio $W_{18}/W_{17}$ differs from $e^{g_Q/2}$ by less than 0.003\%. At $g=1$ the ratio is $1.648756$, close to the queued reference $\sqrt e$ and distinct from the instantaneous-rate prediction $1.763223$. This supports the queued model's multiplier in this regime, without asserting equality of every timestamp or window value.
 
 \begin{table}[t]\small\centering
 \caption{Measured growth and completion for selected gains.}\label{tab:results}
 \begin{tabular}{@{}rrrr@{}}\toprule
 Target gain & $W_{18}/W_{17}$ & $W_{18}$ (MSS) & Last ACK ($t/R$) \\\midrule
-$1$ & 1.648883 & 12,548 & 26.19 \\
-$\gc-0.10$ & 1.902493 & 82,260 & 21.44 \\
-$\gc-0.05$ & 2.000000 & 132,096 & 20.50 \\
-$\gc$ & 2.000000 & 132,096 & 20.48 \\
-$2$ & 2.000000 & 133,120 & 20.32 \\
-$8$ & 2.000000 & 139,264 & 20.06 \\\bottomrule
+$1$ & 1.648756 & 9,144 & 26.82 \\
+$\gc-0.10$ & 1.902456 & 73,216 & 21.62 \\
+$\gc-0.05$ & 1.950624 & 100,818 & 21.01 \\
+$\gc$ & 2.000000 & 131,984 & 20.51 \\
+$2$ & 2.000000 & 132,390 & 20.35 \\
+$8$ & 2.000000 & 136,422 & 20.08 \\\bottomrule
 \end{tabular}\end{table}
 
-\textbf{Doubling does not remove the startup deficit.} At the critical target, the first eight boundary windows are $1,2,3,5,9,17,33,65$ MSS. The window reaches 129 MSS at RTT 8, after which the measured samples satisfy
-\begin{equation}
- W_n=129\,2^{n-8},\qquad 8\le n\le20.
-\end{equation}
-The multiplier is exactly two in this range, but $W_n/2^n=129/256$: the window is still 49.609375\% below the immediate-send reference. Earlier timing differences persist as an amplitude difference. At all observed 1 ms samples from 800 through 1899 ms, this run also satisfies $w(\tau+1)=2w(\tau)$. This finite trace demonstrates repetition of the internal phase, not merely equality at RTT boundaries. It does not prove an infinite-time identity or a universal transition for other implementations.
+\textbf{Doubling does not remove the startup deficit.} At the critical target, boundary windows begin $1,2,3,5,9,17,33,65,129$ MSS. Later values include $W_{14}=8249$, $W_{18}=131984$, and $W_{19}=263968$. The samples double from RTT 14 through 19, yet $W_{18}$ is 49.6521\% below the immediate-send reference $2^{18}$. At RTT 20 the window is 527935 MSS, one MSS below another exact doubling. The finite trace therefore supports a late multiplier near two without an exact infinite-time doubling or within-RTT periodicity claim.
 
 \section{Within-RTT sending span and concentration}
 
@@ -184,13 +180,27 @@ For this figure, let $\mathcal{P}_n$ contain sends in the half-open interval $[n
 \end{equation}
 A singleton has span zero; an empty interval has no defined span. This bin convention differs from the right-closed send-count intervals in \eqref{eq:account}. It also differs from the packet-index groups defining $\Lambda_m$ in \eqref{eq:span}. These measurements cannot be interchanged near a phase boundary.
 
-\textbf{Evolution within one run.} At the critical target, $L_n$ initially takes values $0,36,54,74,78,91$ ms for $n=0,\ldots,5$, then remains 96 ms for $n=6,\ldots,18$. The next interval has span 48 ms because the finite transfer ends. The measured plateau is reached in finitely many rounds. By contrast, the exact reference group's span approaches its limit through harmonic corrections.
+\textbf{Evolution within one run.} At the critical target, $L_n$ begins $0,36,66,82,91,95,97,98$ ms for $n=0,\ldots,7$, then remains 99 ms for $n=8,\ldots,18$. The final-send interval has span 51 ms and is excluded from aggregates. The finite millisecond plateau is distinct from the harmonic convergence of the exact reference group's span.
 
-\textbf{Variation across gains.} At RTT 18, the span is 99 ms for the sampled gains through $\gc-0.05$, then 96 ms at $\gc$, 63 ms at $g=2$, and 12 ms at $g=8$. A 100 ms interval sampled on a 1 ms grid has a largest possible first-to-last span of 99 ms. A 99 ms result therefore means sends reach both edge bins, not that the pacer fills every instant or even every bin.
+\textbf{Variation across gains.} At RTT 18, fixed-bin spans are 99 ms at the critical target, 69 ms at $g=2$, and 17 ms at $g=8$. A 100 ms half-open interval sampled on a 1 ms grid has a maximum span of 99 ms. That value means sends reach both edge bins; it neither proves uniform density nor excludes a packet-index group extending across an RTT boundary. In particular, low-gain groups can exceed one RTT while their fixed-bin spans remain 99 ms.
 
-\textbf{Why the execution rule matters.} Near $\gc$, the nominal full-packet spacing falls below 1 ms at a window of 73 MSS. Fractional accumulation prevents a continuously queued stream from becoming unlimited-rate simply through per-packet truncation. However, empty-queue resets can still place newly permitted packets in the current millisecond. The critical trace exhibits no reserved backlog at the 1 ms samples from 800 through 1899 ms; its repeating ACK phases can consequently reproduce a doubled transmission pattern on the grid.
+\textbf{Why precision matters.} With $R=100$ ms, an ideal full-packet spacing is $100/(gw)$ ms. Native SCP retains its sub-millisecond fraction in the next slot. The independent Python model instead truncates every spacing to microseconds; at $w>100000/g$ MSS, that spacing becomes zero. Thus a finer execution clock alone does not guarantee a closer approximation. At $g=1$, Python completes at 25.21217 RTTs, native SCP at 26.82, and numerical evaluation of the ideal ACK-index scheduler at 26.82611. These discrepancies arise in separately labeled models; the Python results are not native measurements.
 
-From $\gc$ to $g=8$, the last DATA ACK moves from 2048 to 2006 ms, an improvement of about 2.05\%. In the same comparison, $L_{18}$ falls eightfold, while the largest millisecond bin's share of RTT-18 packets rises from 1.5625\% to 12.5\%. Faster completion and more concentrated sending are distinct effects. Span alone does not describe the internal density, so both quantities are needed when evaluating smoothing.
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/ss-three-layers.pdf}
+\caption{Three distinct SS execution models, at the same elapsed RTT boundaries. Top: native SCP, the independent Python packet model, and numerical evaluation of the ideal ACK-index recurrence. Bottom: native minus each reference, divided by that reference. No time shift or amplitude fit is applied. The large late $g=1$ Python discrepancy exposes per-spacing truncation; jumps in pointwise error also depend on ACK phase.}\label{fig:layers}
+\Description{Three selected gains compare window growth and relative differences across native, independent Python, and ideal mathematical models.}
+\end{figure*}
+
+From the critical target to $g=8$, the last DATA ACK moves from 2051 to 2008 ms, an improvement of 2.10\%. Meanwhile $L_{18}$ falls from 99 to 17 ms, and the largest millisecond bin's share of RTT-18 packets rises from 1.3813\% to 7.7396\%. Faster completion and more concentrated sending are distinct effects; span alone does not describe internal density.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/ss-cohort-L.pdf}
+\caption{The same packet-index groups compared across native SCP, the independent Python model, and the finite harmonic reference \eqref{eq:span} evaluated at the native Q16 gain. Dotted horizontal lines are its corresponding limits. Unlike fixed-bin spans, a group's span may exceed one RTT. Native millisecond execution and Python's per-spacing microsecond truncation remain visible.}\label{fig:cohort}
+\Description{Packet-index group spans are compared without cutting them at fixed RTT boundaries.}
+\end{figure*}
 
 \section{Loss-free congestion avoidance}\label{sec:ca}
 \textbf{ACK count and elapsed time.} In the real-valued full-packet form of RFC~5681, Section~3.1, equation~(3)~\cite{rfc5681}, let $u_k$ be the window in MSS after CA ACK $k$, with $u_0=a\ge1$. Then
@@ -210,7 +220,7 @@ Here time is normalized by $R$, $a_k$ is the corresponding packet's send time pl
  T_K=\mathcal I_K+\frac{u_K+\ln u_K}{g}+C+O(1/u_K).
  \label{eq:caclock}
 \end{equation}
-Indeed, $1/u_k=(u_k-u_{k-1})-1/(u_{k-1}^2u_k)$ makes the first sum $u_K+C_1+O(1/u_K)$. Each sufficiently large integer threshold $n$ is crossed at a window $v_n=n+O(1/n)$, so the second sum is harmonic: $\ln u_K+C_2+O(1/u_K)$. This proves \eqref{eq:caclock}, but does not determine $\mathcal I_K$ or a closed window law in time. It applies to the retained-tail model, not directly to SCP's empty-queue reset.
+Indeed, $1/u_k=(u_k-u_{k-1})-1/(u_{k-1}^2u_k)$ makes the first sum $u_K+C_1+O(1/u_K)$. Each sufficiently large integer threshold $n$ is crossed at a window $v_n=n+O(1/n)$, so the second sum is harmonic: $\ln u_K+C_2+O(1/u_K)$. This proves \eqref{eq:caclock}, but does not determine $\mathcal I_K$ or a closed window law in time. It uses a real window and ideal time; SCP's integer updates and execution grid still require separate examination.
 
 \textbf{Integer-byte updates in SCP.} A new campaign uses Table~\ref{tab:setup}'s conditions but sets both initial cwnd and ssthresh to $M$. This artificial initial state isolates CA; it is not ordinary TCP startup. The research target changes threshold initialization while reusing the shared core, virtual network, and pacing rules. For an ACK covering $N_k$ new bytes, the core uses
 \begin{equation}
@@ -219,38 +229,53 @@ Indeed, $1/u_k=(u_k-u_{k-1})-1/(u_{k-1}^2u_k)$ makes the first sum $u_K+C_1+O(1/
 \end{equation}
 This differs from the real-valued recurrence, even for full-MSS ACKs. RFC~5681 also discusses the integer-zero increment and rounding it to one byte; its equation~(3) is one allowed CA method, not every implementation of Reno. For full packets, once $C>M^2/2=1{,}022{,}450$ bytes, \eqref{eq:cabyte} adds exactly one byte per ACK. Discarded fractional increments accumulate into a measurable difference.
 
-All 66 CA transfers completed with matching checksums, exactly 100~ms feedback, no retransmission, and no cap contact. Every observed ACK update matched \eqref{eq:cabyte} with zero byte error. At full-packet ACK $K=750868$, the actual window was $1{,}476{,}947$ bytes, versus $1{,}752{,}403.2934$ bytes from \eqref{eq:caack}: measured minus reference, divided by reference, is $-15.719\%$. The final 584-byte ACK then raises the actual window to $1{,}476{,}948$ bytes and is excluded from this full-packet comparison.
+All 66 fixed-gain CA transfers and three native-policy transfers completed with matching checksums, exactly 100~ms feedback, no retransmission, and no cap contact. Every observed ACK update matched \eqref{eq:cabyte} with zero byte error. At full-packet ACK $K=750868$, the actual window was $1{,}476{,}947$ bytes, versus $1{,}752{,}403.2934$ bytes from \eqref{eq:caack}: measured minus reference, divided by reference, is $-15.719\%$. The final 584-byte ACK then raises the actual window to $1{,}476{,}948$ bytes and is excluded from this full-packet comparison.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/ca-growth.pdf}
-\caption{CA from one MSS, five representative gains. (a) Observed RTT-boundary windows. (b) Differences from gain~1. (c) Native critical-target windows and the real-valued reference at matching ACK counts, sampled at RTT boundaries plus the last full-packet ACK. (d) Actual fixed-interval spans, excluding the final-send interval. Lines connect observations; none are fitted.}\label{fig:ca}
+\caption{CA from one MSS, five representative fixed gains. (a) Observed RTT-boundary windows. (b) Differences from gain~1. (c) Critical-target window error against the real-valued recurrence at matching ACK counts, including the last full-packet ACK. (d) Actual fixed-interval spans, with the native adaptive policy in black; final-send intervals are excluded. Lines connect observations without fitting.}\label{fig:ca}
 \Description{Four panels separate the small gain-dependent timing effect from the common ACK-indexed integer window deficit, and show shorter within-RTT spans at larger gains.}
 \end{figure*}
-At the same full-packet ACK count, the verified integer window sequence is identical across gains; gain changes when those ACKs occur. Among the five gains in Figure~\ref{fig:ca}, the largest RTT-boundary window difference from gain~1 is 0.629~MSS. Completion changes little, while transmission spans differ strongly (Table~\ref{tab:ca}). Each reported span is unchanged in all 1101 full intervals $n=100,\ldots,1200$, within each run. These are finite observations on a millisecond grid. They neither prove infinite periodicity nor make the slow-start reference value $2\ln2$ a CA transition.
+At the same full-packet ACK count, the verified integer window sequence is identical across gains; gain changes when those ACKs occur. Among Figure~\ref{fig:ca}'s fixed gains, the largest RTT-boundary difference from gain~1 is 2.340 MSS. From $g=1$ to $8$, completion improves by only 0.204\%, while dispersion changes substantially. Table~\ref{tab:ca} reports the full span range over 1101 intervals $n=100,\ldots,1200$, rather than assuming exact periodicity. These millisecond observations do not make $2\ln2$ a CA transition. At matching elapsed times, native windows differ from the independent real-window models by up to about 21.9\%; this includes different ACK timing as well as integer updates, unlike the matching-ACK-count comparison above.
 
 \begin{table}[t]\small\centering
-\caption{CA completion and observed within-run span plateaus.}\label{tab:ca}
+\caption{CA completion and within-run span ranges, $n=100,\ldots,1200$.}\label{tab:ca}
 \begin{tabular}{@{}rrr@{}}\toprule
-Target gain & Last ACK ($t/R$) & $L_{100},\ldots,L_{1200}$ (ms) \\\midrule
-$1$ & 1339.97 & 99 \\
-$\gc$ & 1339.40 & 99 \\
-$2$ & 1339.27 & 67 \\
-$4$ & 1339.13 & 31 \\
-$8$ & 1339.06 & 13 \\\bottomrule
+Target gain & Last ACK ($t/R$) & Span range (ms) \\\midrule
+$1$ & 1341.81 & 99 \\
+$\gc$ & 1339.48 & 99 \\
+$2$ & 1339.31 & 71--72 \\
+$4$ & 1339.14 & 33--34 \\
+$8$ & 1339.07 & 16 \\\bottomrule
 \end{tabular}\end{table}
+
+\textbf{A continuous candidate for adaptive gain.} Normalize rate to packets per RTT. With actual send rate $q(\tau)$, fixed feedback gives $w'=q(\tau-1)/w$. The flight is therefore
+\begin{equation}\begin{aligned}
+ f(\tau)&=\int_{\tau-1}^{\tau}q(s)\,ds\\
+ &=\frac{w(\tau+1)^2-w(\tau)^2}{2}.
+\end{aligned}\end{equation}
+Continuous equality $f=w$ requires
+\[
+ w(\tau+1)=\sqrt{w(\tau)^2+2w(\tau)},\quad q=(w+1)w'.
+\]
+On an additionally assumed smooth compatible growth branch, expansion gives $w'=1-1/(2w)+O(w^{-2})$, hence
+\begin{equation}
+ g_{\rm fill}=q/w=1+\frac1{2w}+O(w^{-2}).\label{eq:cagain}
+\end{equation}
+This is a first-order fluid candidate, not an exact whole-packet optimum or a proof that every interval has $L=R$. The native AIMD policy uses $K=90852$ in SS and $K=65536+\lfloor M\,65536/(2C)\rfloor$ in CA. Its three additional CA runs complete at 1341.39 RTTs; gain falls from 1.5 to approximately 1.000473, with 99 ms spans throughout the 403 selected middle--late bins. The SS native policy matches its fixed-Q16 critical-target configuration. No matching dynamic-policy Python campaign is claimed. Integer-byte CA does not satisfy the real-valued premises exactly, especially after increments reach one byte.
 
 \section{Interpretation, scope, and reproducibility}
 \textbf{What the transition explains.} The exact reference gives a simple mechanism: when a group's required pacing time exceeds an RTT, reservations accumulate and the window multiplier is below two. Once it fits, ACK availability limits further growth and additional gain chiefly compresses transmission times. The finite threshold is $2D(2^m)$ and approaches $2\ln2$; it is not equal to that limit for every group. The instantaneous-rate model reaches the same limiting value through the flight constraint, despite predicting a different low-gain exponent.
 
-\textbf{What the SCP measurements establish.} The native-core experiment reproduces the queued model's low-gain multiplier very closely and exhibits a nearby change to doubled phase patterns. It also shows a finite plateau of fixed-interval spans. The sampled gain $\gc-0.10$ is still below a doubling multiplier, while $\gc-0.05$ already doubles. Thus this campaign does not identify $2\ln2$ as the implementation's exact critical gain. At the ideal critical gain and group size $q=131072$, \eqref{eq:span} gives approximately 99.99945 ms; the implementation's late fixed-interval span is 96 ms. Different scheduling rules and different group definitions must both be accounted for before interpreting that difference as an approximation error.
+\textbf{What the SCP measurements establish.} Retaining the trailing slot gives close agreement with the queued model's low-gain multiplier. The sample $\gc-0.05$ has multiplier 1.950624, while the critical target has multiplier two at the selected boundaries. This brackets a finite observed change, not the implementation's exact infinite-time threshold. Figure~\ref{fig:cohort} compares like-for-like packet-index groups; fixed-bin $L_n<R$ by construction cannot establish absence of group crossing. Neither native nor Python finite traces prove a universal CA critical gain.
 
 \textbf{Relation to existing work.} Reno's slow-start update is specified in RFC 5681~\cite{rfc5681}. Pacing's interaction with TCP dynamics has been studied well before this work~\cite{aggarwal}. RFC 9002 gives a cwnd/RTT-based pacing example with a multiplicative factor~\cite{rfc9002}, and the ICCRG pacing draft discusses practical pacing behavior, including compensation for slow-start growth~\cite{pacing}. The contribution here is a compact event-level solution for a particular reservation rule, together with a reproducible examination of how an actual integer implementation changes its predictions. It is not a claim to have first observed that insufficient pacing rate can throttle slow start.
 
 \textbf{Limits.} The study isolates one flow, an initial window of one packet, fixed complete feedback delay, and separate loss-free SS and CA phases. The virtual network intentionally has no bottleneck serialization, propagation variation, cross traffic, delayed ACK policy, or receiver pressure. It therefore measures feedback and scheduling dynamics rather than performance on a real path. The sender executes genuine SCP code, but the environment remains an idealized virtual network. A different initial window, timer granularity, queue policy, or ACK policy can change finite behavior. No conclusion here establishes an optimal Internet pacing gain, an improvement in fairness, or a universal CA window law in time.
 
 \textbf{Reproduction.}\par
-SS uses Actions run \href{https://github.com/skaiui2/SCP/actions/runs/38893710287}{38893710287}, source \texttt{70f170e}, and its \href{https://github.com/skaiui2/SCP/tree/research/slowstart-g-100ms-20261012/reproduction}{research-branch guide}. CA uses successful run \href{https://github.com/skaiui2/SCP/actions/runs/39122340171}{39122340171}, source \texttt{2b48f8f}, and a separate \href{https://github.com/skaiui2/SCP/tree/research/ca-g-100ms-20261018/reproduction/ca}{guide and plotting script}. Shared files match baseline \texttt{b591e9c}, except the declared CA initialization change. Per-gain artifacts preserve native logs, identities and audits; the CA summary contains tables and figures. Artifacts expire, so the guides supply rerun commands and plotting scripts. Figures preserve the first-send origin without fitting or smoothing. Repetitions are deterministic checks; full-packet comparisons exclude the short ACK.
+SS uses successful Actions run \href{https://github.com/skaiui2/SCP/actions/runs/39697564304}{39697564304} (\texttt{ef0076b}) and its \href{https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction}{branch guide}. CA uses successful run \href{https://github.com/skaiui2/SCP/actions/runs/39697576064}{39697576064} (\texttt{9670889}) and its separate \href{https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction}{guide}. Both share baseline \texttt{e41ac88}. Each branch stores its own compact plotting tables and analysis scripts. Large raw logs remain in Actions; the guides supply rerun commands after expiry. Python data are identified by frozen source hash and settings. Cloning and redrawing the compact figures require no raw archive or Release asset.
 
 \section{Conclusion}
 The ACK update alone does not determine growth in time. The immutable-reservation SS model has an exact gain-dependent solution; native transfers closely match its low-gain exponent while differing in phase and finite transition. In CA, gain changes ACK timing while integer-byte updates produce a substantial deficit against the real-valued ACK reference. In both campaigns, higher gain chiefly concentrates transmissions with little completion-time benefit. Evaluating pacing requires the window update rule, its integer representation, and actual packet timing.
@@ -264,7 +289,7 @@ The ACK update alone does not determine growth in time. The immutable-reservatio
 
 \appendix
 \section{Packet-Time Comparison and the Burst Limit}\label{app:comparison}
-This appendix supplies the lower-comparison argument for the reference scheduler in Section~3. It does not transfer that theorem to SCP's empty-queue-reset scheduler. Both comparison systems use the same fixed feedback delay and one-MSS increase per ACK.
+This appendix supplies the lower-comparison argument for the ideal reference scheduler in Section~3. Integer-time execution still requires separate packet-time comparison before transferring the theorem to an implementation. Both comparison systems use the same fixed feedback delay and one-MSS increase per ACK.
 
 \subsection{The Fixed-Batch Comparator Respects Flight}
 Let the preceding and current batch sizes be $p=F_{n+1}$ and $q=F_{n+2}$ in round $n\ge1$. After phase $0\le u<1$, its flight is
