@@ -68,3 +68,7 @@ if(SCP_TEST_TRANSFER)
   set_tests_properties(transfer_fixed_feedback PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/fixed-feedback LABELS virtual)
 endif()
+option(SCP_RESEARCH "Build the native SCP fixed-feedback research target" OFF)
+if(SCP_RESEARCH)
+  include(research/target.cmake)
+endif()
