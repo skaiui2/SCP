@@ -1,0 +1,26 @@
+{
+  "phase": "ca",
+  "baseline_sha": "e41ac8821bc3e0864a552cea89c86d075744ae9e",
+  "experiment_sha": "9670889362677348b7077c6ff8c7ad885c6d0f3f",
+  "actions_run_id": 39697576064,
+  "actions_url": "https://github.com/skaiui2/SCP/actions/runs/39697576064",
+  "actions_artifact": "scp-ca-results",
+  "data_selection": "All 22 gains and all 3 repeats at RTT boundaries/bins; no per-ms or packet raw logs. Large CSVs are losslessly gzip/xz-compressed.",
+  "native_original_csv_sha256": {
+    "analysis/analysis_audit.json": "19fc51635843ec0957a3e4af98dc912f10f11b824d33a2923770eae16ba36563",
+    "analysis/case_audit.csv": "b34b9a048d2776edea0bf93c091e8ae229d37d48458d74e6791ccf68bbe2e33b",
+    "analysis/transfer_summary.csv": "e56dc1ecf34f5a6954857481aaf3d97c0a28e7c2c9e6a406b46574b70f8b6cc5",
+    "analysis/deterministic_repeat_check.csv": "0bf320e252c4cf160a86071ff7f1843fb490b40aa5bb6344234c501f7c45ed94",
+    "analysis/formula_summary.csv": "e33df4017d1ab1a2aab39da387b6ecb51d6c49d1701f23d1ab814371fb752720",
+    "analysis/L_middle_late_summary.csv": "e9495a723df1869e7e7ddcb42d25ed82eb1378807c6758ae169962df13dec24f",
+    "analysis/packet_payload_sizes.csv": "4054eaba448b82955284df19401b75032a1bae5a8e2c6610f07f694c4dc7bd52",
+    "analysis/cwnd_by_rtt.csv": "9d209e464cada84461a18bc421e9eb14297f16187c68bffde81cab6e64ee54b4",
+    "analysis/L_by_RTT_wide.csv": "65d549356d30e50252f787ee3a6d491c64783476fc9bb083fd2cc5573bbc056d",
+    "analysis/cwnd_RTT_boundaries.csv": "674fd5ff72f09253daec108dac4e0cef4dee99d55efa249c3fe8176ca4b8e815",
+    "analysis/L_fixed_RTT_all.csv": "83f8cc831eb3aa8259a5f812c602a190799d1a2670d855d219e8e8346c7ddc46"
+  },
+  "comparison_source_sha256": "ac3c57cbf36a671f05d5c175323465d91bd60ee817fa7179459c470352c16869",
+  "mathematical_source_sha256": "7ffd15b296d57372e9589c0e846354e0627f0ca7c34bc744a1d3f3fee49b8f24",
+  "python_model_sha256": "28c65d848843c47b5a3ba385ed6d0e0825d851ce65614ab0862370f5493f63a3",
+  "paper_plot_source_sha256": "91a7bd6e427cceaf9207a0cc008cd9e0f316f1984d4bb1370ca5e7ef2954d936"
+}

@@ -1,0 +1,4 @@
+phase,case_id,repeat,gain_policy,scalar_g,requested_bytes,completion_RTT,comparison_status,source_commit,binary_sha256
+ca,native-r01,1,native_aimd,,1073741824,1341.3900000000001,native-only candidate; no matching dynamic-policy Python campaign,9670889362677348b7077c6ff8c7ad885c6d0f3f,874b1a7c93da57dce2bb304153e75b912fbc4715fc2ed6b34b083084382a876d
+ca,native-r02,2,native_aimd,,1073741824,1341.3900000000001,native-only candidate; no matching dynamic-policy Python campaign,9670889362677348b7077c6ff8c7ad885c6d0f3f,874b1a7c93da57dce2bb304153e75b912fbc4715fc2ed6b34b083084382a876d
+ca,native-r03,3,native_aimd,,1073741824,1341.3900000000001,native-only candidate; no matching dynamic-policy Python campaign,9670889362677348b7077c6ff8c7ad885c6d0f3f,874b1a7c93da57dce2bb304153e75b912fbc4715fc2ed6b34b083084382a876d
