@@ -1,9 +1,11 @@
 # SCP (Simple Stream Control Protocol)
 
-> **Next-slot slow-start research branch.** This campaign reruns the fixed-100 ms,
-> zero-loss gain study with the reviewed Q16 gain callbacks and next-slot scheduler.
-> See the [experiment code, review map and reproduction steps](test/research/README.md).
-> New results are pending; the papers below describe earlier experiments.
+> **Next-slot slow start research branch.** This branch studies how pacing gain
+> changes cwnd and packet spreading, with actual SCP C transfers at fixed 100 ms feedback and zero loss.
+> It shares baseline `e41ac88` without a core patch. [Run 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304) completed all 66 fixed-gain transfers plus three native-policy controls.
+> Start with the [compact results and reproduction guide](reproduction/README.md),
+> [execution-path review map](test/research/README.md), and [current manuscript on main](https://github.com/skaiui2/SCP/blob/main/Pacing_and_Congestion_Window_Growth.pdf).
+> The inherited papers and historical entry points below document earlier campaigns.
 
 [中文说明](./docs/中文/README中文.md)
 

@@ -1,0 +1,21 @@
+{
+  "planned_runs": 66,
+  "recorded_configs": 66,
+  "summaries": 66,
+  "observed_data_cases": 66,
+  "missing_cases": [],
+  "unfinished_cases": [],
+  "statuses": {
+    "complete": 66
+  },
+  "interpretation": [
+    "Fixed feedback RTT bins [nR,(n+1)R), not tail-packet genealogies.",
+    "Only transport-send callback DATA; 1 ms timestamp resolution.",
+    "State values use last observed sample; no linear interpolation or extrapolation.",
+    "All available repetitions participate in cwnd common-support medians, including failure prefixes.",
+    "Final DATA-send bin, partial bins and N<2 bins are excluded from dispersion aggregates.",
+    "All raw bins remain in packet_dispersion_by_rtt.csv, including excluded bins.",
+    "Middle/late means floor(0.5*final_send_bin) <= n < floor(0.9*final_send_bin).",
+    "Zero-loss virtual repeats check reproducibility; they are not independent random network samples."
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "analysis/analysis_audit.json": "19fc51635843ec0957a3e4af98dc912f10f11b824d33a2923770eae16ba36563",
+  "analysis/case_audit.csv": "c4c0295f159101b8b8740de479d0452595bacd0d8d517544a93dcae5b1fb0a73",
+  "analysis/cwnd_by_rtt.csv": "0837f707d4c60ff2b9dd91cae55adad743e20b36dec7adbd840acd639d2c2175",
+  "analysis/cwnd_RTT_boundaries.csv.gz": "18caff4cc74c0b64eb3bf0fad9efe4fb906df125b37a3466f8d6819b7131c99c",
+  "analysis/deterministic_repeat_check.csv": "0bf320e252c4cf160a86071ff7f1843fb490b40aa5bb6344234c501f7c45ed94",
+  "analysis/formula_summary.csv": "786fb8a0b4d779cee6a36e87c79cee2d5a5470fcfc9014caa104f83729c47159",
+  "analysis/L_by_RTT_wide.csv": "a44fe6ada37d24d4316d84cba89796567ec74b67207ed08ed2900787b09ddd7d",
+  "analysis/L_fixed_RTT_all.csv.gz": "f95199cf02a451b6fe45e6394c702030108d05b3c3ef09f75b7004d38058856e",
+  "analysis/L_middle_late_summary.csv": "adb0fa76ecd82ba80fa69ccdc66ea8c8f1c3b761e776285a7a2e12d357229b67",
+  "analysis/packet_payload_sizes.csv": "4054eaba448b82955284df19401b75032a1bae5a8e2c6610f07f694c4dc7bd52",
+  "analysis/transfer_summary.csv": "fbfc9eb5bf022e9b76b68e89eab09a187f40dc5b19aa290ed753589c7a40c8cd",
+  "experiment.json": "275952880c0ebf8fb547fdccd5da06e27bc630534745ef9a58409ab301b9e7a8"
+}

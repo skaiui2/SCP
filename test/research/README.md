@@ -3,7 +3,8 @@
 This branch studies how gain changes cwnd and packet spreading after the next-slot
 scheduler was introduced. It runs the actual SCP C core over the shared virtual
 network. The independent Python packet model is a separate comparison source.
-New results are pending; the papers inherited from main describe earlier campaigns.
+The completed campaign's [compact results and redraw guide](../../reproduction/README.md)
+are available separately; the inherited papers describe earlier campaigns.
 
 ## Conditions
 
