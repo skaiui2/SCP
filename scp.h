@@ -56,6 +56,7 @@ struct scp_timer {
 #define SCP_PACING_SHIFT 32U
 #define SCP_GAIN_ONE_Q16 (1U << 16)
 #define SCP_GAIN_SS_Q16 90852U     /* round(2 * ln(2) * 2^16). */
+#define SCP_GAIN_CA_Q16 107998U    /* round((3 * ln(3) / 2) * 2^16). */
 #define MAX_IDLE_FAIL  3
 #define IDLE_TIMEOUT 100000
 #define MSS (MTU - sizeof(struct scp_hdr))

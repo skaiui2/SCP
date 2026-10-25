@@ -10,6 +10,14 @@ SCP requires a millisecond‑resolution clock. You only need to implement a func
 extern uint32_t scp_now_time(void);
 ```
 
+## Pacing policy
+
+Packets admitted by the congestion and receiver windows are paced with `gap = payload_bytes * RTT / (gain * cwnd)`. A batch starts at `max(next_slot, now)`; each packet receives that slot before the slot advances by its gap. The trailing slot survives an empty queue, so later packets respect the previous packet's pacing interval.
+
+AIMD uses fixed phase gains: Q16 `90852` (`2 ln 2`) in SS and Q16 `107998` (`3 ln 3 / 2`) in CA. PROB uses the CA gain throughout. The effective CA value is `107998 / 65536 = 1.647918701171875`. These gains are supplied by each controller's callback. Before an RTT sample exists, pacing uses a 1 ms fallback; regular timer service is still required.
+
+The [pacing paper](../../Pacing_and_Congestion_Window_Growth.pdf) explains the continuous models, discrete packet timing and sandwich argument behind this policy. The [test guide](../../test/README.md#model-and-execution-contract) distinguishes the Python model, actual SCP virtual-network execution and real UDP measurements.
+
 ## API Overview
 
 ### Initialization
@@ -87,8 +95,8 @@ Initiates the FIN handshake and closes the stream.
 void scp_timer_process();
 ```
 
-Processes all SCP timers, including retransmission, keepalive, and persist timers.
- Call this periodically—typically after processing incoming packets in the same thread.
+Processes all SCP timers, including pacing, retransmission, keepalive, and persist timers.
+Call it periodically in the SCP thread even when no packets arrive; processing it only after input can stall scheduled sends. A 1 ms service interval matches the pacing timer's granularity.
 
 ### Configuration Macros
 

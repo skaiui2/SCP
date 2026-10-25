@@ -2248,10 +2248,8 @@ static void scp_update_cwnd_fast(struct scp_stream *ss,
 
 static uint32_t scp_prob_pacing_gain(struct scp_stream *ss)
 {
-    uint32_t gain_q16;
-
-    gain_q16 = ((uint32_t)MSS * SCP_GAIN_ONE_Q16) / (ss->cwnd << 1);
-    return SCP_GAIN_ONE_Q16 + gain_q16;
+    (void)ss;
+    return SCP_GAIN_CA_Q16;
 }
 
 static void scp_prob_init(struct scp_stream *ss)
@@ -2306,12 +2304,9 @@ static uint32_t scp_prob_on_rtt(struct scp_stream *ss)
 
 static uint32_t scp_aimd_pacing_gain(struct scp_stream *ss)
 {
-    uint32_t gain_q16;
-
     if (ss->cwnd < ss->ssthresh)
         return SCP_GAIN_SS_Q16;
-    gain_q16 = ((uint32_t)MSS * SCP_GAIN_ONE_Q16) / (ss->cwnd << 1);
-    return SCP_GAIN_ONE_Q16 + gain_q16;
+    return SCP_GAIN_CA_Q16;
 }
 
 static void scp_aimd_init(struct scp_stream *ss)
