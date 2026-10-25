@@ -35,7 +35,7 @@ def write_csv(path, rows, fields=None):
 
 
 def representative_gains(gains):
-    targets = (1, 2*math.log(2)-.05, 2*math.log(2), 2*math.log(2)+.05, 2, 4, 8)
+    targets = (1, 1.5*math.log(3)-.05, 1.5*math.log(3), 1.5*math.log(3)+.05, 2, 4, 8)
     return sorted({min(gains, key=lambda gain: abs(gain-target)) for target in targets})
 
 
@@ -203,7 +203,7 @@ def plot_windows(curves, settings, path):
     colors = dict(zip(sorted(curves), plt.cm.turbo(np.linspace(.03, .97, len(curves)))))
     scale = settings["mss_bytes"]
     common_end = min(x[-1] for x, y in curves.values())
-    reference_gain = min(curves, key=lambda gain: abs(gain-2*math.log(2)))
+    reference_gain = min(curves, key=lambda gain: abs(gain-1.5*math.log(3)))
     reference_x, reference_y = curves[reference_gain]
     for gain, (x, y) in sorted(curves.items()):
         axes[0].step(x, y/scale, where="post", color=colors[gain], alpha=.65,

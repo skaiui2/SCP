@@ -3,15 +3,15 @@
 This branch studies how gain changes cwnd and packet spreading after the next-slot
 scheduler was introduced. It runs the actual SCP C core over the shared virtual
 network. The independent Python packet model is a separate comparison source.
-The completed campaign's [compact results and redraw guide](../../reproduction/README.md)
-are available separately; the inherited papers describe earlier campaigns.
+The historical campaign's [compact results and redraw guide](../../reproduction/README.md)
+are available separately. The [current paper](https://github.com/skaiui2/SCP/blob/main/Pacing_and_Congestion_Window_Growth.pdf) is maintained on main.
 
 ## Conditions
 
-`scp_fixed_experiment.json` is the campaign manifest. SS starts at one MSS
-and remains below its configured ssthresh; CA starts at one MSS with ssthresh
-set to one MSS. Both branches use baseline
-`e41ac8821bc3e0864a552cea89c86d075744ae9e` without a core patch.
+`scp_fixed_experiment.json` is the campaign manifest. This branch starts at one
+MSS. CA starts with ssthresh = MSS and remains in congestion avoidance. It uses baseline
+`da52bfe3690752a393f17d26f0ec60e7966db0b8` without a phase-specific core patch. Historical committed
+data used `e41ac8821bc3e0864a552cea89c86d075744ae9e`; their manifests are preserved.
 
 - Each transfer carries exactly 1 GiB = 1,073,741,824 bytes. MSS is 1430 bytes;
   only the final packet is shorter.
@@ -20,12 +20,34 @@ set to one MSS. Both branches use baseline
   actual DATA-send to ACK-processing feedback to equal 100 ms for every packet.
 - The shared virtual loop advances by 1 ms. Core reservations retain Q32.32 ms;
   the core's integer-floor send rule is preserved and audited.
-- The 22 fixed gains each run three times. They use `round(g * 65536)` and record
+- The current 22 fixed gains centre on `C = 1.5 * ln(3)`: offsets 0, ±0.005,
+  ±0.01, ±0.02, ±0.05 and ±0.10, plus wider points 0.9, 1, 1.2, 1.4, 1.5, 1.9,
+  2, 2.5, 3, 4 and 8. `critical` selects C. They each run three times.
+  They use `round(g * 65536)` and record
   both the requested gain and the effective Q16 gain. The native policy runs
   three additional transfers, separately from the fixed-gain merge.
-- Native AIMD uses Q16 `2*ln(2)` in SS and the candidate
-  `1 + MSS/(2*cwnd)` in CA. The CA expression is a continuous first-order reference,
-  not an established optimum for every packet scheduler.
+- Native AIMD uses fixed Q16 `90852` for `2*ln(2)` in SS and Q16 `107998` for
+  `(3/2)*ln(3)` in CA. PROB uses `107998` throughout. Each controller registers
+  its own gain callback. The constants are the engineering policy supported by
+  the continuous/discrete/sandwich analysis and sweeps.
+
+## Clock and packet delivery
+
+Neither the native virtual network nor the reviewed Python model jumps to the next
+event time. Native `vnet_step()` increments the clock by 1 ms, drains direction 0
+then direction 1 into the peer's input path, and processes core timers. A packet's
+50 ms propagation starts at its actual transport-send callback. The peer SCP core
+constructs the ACK, which traverses the other direction; the network never updates
+cwnd or flight itself.
+
+Python increments its clock by 1 us. The sender owns pending reservations; the
+network has separate DATA and ACK queues. Each tick processes forward arrivals,
+reverse ACKs, then the sender timer; ACK handling can itself send due packets.
+Actual sends begin the 50 ms forward propagation, and the receiver creates ACKs
+for the separate 50 ms return delay. Fractional next-slots persist, and packets
+are dispatched at their integer microsecond part. The stored 2026-10-22 Python
+comparison used the earlier per-gap truncation and event order; it is not relabelled
+as a run of this model. Native timing grids, gain and window arithmetic remain distinct.
 
 ## Review the execution path
 
@@ -39,6 +61,9 @@ set to one MSS. Both branches use baseline
 | `run_scp_fixed_feedback.py` | Build, execute, validate, freeze provenance and merge the 66 fixed-gain cases |
 | `comparison.py` | Produce observed cwnd/L tables and labelled formula comparisons |
 | `../models/pacing.py` | Independent Python sender/receiver/network model; not the native protocol execution |
+| `../models/check.py` | Independent ACK-recurrence checker for the observed model tables |
+| `../models/native_groups.py` | Complete groups derived from audited actual-SCP transport events |
+| `../models/plot.py` | Plots stored observations and source identities without running a simulation |
 
 ## Reproduce
 
@@ -53,20 +78,27 @@ python test/research/run_scp_fixed_feedback.py --build-dir research-build --gain
 python test/research/run_scp_fixed_feedback.py --merge results/fixed --out results/merged
 ```
 
-The branch workflow runs functional checks and small native preflights before
+The [branch workflow](https://github.com/skaiui2/SCP/actions/workflows/pacing-research.yml?query=branch%3Aresearch%2Fca-nextslot-q16-20261022)
+runs functional checks and small native preflights before
 the full campaign. Each gain job executes three transfers. The merge requires all
 66 cases, intact evidence and consistent source identity; deterministic repeats
 are checked rather than presented as independent random samples.
 
-Download `scp-ca-results` from the successful Actions run for the compact figures
+Download `scp-ca-results` from the chosen source-labelled Actions run for the compact figures
 and tables. Per-gain artifacts contain the compressed native logs, packet events,
 configuration, binary identity and audits. The native-policy artifact is separate.
 Artifacts expire after 14 days; after expiry, rerun the workflow or these commands.
 No raw campaign data is committed to Git or uploaded as a Release attachment.
 
-`L_fixed_RTT_all.csv` includes every observed bin. Representative dispersion plots
+For the current complete-group comparison, derive `generations.csv` or native
+group tables and inspect groups 300-600 and 900-1200 within the same transfer.
+L is the group's last actual send minus its first; also retain occupied span
+including the trailing slot and accumulated start delay. Exclude the terminal group.
+
+`L_fixed_RTT_all.csv` includes every observed bin. Historical fixed-bin dispersion plots
 exclude the final sending bin and incomplete/empty bins. A span measured in fixed
-100 ms bins is not the same quantity as a packet-generation tail limit. Python
-model output also differs in its 1 us clock, real-valued CA window, unquantized gain
-and full-MSS rounding of the requested byte count; comparisons must retain these
-labels rather than demand artificial sample-by-sample agreement.
+100 ms bins is not the same quantity as a complete packet group's actual span,
+occupied span including its retained slot, or cumulative start drift. The current
+Python model retains slot fractions. Real-valued CA, unquantized gain, the
+microsecond execution grid and full-MSS rounding still differ from native SCP;
+comparisons must retain those labels.

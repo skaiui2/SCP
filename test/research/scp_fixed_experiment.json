@@ -7,84 +7,89 @@
   "queue_delay": false,
   "gains": [
     {
+      "id": "g0p9",
+      "value": 0.9,
+      "expression": "0.9"
+    },
+    {
       "id": "g1",
       "value": 1,
       "expression": "1"
     },
     {
-      "id": "critical_minus_06",
-      "value": 1.0862943611198905,
-      "expression": "2*ln(2)-0.30"
+      "id": "g1p2",
+      "value": 1.2,
+      "expression": "1.2"
     },
     {
-      "id": "g1p1",
-      "value": 1.1,
-      "expression": "1.1"
+      "id": "g1p4",
+      "value": 1.4,
+      "expression": "1.4"
     },
     {
-      "id": "critical_minus_05",
-      "value": 1.1362943611198906,
-      "expression": "2*ln(2)-0.25"
+      "id": "g1p5",
+      "value": 1.5,
+      "expression": "1.5"
     },
     {
-      "id": "critical_minus_04",
-      "value": 1.1862943611198906,
-      "expression": "2*ln(2)-0.20"
+      "id": "critical_minus_0p1",
+      "value": 1.5479184330021645,
+      "expression": "3*ln(3)/2-0.1"
     },
     {
-      "id": "critical_minus_03",
-      "value": 1.2362943611198904,
-      "expression": "2*ln(2)-0.15"
+      "id": "critical_minus_0p05",
+      "value": 1.5979184330021645,
+      "expression": "3*ln(3)/2-0.05"
     },
     {
-      "id": "critical_minus_02",
-      "value": 1.2862943611198905,
-      "expression": "2*ln(2)-0.10"
+      "id": "critical_minus_0p02",
+      "value": 1.6279184330021645,
+      "expression": "3*ln(3)/2-0.02"
     },
     {
-      "id": "critical_minus_01",
-      "value": 1.3362943611198905,
-      "expression": "2*ln(2)-0.05"
+      "id": "critical_minus_0p01",
+      "value": 1.6379184330021646,
+      "expression": "3*ln(3)/2-0.01"
+    },
+    {
+      "id": "critical_minus_0p005",
+      "value": 1.6429184330021647,
+      "expression": "3*ln(3)/2-0.005"
     },
     {
       "id": "critical",
-      "value": 1.3862943611198906,
-      "expression": "2*ln(2)"
+      "value": 1.6479184330021646,
+      "expression": "3*ln(3)/2"
     },
     {
-      "id": "critical_plus_01",
-      "value": 1.4362943611198906,
-      "expression": "2*ln(2)+0.05"
+      "id": "critical_plus_0p005",
+      "value": 1.6529184330021645,
+      "expression": "3*ln(3)/2+0.005"
     },
     {
-      "id": "critical_plus_02",
-      "value": 1.4862943611198907,
-      "expression": "2*ln(2)+0.10"
+      "id": "critical_plus_0p01",
+      "value": 1.6579184330021646,
+      "expression": "3*ln(3)/2+0.01"
     },
     {
-      "id": "critical_plus_03",
-      "value": 1.5362943611198907,
-      "expression": "2*ln(2)+0.15"
+      "id": "critical_plus_0p02",
+      "value": 1.6679184330021646,
+      "expression": "3*ln(3)/2+0.02"
     },
     {
-      "id": "critical_plus_04",
-      "value": 1.5862943611198905,
-      "expression": "2*ln(2)+0.20"
+      "id": "critical_plus_0p05",
+      "value": 1.6979184330021646,
+      "expression": "3*ln(3)/2+0.05"
     },
     {
-      "id": "critical_plus_05",
-      "value": 1.6362943611198906,
-      "expression": "2*ln(2)+0.25"
+      "id": "critical_plus_0p1",
+      "value": 1.7479184330021647,
+      "expression": "3*ln(3)/2+0.1"
     },
     {
-      "id": "critical_plus_06",
-      "value": 1.6862943611198906,
-      "expression": "2*ln(2)+0.30"
-    },
-    {
-      "id": "g1p75",
-      "value": 1.75,
-      "expression": "1.75"
+      "id": "g1p9",
+      "value": 1.9,
+      "expression": "1.9"
     },
     {
       "id": "g2",
@@ -105,11 +110,6 @@
       "id": "g4",
       "value": 4,
       "expression": "4"
-    },
-    {
-      "id": "g6",
-      "value": 6,
-      "expression": "6"
     },
     {
       "id": "g8",
@@ -138,9 +138,10 @@
   "origin": "first_forward_data_transport_send",
   "end": "all_payload_acked",
   "dense_log_interval_ms": 1,
-  "baseline_sha": "e41ac8821bc3e0864a552cea89c86d075744ae9e",
+  "baseline_sha": "da52bfe3690752a393f17d26f0ec60e7966db0b8",
   "gain_encoding": "round(target_gain * 65536); effective_gain = gain_q16 / 65536",
   "pacing_time": "Q32.32 ms; send at integer floor",
   "empty_queue": "next_slot = max(previous_next_slot, now); reserve at next_slot, then add this packet gap",
-  "state_log_interval_ms": 1
+  "state_log_interval_ms": 1,
+  "gain_grid": "ca-critical"
 }

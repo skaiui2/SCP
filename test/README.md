@@ -47,10 +47,56 @@ case summaries -> sweep merge/report -> aggregate tables and overview
 ```
 
 - `common/transfer.c` owns the shared generated-data workload, receive validation, checksum reply, and close progression. File transfers reuse the UDP/SCP path with input/output files. Fairness runs add a timed two-flow workload; short CTest competition runs check liveness.
-- `virtual/vnet.c` owns packet delivery and link conditions, not retransmission or congestion control. Those remain in SCP. Virtual time advances in 1 ms steps: timers, A-to-B arrivals, B-to-A arrivals, then applications. The model serializes packets before propagation and applies seeded random loss to DATA and control traffic in both directions; it has no finite queue, duplication, or deliberate reordering model.
+- `virtual/vnet.c` owns packet delivery and link conditions, not retransmission or congestion control. Those remain in SCP. Each `vnet_step()` increments the clock by 1 ms, drains A-to-B arrivals, drains B-to-A arrivals, then processes core timers; the caller subsequently steps the applications. The optional rate model serializes packets before propagation and applies seeded random loss to DATA and control traffic in both directions; it has no finite queue, duplication, or deliberate reordering model. Setting the rate to zero disables serialization.
 - `common/udp_runner.c` and `common/real_clock.c` provide real sockets and time. `run.py` starts the receiver before the sender, checks endpoint results, and organizes logs, file hashes, and plots. Localhost tests exercise OS networking but impose no WAN link constraints.
 - Focused virtual cases exercise lifecycle, allocation failure, control-packet loss, and closure. Bulk transfers and sweeps reuse the shared workload rather than separate transfer implementations.
 - `virtual/sweep.py` reads the single `network_sweep.json` grid, runs cases with explicit configurations and seeds, and merges results. GitHub distributes the grid across eight shards. Each case and connection retains its own core-state plots; the aggregate overview supplements them.
+
+### Model and execution contract
+
+The research workflow is idea → mathematical algorithm model → reviewed Python simulation → actual SCP execution. Both implementations retain the pacer's next available slot: start a batch at `max(next_slot, now)`, assign a packet's time, then advance the slot by that packet's gap. Empty queues retain the trailing interval. The reference is [Linux v6.12 `tcp_output.c`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/net/ipv4/tcp_output.c#L1246-L1265), together with the [timestamp assignment](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/net/ipv4/tcp_output.c#L1302-L1304). SCP takes this next-slot principle; it does not reproduce Linux's initial-segment exemption, jitter compensation, socket, qdisc or offload path.
+
+Both clocks advance one tick at a time, including idle ticks. Neither virtual network jumps to the earliest event. Network arrival is based on the actual send time plus the direction's delay; an overdue reservation is not treated as an earlier actual send. In the fixed-feedback campaigns, each direction is 50 ms with zero loss and no serialization, and every DATA-to-ACK feedback is checked as 100 ms.
+
+| Detail | Reviewed Python model | SCP plus shared virtual network |
+|---|---|---|
+| Clock | 1 µs ticks | 1 ms ticks |
+| Queues | Sender holds pending reservations; network has a DATA queue and an ACK queue | Pending pacing is in the core; two FIFO queues contain packets actually sent in each direction |
+| Same-tick order | Forward arrivals, reverse ACKs, then due sends; each ACK may itself send due packets | Drain forward arrivals, reverse arrivals and then core timers; ACK handling can itself send due packets |
+| Pacing arithmetic | Retain fractional slots; dispatch at their integer µs part; unquantized gain | Q32.32 ms accumulated slots, Q16 gain; due-send check uses the integer part |
+| CA window | Real-valued `w += 1/w` | Integer bytes: `max(1, floor(MSS * acked / cwnd))` |
+| Payload | Full MSS packets, rounding the request up | Exact requested bytes, possibly a short last packet |
+
+These are explicit differences. The old Python script floored each gap, which could erase SS spacing; the rebuilt model fixes that arithmetic mismatch. Integer CA still discards fractional growth at each ACK. Formula evaluation remains a mathematical reference, not clock-driven Python or native execution. Complete descendant groups have separate actual span, occupied span including the retained slot, and start drift. Exclude terminal groups from summaries; do not equate fixed-bin span with absence of drift.
+
+The [packet model](models/pacing.py) and [independent checker](models/check.py) make the continuous model → discrete algorithm → sandwich argument → Python comparison reviewable. The engineering CA gain is the fixed constant `C = 1.5 * ln(3)`; SS uses `2 * ln(2)`. SCP supplies their Q16 approximations through the controller callbacks: AIMD uses SS/CA values `90852`/`107998`, while PROB always uses the CA value. A small trace can be inspected before the 22-gain, three-repeat scan:
+
+```sh
+python3 test/models/pacing.py --mode ca --gain 1.6479184330021646 --bytes 100100 --repeats 3 --trace --out results/small
+python3 test/models/check.py --runs results/small --out results/small-check
+python3 test/models/pacing.py --mode ss --out results/python-ss
+python3 test/models/pacing.py --mode ca --out results/python-ca
+python3 test/models/check.py --runs results/python-ss --out results/ss-check
+python3 test/models/check.py --runs results/python-ca --out results/ca-check
+```
+
+For the CA sweep centred on `C = 1.5 * ln(3)`:
+
+```sh
+python3 test/models/pacing.py --mode ca --gain-grid ca-critical --out results/python-ca-critical
+python3 test/models/check.py --runs results/python-ca-critical --out results/ca-critical-check
+python3 test/models/plot.py --python-root results/python-ca-critical --out results/ca-critical-figures
+```
+
+This grid has 22 fixed gains and three repeats per gain: it adds `C ± 0.005`, `±0.01`, `±0.02`, `±0.05` and `±0.10`, with wider points from 0.9 to 8. Compare complete groups 300–600 and 900–1200 within each 1 GiB run. The compact [CA sweep table](https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-critical-sweep.csv) and [figure](https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-sweep.pdf) retain the plotted measurements without bundling raw logs.
+
+The same batch also provides [cwnd and gain comparisons](https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-cwnd.pdf) and [within-run span and start-delay trajectories](https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-trajectories.pdf). The [new native control table](https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-native-constant.csv) records the actual SCP result separately: 88 ms late-group span under the same 100 ms feedback, versus the real-window Python model's 99.569 ms.
+
+Default input is a 1 GiB request rounded up to full MSS packets. `--policy` runs the current phase policy with unquantized model gains. The checker evaluates the ACK-index recurrence without importing the network loop; it checks every repetition and exports both clock-matched and continuous-time references. The earlier `1 + 1/(2w)` formula remains a continuous reference in the paper and discussion notes; earlier policy results identify that adaptive formula explicitly.
+
+For dispersion, use `generations.csv`: each row follows the packets released by the preceding group's ACKs. Report `span_ms` (actual last send minus first send), `occupancy_ms` (including the retained tail slot), and `start_drift_ms` together. Select complete middle and late groups from the same transfer, exclude the terminal group, and state the selected range. Fixed 100 ms bins are useful for cwnd sampling but cannot test whether a descendant group spans or delays an RTT. Three repeats of this deterministic loss-free model check repeatability; they do not create random confidence intervals. Around the CA gain, sweeps show near-RTT spans below and at the chosen constant, and shorter spans above it. Record the measured values rather than forcing them to exactly 100 ms.
+
+Actual SCP execution remains on the phase-specific [SS](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) and [CA](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) branches. [native_groups.py](models/native_groups.py) reads their audited transport events, attributes children to actual returning ACKs and labels reconstructed tail-slot fields. [plot.py](models/plot.py) consumes these tables and observed windows; it runs no simulation. Large raw results stay outside Git or in Actions artifacts. Completed earlier campaigns retain their source revision and policy label; fixed-gain scans remain comparable, while older CA controller-policy runs used the adaptive reference. The [discussion record](../papers/drafts/Pacing_Research_Discussion_Draft.md) records the failed connections, corrections and current limits.
 
 ### Environment and pass criteria
 
@@ -179,8 +225,8 @@ propagation, no loss. FIFO serialization precedes propagation. Random loss appli
 to both control and DATA packets after serialization; retransmissions use the core.
 There is no finite queue, duplication or deliberate reordering model.
 
-Virtual time advances in milliseconds. Each step processes timers, A-to-B arrivals,
-B-to-A arrivals, then applications. State curves use the core JSON logs.
+Clock and queue ordering follow the [model and execution contract](#model-and-execution-contract).
+State curves use the core JSON logs.
 `summary.json` records configuration, checksums and success.
 
 ## Parameter sweeps and reports

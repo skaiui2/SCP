@@ -146,30 +146,30 @@ static void test_pacing_gain(void)
     assert(scp_pacing_time(&ss, MSS) == UINT64_C(309817039400));
 
     ss.ssthresh = MSS;
-    assert(ss.cc_pacing_gain(&ss) == 98304U);
+    assert(ss.cc_pacing_gain(&ss) == SCP_GAIN_CA_Q16);
     gap = scp_pacing_time(&ss, MSS);
-    assert(gap == UINT64_C(286331153000));
+    assert(gap == UINT64_C(260629804900));
     assert(gap % ms != 0);
     ss.ssthresh = 4 * MSS;
     ss.cwnd = 3 * MSS;
     assert(ss.cc_pacing_gain(&ss) == 90852U);
     ss.cwnd = ss.ssthresh;
-    assert(ss.cc_pacing_gain(&ss) == 73728U);
+    assert(ss.cc_pacing_gain(&ss) == SCP_GAIN_CA_Q16);
     ss.cwnd = 10 * MSS;
-    assert(ss.cc_pacing_gain(&ss) == 68812U);
-    assert(scp_pacing_time(&ss, MSS) == UINT64_C(40904925980));
+    assert(ss.cc_pacing_gain(&ss) == SCP_GAIN_CA_Q16);
+    assert(scp_pacing_time(&ss, MSS) == UINT64_C(26062980490));
 
     assert(!scp_install_cc(&ss, SCP_CC_PROB));
     assert(ss.cc_pacing_gain == scp_prob_pacing_gain);
     ss.srtt = 100;
     ss.cwnd = MSS;
-    assert(ss.cc_pacing_gain(&ss) == 98304U);
+    assert(ss.cc_pacing_gain(&ss) == SCP_GAIN_CA_Q16);
     ss.ssthresh = 100 * MSS;
-    assert(ss.cc_pacing_gain(&ss) == 98304U);
-    assert(scp_pacing_time(&ss, MSS) == UINT64_C(286331153000));
+    assert(ss.cc_pacing_gain(&ss) == SCP_GAIN_CA_Q16);
+    assert(scp_pacing_time(&ss, MSS) == UINT64_C(260629804900));
     ss.cwnd = 10 * MSS;
-    assert(ss.cc_pacing_gain(&ss) == 68812U);
-    assert(scp_pacing_time(&ss, MSS) == UINT64_C(40904925980));
+    assert(ss.cc_pacing_gain(&ss) == SCP_GAIN_CA_Q16);
+    assert(scp_pacing_time(&ss, MSS) == UINT64_C(26062980490));
 }
 
 int main(void)
