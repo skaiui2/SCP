@@ -1,0 +1,4 @@
+repeat,requested_bytes,feedback_min_ms,feedback_max_ms,data_packets,checksum,retrans_packets,dropped,mode,gain_policy,observed_gain_q16,effective_gain,elapsed_RTTs,final_cwnd_bytes,last_full_cwnd_bytes,integer_update_error_bytes
+1,1073741824,100,100,750869,7a4bb4de42097f8a,0,0,always_congestion_avoidance,native_aimd,107998,1.647918701171875,1339.38,1476948,1476947,0
+2,1073741824,100,100,750869,7a4bb4de42097f8a,0,0,always_congestion_avoidance,native_aimd,107998,1.647918701171875,1339.38,1476948,1476947,0
+3,1073741824,100,100,750869,7a4bb4de42097f8a,0,0,always_congestion_avoidance,native_aimd,107998,1.647918701171875,1339.38,1476948,1476947,0

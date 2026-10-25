@@ -17,14 +17,26 @@ SCP 不依赖内核 TCP 栈，自行实现序号、ACK/SACK、重传、流量控
 
 概率驱动控制器的理论见：[SCP-PROB：概率驱动的非线性拥塞控制](../../SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf)。
 
-Pacing 研究见：[Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](../../Pacing_and_Congestion_Window_Growth.pdf)。论文研究发送调度怎样改变慢启动与拥塞避免阶段的窗口增长和数据包分散，将明确的包级模型与 SCP 的 C 实现在固定 100 ms 反馈、无丢包虚拟网络中的两批独立实验结合起来，并分析整数窗口更新的影响。在 Overleaf 中使用时，上传 [papers/pacing/](../../papers/pacing/) 目录及其中的 `figures/`，使用 pdfLaTeX 编译 `Pacing_and_Congestion_Window_Growth.tex`。
+Pacing 研究见：[Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](../../Pacing_and_Congestion_Window_Growth.pdf)。研究起于作者给 SCP 加入 pacing 后观察到传输变慢，问题是：怎样选择系数，既保留窗口增长，又把同组数据包尽量铺开到一个 RTT？论文沿作者的思路，从连续窗口增长进入离散包模型，再用相邻窗口夹住逐包间隔。追踪最后一个包及整数窗口门槛处出生的额外包，分别得到 SS 的 `2 ln 2` 和 CA 的 `3 ln 3 / 2` 尺度。
+
+当前 SCP 采用固定阶段系数：AIMD 在 SS 使用 `2 ln 2`，在 CA 使用 `3 ln 3 / 2`；PROB 全程使用 CA 系数。CA 的选择由出生点跨轮积分与扫参实验共同支持：这个系数附近，中后期完整包组的首尾跨度接近一个 RTT；继续增大系数，跨度缩短。较低系数也可能通过推迟后续包组保持接近 RTT 的跨度，因此实验同时记录跨度与组首延迟。连续参考式 `1 + MSS/(2*cwnd)` 及转向固定系数的原因仍保留在研究过程里。新的三次 1 GiB 对照中，在相同的 100 ms 完整反馈条件下，Python 后段完整包组跨度为 99.569 ms，实际 SCP 为 88 ms；所选范围内两者组首累计延迟均为零。论文及[精简观察表](../../papers/pacing/data/ca-native-constant.csv)保留了这项实现差异。
+
+在 Overleaf 中使用时，上传 [papers/pacing/](../../papers/pacing/) 目录及其中的 `figures/`，使用 pdfLaTeX 编译 `Pacing_and_Congestion_Window_Growth.tex`。
 
 | 研究 | 复现代码与步骤 | Actions 数据 |
 |---|---|---|
-| 慢启动 | [冻结研究分支](https://github.com/skaiui2/SCP/tree/research/slowstart-g-100ms-20261012/reproduction) | [运行 38893710287](https://github.com/skaiui2/SCP/actions/runs/38893710287) |
-| 拥塞避免 | [CA 指南与论文绘图脚本](https://github.com/skaiui2/SCP/tree/research/ca-g-100ms-20261018/reproduction/ca) | [已通过运行 39122340171](https://github.com/skaiui2/SCP/actions/runs/39122340171) |
+| 慢启动 | [Next-slot SS 复现指南](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) | [已通过运行 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304) |
+| 拥塞避免 | [Next-slot CA 复现指南](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [已通过重跑 40084981319](https://github.com/skaiui2/SCP/actions/runs/40084981319) |
 
-数据从 Actions 附件下载；历史慢启动 Release 归档已删除。附件过期后，按指南从源码重新运行。各研究分支保留自己的复现材料，主分支提供共同论文与入口。
+大日志从 Actions 附件下载；附件过期后按指南重跑。各研究分支只保留自己的小型复现材料，论文由主分支统一维护。表中已完成运行是此前的 next-slot 实验：固定 gain 扫描仍可比较，CA 控制器策略项使用的是早期动态公式；每批结果按源码版本与 gain 策略标注。上述 next-slot 分支替代旧空队列重置实验。
+
+研究流程固定为 idea → 数学算法模型 → 可审核的 Python 模拟 → 实际 SCP 核心验证。当前调度参考 Linux 的 next-slot 思路：每批从 `max(next_slot, now)` 开始，先给包分配时刻，再按该包间隔推进持久的下一可用时刻。两层的时钟、队列和数值差异见[模型与执行约定](../../test/README.md#model-and-execution-contract)。
+
+[重建后的 Python 模型](../../test/models/pacing.py)已保留预约小数，旧逐 gap 截断的错误与修正留在讨论草稿；输出由[独立 ACK 序号求值器](../../test/models/check.py)核对。SCP 的 CA 仍按整数字节增窗，逐 ACK 丢掉小数余量；较快的流先跨过整数增量门槛，产生窗口差值图的锯齿。同 ACK 数与同时间应分别比较，完整包组跨度、保留尾槽与组首漂移也应分别阅读。100 ms 固定箱里的 99 ms 跨度不能证明完美 pacing。
+
+[研究讨论草稿](../../papers/drafts/Pacing_Research_Discussion_Draft.md)和[中英双语 IETF 方向草稿](../../papers/drafts/IETF_Pacing_Draft.md)保存两篇正式论文背后的问题、初步模型、纠正与实现决策。早期动态 CA 公式也作为这段研究过程的一部分保留。
+
+建议按连续模型 → 离散模型 → 三明治 → Python 扫参 → SCP 执行阅读。SS、CA 的连续窗口公式给出增长尺度；包与 ACK 的时序解释单轮服务预算和实际首尾跨度的区别。论文将简洁推导与实验对照放在一起，保留读者能够复现的研究路径。
 
 ## 特性
 
@@ -53,6 +65,7 @@ test/analyze_scp.py / fig.py    原状态日志分析器与论文绘图脚本
 .github/workflows/             Linux 传输与虚拟网络 CI
 setup_scp_netns.sh             Linux 网络命名空间拓扑
 papers/pacing/                 pacing 论文源码
+papers/drafts/                 研究讨论与 IETF 方向草稿
 docs/                          使用文档
 ```
 
@@ -97,10 +110,12 @@ pacing 不替代拥塞窗口：
 
 1. `cwnd` 和对端窗口决定允许进入网络的数据量；
 2. 发送端根据当前 RTT 和拥塞窗口计算逐包间隔；
-3. 按递增方式为数据包分配计划发送时间；
-4. 1 ms pacing 定时器发送所有已经到期的数据包。
+3. 每批从 `max(next_slot, now)` 开始，先分配时间，再按该包间隔推进下一可用时刻；队列清空后仍保留尾间隔；
+4. ACK 触发的 output 与 1 ms pacing 定时器，发送预约时间整数毫秒部分已经到期的数据包。
 
 当计算间隔小于 1 ms，或者用户态进程唤醒较晚时，同一个 tick 可以释放多个包。pacing 集成测试测量的是真实 transport `send` 回调时刻，不是数据经过 qdisc 后的物理链路离开时刻。
+
+各控制器通过各自注册的回调提供 gain。AIMD 在 SS 使用 `2 ln 2` 对应的 Q16 值 `90852`，在 CA 使用 `3 ln 3 / 2` 对应的 Q16 值 `107998`；PROB 全程使用 `107998`。CA 的实际系数为 `107998 / 65536 = 1.647918701171875`。预约小数持续累积，实际执行按预约时间的整数部分检查到期。
 
 ### Pacing 讨论记录
 
@@ -124,7 +139,7 @@ python3 test/run.py test/build/scp_udp --out test/results/udp-1g
 
 ### 当前测试体系
 
-- **功能与完整性检查：**CTest 注册了 12 项检查，覆盖连接生命周期、控制包丢失、分配失败、关闭、生成数据与文件传输、PROB/AIMD 运行、pacing 观测和双流冒烟检查。
+- **功能与完整性检查：**CTest 注册了 15 项检查，覆盖连接生命周期、控制包丢失、分配失败、关闭、生成数据与文件传输、PROB/AIMD 运行、pacing 观测和双流冒烟检查。
 - **共用传输逻辑：**真实 UDP 与虚拟网络使用同一套传输实现。生成数据逐字节校验并核对流校验和；文件传输额外核对长度与 SHA-256。双方都必须完成关闭。
 - **Linux 与虚拟传输：**GitHub Actions 运行 CTest、1 GiB 虚拟传输及 Linux localhost UDP 上的 1 GiB 文件传输。localhost 未施加 WAN 带宽或延迟限制；Linux 网络命名空间提供另一套受控网络环境。
 - **网络场景扫描：**默认 CI 执行 150 组虚拟测试：三种 100 Mbps 场景，基础 RTT 分别为 10、50、200 ms，十档 0% 至 5% 的独立随机丢包、五个种子，每组 64 MiB。手动选择 `scenarios-1g` 可运行 36 组 1 GiB 测试。这些是配置出的仿真条件；简化 Wi-Fi 场景不模拟竞争与链路层重试。
@@ -222,7 +237,7 @@ SCP 仍处于实验阶段：API 与线格式可能变化，不兼容 TCP，核�
 - **协议代码：**`scp.c` 和 `scp.h` 基本由作者编写，AI 辅助审核和检查错误，也参与了 pacing 机制的辅助工作。
 - **测试与绘图：**测试代码基本由 AI 生成，包括大文件传输等测试，作者检查其合法性与适用性；画图脚本也由 AI 生成。
 - **SCP-PROB 论文与控制设计：**概率驱动设计、残差算法以及本项目中的 AIMD 控制环设计由作者完成，这不表示作者发明了 AIMD 本身。AI 提供论文翻译、编写帮助，并辅助检查了部分数学论证，例如贝叶斯推导与公平性分析；这些辅助检查不等于相关结论已获证明。
-- **Pacing 研究：**作者提出了三明治比较模型，以及 pacing 系数很大时趋近于 burst、过小时会拖慢窗口增长的思路。作者进一步提出研究是否存在一个系数，既不拖慢窗口增长，也不让数据包发送越来越集中。这是分析的出发点，不是对所有 pacer 都成立的普遍保证。
+- **Pacing 研究：**作者提出了三明治比较模型、沿尾包及其 ACK 释放的新包追踪的方法，以及 pacing 系数很大时趋近于 burst、过小时会拖慢窗口增长的思路。作者进一步提出研究是否存在一个系数，既不拖慢窗口增长，也不让发送越来越集中。这些问题和构造推动了分析；后来的完整数学表达，不表示作者起初已经知道所有答案。
 - **后续建模与推导：**采用微分方程分析、把模型表示为速率等方法，以及上述作者思路之外的其他扩展分析，由 GPT 6 ASTRA 提出。由于生成内容较多，作者尚未逐项独立验证这些分析与推导。请读者仔细判断其假设、证明和适用范围，包括 pacing 论文中的相关内容；AI 的检查不能代替作者验证或独立审查。
 
 本 README 使用 AI 辅助编辑。报告的实验测量来自运行日志和文件完整性检查，而不是 AI 生成的断言。代码审查、实验证据与数学结论的验证是不同的工作，不能相互替代。

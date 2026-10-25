@@ -1,0 +1,41 @@
+{
+  "engine": "actual_scp_core_plus_virtual_network",
+  "binary_sha256": "af9ba7e5a274f93b1b7a5d6608928a0d5d6ebe2548762f1d06b678a8f540794e",
+  "source_files_sha256": {
+    "lib/src/hashmap.c": "03c8ad05bfa891de2daeeeebfca758c0ba05a6cfcb48c434504e93d0c4b7e68c",
+    "lib/src/link_list.c": "c052e8279e5525c86ea4d99657b0dd6a484a50810b92ae1b72c060c924825afd",
+    "lib/src/queue.c": "be7eb57e09da2200d289a0d1264706a3d60c1c45fd7d0a16a378ab97e6161fe3",
+    "lib/src/rbtree.c": "11c9ee102b7133425273eda893d5fd74428232bc58f12fb86c62ac24989e9526",
+    "scp.c": "f6b97a3475cb65d1153c19b67fd3bce85ccc5f668c7fe330f1082df8e61faeb9",
+    "scp.h": "da0363eddf352c6940117d9114ad1942aba0719764c73582849e3933cc3fe226",
+    "test/common/transfer.c": "53a8f743ebaa09febc406d3ebf6d75c529a6de7fb9b4e0d6a68d5ba133ca9384",
+    "test/research/observe.c": "a7676374ec35f1ab002d9aa9838f85509bb9db92bd581be82b37dd9fb81f3a6d",
+    "test/research/target.cmake": "3cfc53640eb2dffb1cf2101f2a55c8612d66ac10372637c34089a6626a7b1b46",
+    "test/research/transfer_main.c": "61677518d1d38e7ad2a3fc0eff82f45b9c4cd72743d6d239700ebdd971af097f",
+    "test/virtual/vnet.c": "fe65a7f9d39b0a2992422830cc56e3ba27406093269f700e77cc9209b9eb5f61"
+  },
+  "source_identity_sha256": "50eaa66fc4747b36fdb176ddab63f03ed4be4dd4299ef32ce02cc734da51fe3d",
+  "source_diff_sha256": "ef2d97d0efe2a1ccfc07ac751d09ce6395fe83e60652e896830e59d5703771b0",
+  "registered_gain_q16": 107998,
+  "registered_gain_effective": 1.647918701171875,
+  "read_only_analysis_sha256": {
+    "test/research/audit.py": "efab2654ebed09a1340231d2ae9b66db6000f45e8e481cc245a387cf2882e887",
+    "test/research/run_scp_fixed_feedback.py": "d056fcdc086be6cbcbec5a2502ac9b680e71da8e78801b720f3a1cf693871c17"
+  },
+  "run_date": "2026-10-25",
+  "source_state": "Local research worktree based on d53c6d5fb6612220d16289558a560da7d2c2b615 with the recorded source diff; the compiled core/network/transfer hashes match this change.",
+  "repeats": 3,
+  "requested_bytes": 1073741824,
+  "rtt_ms": 100,
+  "loss_ppm": 0,
+  "tick_ms": 1,
+  "payload": "Full MSS except final 584 bytes",
+  "all_runs_complete": true,
+  "all_packet_paths_audited": true,
+  "deterministic_raw_log_hashes_identical": true,
+  "complete_groups_per_run": 1338,
+  "group_start_rule_errors": 0,
+  "unattributed_packets": 0,
+  "raw_logs": "Not stored in Git; rerun the CA research branch native policy or download its Actions artifact.",
+  "source_hash_convention": "Raw files passed to the compiler; shared Git source comparison normalizes checkout CRLF/LF only."
+}

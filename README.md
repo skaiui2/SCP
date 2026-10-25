@@ -17,14 +17,26 @@ The current implementation also includes a sender-side pacing layer. Packets adm
 
 The probability-driven controller is described in [SCP-PROB: Probability-Driven Nonlinear Congestion Control](./SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf).
 
-The pacing study, [Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](./Pacing_and_Congestion_Window_Growth.pdf), examines how scheduling changes window growth and packet spreading in slow start and congestion avoidance. It compares mathematical predictions, an independent Python packet model, and the actual SCP C core at fixed 100 ms feedback and zero loss. The current campaigns use retained next-slot scheduling and Q16 controller gains: each phase has 22 fixed gains × three repetitions, plus three native-policy transfers, all at 1 GiB. The CA study also measures integer-byte window updates; its adaptive gain is a continuous-model candidate, not a proved discrete optimum. For Overleaf, upload [papers/pacing/](./papers/pacing/), including `figures/`, and compile `Pacing_and_Congestion_Window_Growth.tex` with pdfLaTeX.
+The pacing study, [Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](./Pacing_and_Congestion_Window_Growth.pdf), began with slower transfers after the author added pacing to SCP. Its question is practical: which gain preserves window growth while spreading a group's packets across an RTT? The paper follows the author's route from continuous window growth to discrete packets, then sandwiches the packet gaps between neighbouring window values. Following the final packet and the extra packet born at an integer-window crossing explains the SS scale `2 ln 2` and the CA scale `3 ln 3 / 2`.
+
+SCP now uses these fixed phase gains: AIMD uses `2 ln 2` in SS and `3 ln 3 / 2` in CA; PROB uses the CA gain throughout. The CA choice is supported by the birth-front integral and parameter sweeps: around this value, middle and late complete packet groups span approximately one RTT; larger gains shorten the span. Lower gains can keep the span near an RTT by delaying later groups, so span and group-start delay are recorded together. The paper preserves the continuous reference `1 + MSS/(2*cwnd)` and explains why the packet implementation moved to a constant. In the new three-repeat 1 GiB control, the Python model spans 99.569 ms in late complete groups, while actual SCP spans 88 ms under the same 100 ms feedback setting; both have zero accumulated group-start delay in the selected range. The paper records this implementation difference and the [compact observations](papers/pacing/data/ca-native-constant.csv).
+
+For Overleaf, upload [papers/pacing/](./papers/pacing/), including `figures/`, and compile `Pacing_and_Congestion_Window_Growth.tex` with pdfLaTeX.
 
 | Research | Reproduction code and steps | Actions data |
 |---|---|---|
 | Slow start | [Next-slot SS guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) | [Successful run 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304) |
-| Congestion avoidance | [Next-slot CA guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [Successful run 39697576064](https://github.com/skaiui2/SCP/actions/runs/39697576064) |
+| Congestion avoidance | [Next-slot CA guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [Successful rebuild run 40084981319](https://github.com/skaiui2/SCP/actions/runs/40084981319) |
 
-Each research branch keeps only its own compact plotting tables and reproduction scripts. Download large logs from Actions artifacts; if they have expired, follow the rerun steps. This branch contains the common paper and these entry points. Earlier research branches remain frozen as historical experiments; their different scheduling rules should not be mixed with the current results.
+Each research branch keeps only its own compact plotting tables and reproduction scripts. Download large logs from Actions artifacts; if they have expired, follow the rerun steps. This branch maintains the common paper. The linked completed runs record the earlier next-slot campaigns: their fixed-gain scans remain useful, while CA controller-policy entries used the earlier adaptive formula. Results identify their source revision and gain policy. The next-slot branches above replace the retired empty-queue-reset campaigns.
+
+Research proceeds from an idea to a mathematical algorithm model, a reviewed Python simulation, and actual SCP execution. The current scheduler follows Linux's next-slot approach: retain the next available time, start a batch at `max(next_slot, now)`, assign a packet's time, then advance the slot by that packet's interval. See the [model and execution contract](test/README.md#model-and-execution-contract) for the clock, queue and numeric differences between the two implementations.
+
+The [rebuilt Python model](test/models/pacing.py) retains fractional reservations; the earlier per-gap truncation mismatch is recorded in the discussion notes. Its outputs are checked by an [independent ACK-index evaluator](test/models/check.py). SCP still uses integer-byte CA increments, which discard fractional growth and explain the sawtooth in gain-dependent cwnd differences. Compare matching ACK counts and matching elapsed times separately. Complete-group span, the retained trailing slot and group-start delay must also be read separately; a 99 ms span inside a 100 ms fixed bin cannot establish perfect pacing.
+
+The [research discussion notes](papers/drafts/Pacing_Research_Discussion_Draft.md) and [bilingual IETF-oriented draft](papers/drafts/IETF_Pacing_Draft.md) preserve the questions, intermediate models, corrections and implementation decisions behind the two formal papers. The discussion notes also retain the earlier adaptive CA formula as part of that research history.
+
+The reading order is continuous models → discrete models → sandwich arguments → Python sweeps → SCP execution. Continuous SS and CA window formulas provide the scale; packet and ACK timing explain the difference between a local service budget and a group's actual first-to-last span. Compact derivations and the experimental comparisons stay together in the paper.
 
 ## Features
 
@@ -53,6 +65,7 @@ test/analyze_scp.py / fig.py    original state-log analyzer and publication figu
 .github/workflows/             Linux transfers and virtual-network CI
 setup_scp_netns.sh             Linux network-namespace topology
 papers/pacing/                 pacing manuscript source
+papers/drafts/                 working research notes and IETF-oriented draft
 docs/                          user documentation
 ```
 
@@ -97,10 +110,12 @@ The pacing layer does not replace the congestion window:
 
 1. `cwnd` and the peer window determine how much data may enter the network.
 2. The sender derives a per-packet interval from the current RTT and congestion window.
-3. Packets receive increasing scheduled timestamps.
-4. A 1 ms pacing timer sends every packet whose scheduled time has arrived.
+3. Each batch starts at `max(next_slot, now)`. Each packet receives that time, then advances the persistent next slot by its own interval, including after the queue drains.
+4. ACK-triggered output and the 1 ms pacing timer release packets whose scheduled integer-millisecond part is due.
 
 Multiple packets may be released in one timer tick when their calculated interval is below 1 ms or when the process wakes up late. The pacing integration test measures calls to the real transport `send` callback; it does not claim to measure physical wire-departure time after qdisc.
+
+Each controller supplies its gain through its registered callback. AIMD uses Q16 `90852` for `2 ln 2` in SS and Q16 `107998` for `3 ln 3 / 2` in CA. PROB uses Q16 `107998` throughout. The effective CA gain is `107998 / 65536 = 1.647918701171875`. Fractional reservation times persist even though execution checks their integer part.
 
 ### Pacing discussion notes
 
@@ -124,7 +139,7 @@ The default standalone transfer is 1 GiB. See [test instructions](test/README.md
 
 ### Current test system
 
-- **Functional and integrity checks:** CTest registers 12 checks covering connection lifecycle, control-packet loss, allocation failure, closure, generated-data and file transfers, PROB/AIMD operation, pacing observations, and two-flow smoke checks.
+- **Functional and integrity checks:** CTest registers 15 checks covering connection lifecycle, control-packet loss, allocation failure, closure, generated-data and file transfers, PROB/AIMD operation, pacing observations, and two-flow smoke checks.
 - **Shared transfer logic:** real UDP and virtual-network runs use the same transfer implementation. Generated data is checked byte by byte and by stream checksum; file runs additionally compare file lengths and SHA-256 hashes. Both endpoints must complete closure.
 - **Linux and virtual transfers:** GitHub Actions runs CTest, a 1 GiB virtual transfer, and a 1 GiB file transfer over Linux localhost UDP. The localhost run has no imposed WAN bandwidth or delay; Linux namespaces provide a separate controlled-network setup.
 - **Network scenarios:** the default CI sweep runs 150 virtual cases: three 100 Mbps scenarios with base RTTs of 10, 50, and 200 ms, ten independent packet-loss rates from 0% to 5%, five seeds, and 64 MiB per run. Manual `scenarios-1g` runs 36 cases at 1 GiB. These are configured simulations; the simplified Wi-Fi case does not model contention or link-layer retries.
@@ -226,7 +241,7 @@ The author, **Skai Uijing**, describes the division of work as follows:
 - **Protocol code:** `scp.c` and `scp.h` were written primarily by the author. AI assisted with review and error checking, and with work on the pacing mechanism.
 - **Tests and plotting:** most test code, including large-file transfer tests, was generated by AI and checked by the author for validity and suitability. The plotting scripts were also generated by AI.
 - **SCP-PROB paper and control design:** the probability-driven design, residual algorithm, and the project's AIMD control-loop design are the author's work. This does not claim invention of AIMD itself. AI assisted with translation and writing, and with checking parts of the mathematical arguments, including Bayesian reasoning and fairness. Such assistance does not establish those claims as proved.
-- **Pacing research:** the author proposed the sandwich comparison and the idea that very large pacing gain approaches burst sending, whereas too little gain slows window growth. The author also proposed investigating a gain that preserves window growth without increasingly concentrating packet transmissions. This is the motivation for the analysis, not a general guarantee for every pacer.
+- **Pacing research:** the author proposed the sandwich comparison, the method of following the final packet and the packets permitted by its ACK, and the idea that very large pacing gain approaches burst sending, whereas too little gain slows window growth. The author also proposed investigating a gain that preserves window growth without increasingly concentrating packet transmissions. These questions and constructions guide the analysis; their later mathematical formalization does not imply that the complete answer was known at the outset.
 - **Further modeling and derivations:** GPT 6 ASTRA proposed the differential-equation analysis, rate-based modeling, and other extended analyses beyond the author's ideas described above. Because of the volume of generated material, the author has not yet independently verified all of these analyses and their derivations. Readers should critically assess their assumptions, proofs, and applicability, including those in the pacing manuscript. AI checking is not a substitute for the author's verification or independent review.
 
 This README was edited with AI assistance. Reported experimental measurements come from runtime logs and file-integrity checks, not from AI-generated assertions. Code review, experimental evidence, and verification of mathematical claims are separate activities; none should be inferred from another.

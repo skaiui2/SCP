@@ -18,7 +18,26 @@
 \email{skaiuijing@gmail.com}
 \begin{document}
 \begin{abstract}
-Pacing changes when new congestion-window credit becomes a transmission and, consequently, when it produces an ACK. Motivated by slower startup in SCP, we express slow-start growth through actual transmissions, construct Fibonacci and immediate-send comparisons, and solve a packet scheduler with immutable reservations. Its asymptotic window multiplier is $\min(e^{g/2},2)$, with a transition at $g=2\ln2$. Two campaigns execute the actual SCP C core over a loss-free, fixed-100-ms-feedback virtual network: each has 66 fixed-gain transfers and three native-policy transfers. Eight low slow-start gains match the predicted late multiplier within 0.003\%. Retained next-slot scheduling brings packet-group spans close to the ideal model, while execution precision still changes finite trajectories. In congestion avoidance, integer-byte updates produce a 15.719\% full-packet window deficit against the real-valued ACK recurrence. We separate these native observations from an independent Python model and from mathematical predictions, and distinguish window growth, ACK-indexed growth, and transmission dispersion.
+Adding pacing to SCP raised two questions: how does gain affect window
+growth, and how far apart are a feedback generation's first and last
+packets? We develop the answer from continuous window models to a
+whole-packet next-slot scheduler, following a packet, its returning ACK
+and the last new packet that ACK permits. The author's integral-sandwich
+construction connects the layers. In slow start, summing discrete gaps
+gives limiting span $2\ln2/g$ and window multiplier $\min(e^{g/2},2)$.
+In congestion avoidance, ordinary replacements preserve ACK phase while
+extra whole-packet credit moves through a group. A quadratic ACK-count
+law gives a birth-front advance of $3/2$ positions per growing group and
+a size cycle $q\to3q$; an integral sandwich gives front work
+$3\ln3/(2g)$. This motivates the fixed engineering choice
+$g_{\rm CA}=3\ln3/2$, replacing an earlier continuous adaptive reference.
+Clock-driven Python gain sweeps show a near-RTT span plateau and
+compression at larger gain. With the selected CA constant, late groups
+span 99.569 ms in Python and 88 ms in actual SCP under 100 ms feedback.
+Q16 gain, millisecond dispatch and integer-byte window growth remain
+explicit implementation differences. The resulting engineering policy
+uses fixed phase-specific gains, with the packet construction and
+execution evidence presented together.
 \end{abstract}
 \begin{CCSXML}
 <ccs2012><concept><concept_id>10003033.10003039.10003041</concept_id><concept_desc>Networks~Transport protocols</concept_desc><concept_significance>500</concept_significance></concept></ccs2012>
@@ -30,14 +49,124 @@ Pacing changes when new congestion-window credit becomes a transmission and, con
 \pagestyle{standardpagestyle}
 
 \section{Introduction}
-While building SCP with Reno-style congestion control, I first used burst sending and then added pacing. Transfers slowed down even though the ratio of useful data to total transmitted data barely changed. Tracing packets and ACKs suggested a timing question: an ACK can enlarge the window immediately, but newly permitted packets still have to pass through the pacer before they produce feedback.
+\textbf{The implementation question.} While building SCP, I replaced burst sending with pacing and observed slower transfers without a comparable change in the useful-data share. This was the starting question, not a controlled result from the campaigns reported below. I wanted to understand what changed in the feedback loop, and how to spread packets without unnecessarily slowing window growth.
 
-For example, send one packet at time zero. Its ACK returns at $R$, increasing the window to two packets. If the next packets leave at $R$ and $1.5R$, only one has been acknowledged at $2R$: the window is three, not four. All window updates occur on ACK arrival. This example motivates the analysis; it does not describe every pacer or imply that pacing generally harms network performance.
+\textbf{A packet-sized construction.} Send one packet at time zero. Its ACK returns at $R$ and increases the window to two packets. If the next packets leave at $R$ and $1.5R$, only one has been acknowledged at $2R$: the window is three, not four. This example made departure times central to the question. Immediate sending and a fixed-batch comparator then supplied the sandwich comparisons in the discrete comparison below; comparing their packet times matters more than guessing an entire window sequence.
 
-We also isolate loss-free congestion avoidance from one MSS to examine how its smaller ACK increments and integer-byte storage change this timing problem.
+\textbf{Following the last packet.} I proposed tracing a group's final packet and then the last packet permitted by its ACK. The invariant is small: a packet returns an ACK one feedback RTT after departure; in slow start that ACK releases one occupied position and adds one new position, permitting two packets. Repeating the construction turns the span question into accumulated gaps. Formalizing it revealed that the ACK can also wait behind old reservations and that the group's first packet can drift. The discrete SS construction retains these terms and shows how the tail construction leads to the limiting span.
+
+\textbf{Why CA reopened the question.} In congestion avoidance, I expected a larger gain to compress sending when successive windows were nearly equal. Similar measured spans across different gains therefore prompted another inspection of the packets and their scheduling history. A CA ACK normally replaces only one packet; an extra packet appears when accumulated growth crosses a whole-packet threshold. I proposed scanning initial windows and gain, then working backward from the numerical boundary to a formula. Values near $1.648$ led to the candidate $3\ln3/2$ and to following the position at which an extra whole packet appears. The earlier continuous adaptive-gain calculation remains a useful comparison. The early scheduling rule and the current next-slot rule must be distinguished. Later SCP comparisons also exposed integer-byte growth effects. These were successive questions and corrections, not premises known at the outset.
+
+\textbf{Rebuilding the connection.} Comparing whole groups exposed a mistake in the earlier interpretation: a tail past its nominal RTT boundary is not the same as an actual first-to-last span exceeding an RTT, because the group start can move. We retain that correction rather than treating the earlier numerical boundary as a theorem for a different scheduler. Section~\ref{sec:ca} follows the birth front and keeps actual span, the retained trailing slot and group-start delay separate.
+
+\textbf{The proof route.} We keep the author's sandwich method visible:
+count the permitted packets, bound their gaps using the window formula,
+sum them and squeeze the sum between integrals. The continuous formula is
+an estimation tool inside a discrete argument. Continuous-rate and
+full-flight models are also retained as models in their own right, with
+their different assumptions explicit. Each sum is identified as service
+work, actual span or front work before connecting it to packet timing.
+
+\textbf{Making the reasoning executable.} We follow the construction through mathematics, an independent Python packet model, and the actual SCP core in a virtual network. Actual departure starts the fixed feedback delay; both simulations advance their clocks tick by tick. A separate ACK-index evaluator checks the model's output; it is not counted as network or protocol execution. Each layer has its own evidentiary role, and arithmetic, event-order and observation-phase differences remain explicit.
+
+\section{Continuous Window References}
+We first derive tractable growth references, then use continuous leading
+terms inside discrete gap sums. Time is normalized by the complete
+feedback RTT $R$, and window by MSS $M$. The continuously updated-rate
+and full-flight assumptions are explicit; neither replaces the packet
+queue studied next.
+
+\subsection{SS: a continuously updated rate}\label{sec:ssfluid}
+The continuous model updates the entire target rate with the current window,
+whereas the packet model preserves intervals already assigned under older
+windows. In normalized units its rate is $x(\tau)=gw(\tau)$ while credit
+remains available. Fixed feedback gives $w'(\tau)=x(\tau-1)=gw(\tau-1)$.
+Substitution of $w=Ae^{\lambda\tau}$ yields
+\begin{equation}
+\begin{aligned}
+ \lambda e^\lambda&=g,\\
+ F(\tau)&=\int_{\tau-1}^{\tau}x(v)\,dv=(e^\lambda-1)w(\tau).
+\end{aligned}
+\end{equation}
+The flight constraint requires $e^\lambda\le2$, reaching equality at $g=2\ln2$. Thus the two idealizations share a transition value but differ below it. At $g=1$, the instantaneous-rate multiplier is approximately $1.763223$, while the immutable-queue multiplier is $\sqrt e\approx1.648721$. Previously reserved packets retain older, wider spacings in the latter model. An exponential ansatz also fixes a compatible history; it does not determine the amplitude generated by a single initial packet.
+
+\subsection{CA: derive the window before choosing gain}
+The author first asked for a CA window formula, then a gain depending on that window. To obtain a continuous full-window reference, allow continuously divisible packet amounts and a positive window $w(\tau)$, with normalized time $\tau=t/R$. Write $q(\tau)$ for actual sends per RTT. Fixed feedback and the CA increment give
+\begin{equation}
+ w'(\tau)=\frac{q(\tau-1)}{w(\tau)}.
+ \label{eq:cadelay}
+\end{equation}
+The denominator is the window when feedback arrives, not when its packet was sent. In particular,
+\begin{equation}
+ w_n-w_{n-1}=\int_{n-2}^{n-1}\frac{q(s)}{w(s+1)}\,ds.
+\end{equation}
+This expresses directly how the preceding RTT's sends drive the next interval's growth.
+
+The flight is $f(\tau)=\int_{\tau-1}^{\tau}q(s)\,ds$. Multiply \eqref{eq:cadelay} by $w$ and integrate from $\tau$ to $\tau+1$:
+\begin{equation}
+ f(\tau)=\frac{w(\tau+1)^2-w(\tau)^2}{2}.
+ \label{eq:caflight}
+\end{equation}
+The window constraint $f\le w$ therefore bounds $w(\tau+1)$ by $\sqrt{w(\tau)^2+2w(\tau)}$. Equality throughout an interval requires
+\begin{equation}
+ w(\tau+1)=F(w(\tau)),\qquad F(w)=\sqrt{w^2+2w}.
+ \label{eq:camap}
+\end{equation}
+At RTT boundaries this gives
+\begin{equation}\begin{aligned}
+ w_{n+1}-w_n&=1-\frac1{2w_n}+O(w_n^{-2}),\\
+ w_n&=n-\frac12\ln n+O(1).
+\end{aligned}\label{eq:cafillgrowth}\end{equation}
+For the second line, the first gives $w_n=n+O(\ln n)$; substituting that estimate into the summed reciprocal correction gives the harmonic term. This is the continuous full-flight reference, not the integer SCP trajectory.
+
+\subsection{The continuous gain: first match the leading correction}
+On the full-flight branch, $f'=w'$. Combining
+$f'=q(\tau)-q(\tau-1)$ with $q(\tau-1)=ww'$ gives
+\begin{equation}
+ q(\tau)=(w(\tau)+1)w'(\tau).
+ \label{eq:cafillrate}
+\end{equation}
+For an autonomous target $q=g(w)w$, the time to grow from $w$ to
+$F(w)=\sqrt{w^2+2w}$ must be one RTT. Hence
+\begin{equation}
+ \int_w^{F(w)}\frac{1+1/u}{g(u)}\,du=1.
+ \label{eq:cagainintegral}
+\end{equation}
+Now use the continuous window formula inside this integral, retaining
+the order needed for the gain correction. Write
+$g(w)=1+A/w+O(w^{-2})$. Since
+$F(w)-w=1-1/(2w)+O(w^{-2})$,
+\begin{equation}\begin{aligned}
+ 1&=\int_w^{F(w)}\left(1+\frac{1-A}{u}+O(u^{-2})\right)du\\
+  &=1+\frac{1/2-A}{w}+O(w^{-2}).
+\end{aligned}\end{equation}
+Matching the coefficient gives
+\begin{equation}
+ \boxed{g(w)=1+\frac1{2w}+O(w^{-2}).}
+ \label{eq:cagain}
+\end{equation}
+This is first-order matching on a compatible continuous full-flight
+branch. It does not by itself prove existence of an exact gain or a
+packet cold-start guarantee.
+
+In byte units, the simple first-order policy is $g_{\rm CA}(C)=1+M/(2C)$. Its maximum for $C\ge M$ is $1.5$. This is the maximum of an approximation to a continuous adaptive gain; it does not establish the whole-packet fixed-gain value derived below. The large-window expansion supplies no small-window error guarantee at $C=M$.
+
+There is a finite counterexample to zero drift under this policy. Apply the exact real-valued packet recurrence from $w=1$ with $g(w)=1+1/(2w)$, so the normalized gap is $1/(w+1/2)$. Exact rational arithmetic through ACK~12 gives five packets in group~5, with
+\begin{equation}\begin{aligned}
+ L_5/R&\approx0.877778113<1,\\
+ \Omega_5/R&\approx1.053289641>1.
+\end{aligned}\label{eq:capolicywitness}\end{equation}
+The inequalities are checked on rational values, not rounded decimals. The next start is delayed by approximately $0.053289641R$. Thus the continuous construction remains valid on its compatible history, but this first-order packet policy does not guarantee zero drift from the specified cold start.
+
+This short calculation remains an important step in the research: it
+accounts for growing continuous flight, but it does not represent
+whole-packet birth and inherited ACK phase. The packet counterexample
+explains why the final engineering policy below is fixed. A continuously
+full-flight reference also needs compatible prehistory; it is not the
+one-packet empty-network initial state used in the experiments.
 
 \section{ACK accounting and two comparison models}
-Assume a fixed send-to-ACK delay $R$, no loss, continuously available data, one ACK per full-sized packet, and indefinite slow start. Each ACK adds one MSS, denoted $M$, to the window. Normalize time and window as $\tau=t/R$ and $w=\cwnd/M$. With actual packet-send times $s_j$ in normalized units, including $s_0=0$,
+Assume a fixed send-to-ACK delay $R$, no loss, continuously available data, one ACK per full-sized packet, and indefinite slow start. Mathematical packet times are initially exact real numbers; packets remain full MSS units. Clock quantization is introduced in the execution section. Each ACK adds one MSS, denoted $M$, to the window. Normalize time and window as $\tau=t/R$ and $w=\cwnd/M$. With actual packet-send times $s_j$ in normalized units, including $s_0=0$,
 \begin{equation}
 \begin{aligned}
  w(\tau)&=1+\sum_{j\ge0}\ind_{\{s_j+1\le\tau\}},\\
@@ -58,76 +187,343 @@ Here $W_n=w(n)$ is sampled after all boundary events, and $S_n$ counts sends in 
 \end{equation}
 where $\phi=(1+\sqrt5)/2$, $\psi=(1-\sqrt5)/2$, and $F_0=0,F_1=1$. This gives $1,2,3,5,8,13,\ldots$. It is a deliberately simplified comparator. For any scheduler satisfying the additional service condition $S_n\ge W_n$, induction in \eqref{eq:account} gives $MF_{n+2}\le\cwnd(nR)\le M2^n$. The lower condition requires justification for the scheduler being studied; earlier reservation alone is not a proof. Appendix~\ref{app:comparison} proves the lower comparison for the specific queued reference below by comparing actual packet times. It is not assumed for every pacer. These bounds motivate exponential growth but do not establish an exact exponential solution.
 
-\section{An exact queued reference model}
-\subsection{Reservations, flight, and feedback}
-Consider the following particular scheduler, with a fixed gain $g\ge1$. After ACK $k$, the window is $k+1$. The ACK releases one flight position and adds one window position, permitting two new packets. Both are appended to the reservation queue with spacing $1/[g(k+1)]$; existing timestamps remain unchanged. Let $a_k$ be ACK time, $b_k$ the new batch's first send, and $T_k$ the next available slot after this batch. Then
+\section{SS: Follow the Tail, Sum the Gaps, and Squeeze}
+\subsection{The packet and its returning ACK}
+One packet leaves at zero. Its ACK returns at one RTT, releases one occupied
+position and increases the window by one MSS. Exactly two full packets
+become eligible. Each reservation uses the updated window, and the sender
+retains the interval after the last packet. In normalized time the rule is
 \begin{equation}\begin{aligned}
- a_k&=s_{k-1}+1, & b_k&=\max(a_k,T_{k-1}),\\
- s_{2k-1}&=b_k, & s_{2k}&=b_k+\frac1{g(k+1)},\\
+ a_k&=s_{k-1}+1,& b_k&=\max(a_k,T_{k-1}),\\
+ s_{2k-1}&=b_k,&s_{2k}&=b_k+\frac1{g(k+1)},\\
  T_k&=b_k+\frac2{g(k+1)}.
 \end{aligned}\label{eq:queued}\end{equation}
-Initialize $s_0=0$, $T_0=1/g$. Actual sends move packets from the reserved queue to flight. Consequently $F+Q=w$ after each ACK's reservations, and actual flight respects the window. This model retains the spacing after the last reserved packet, even if the queue becomes empty. The tested SCP implementation now uses this same next-slot rule; Section~4 specifies its integer execution.
+Here $s_j$ is packet $j$'s departure, $a_k$ its returning ACK time, $b_k$
+the first new reservation, and $T_k$ the next available slot. Initialize
+$s_0=0,T_0=1/g$. Reservations occupy window credit before departure:
+actual flight plus reserved backlog equals the window after each ACK.
 
-\subsection{Solving the event recurrence}
-Write $c=2/g$, $H_k=\sum_{i=1}^k1/i$, and $D(q)=H_{2q}-H_q$. Group ACK indices as $q\le k<2q$, where $q=2^m$, and put $B_m=b_{2^m}$. These are analytical groups, not batches processed by the implementation. The exact solution is
-\begin{align}
- B_{m+1}&=B_m+\max\{1,cD(2^m)\},\quad B_0=1,\label{eq:B}\\
- b_k&=B_m+c(H_k-H_{2^m}),\quad 2^m\le k<2^{m+1}.\label{eq:b}
-\end{align}
-To verify it, note that $b_k=\max(a_k,b_{k-1}+c/k)$ for $k\ge2$, and $a_{2j}=b_j+1$, $a_{2j+1}=b_j+1+c/[2(j+1)]$. At the first index $q$ of a group, the two candidate times are $B_{m-1}+1$ and $B_{m-1}+cD(q/2)$, proving \eqref{eq:B}. Set $\Delta=B_m-B_{m-1}\ge1$. At interior even indices,
-\begin{equation}
- T_{2j-1}-a_{2j}=\Delta-1+c[D(j)-D(q/2)]>0.
-\end{equation}
-At interior odd indices the bracket additionally contains $1/(2j+1)-1/(2j+2)>0$. Since $D(j+1)-D(j)=1/[(2j+1)(2j+2)]>0$, the queue branch wins throughout each group's interior. Summing its increments proves \eqref{eq:b} by induction. In particular,
-\begin{equation}
- b_k=cH_k+1-c+
- \sum_{i=0}^{\lfloor\log_2 k\rfloor-1}\pos{1-cD(2^i)}.\label{eq:closed}
-\end{equation}
-Here $[x]_+=\max(x,0)$. Together with \eqref{eq:queued} and \eqref{eq:account}, this determines the window at every time without fitting a growth curve.
+\textbf{A small example before the sums.} Set $g=2$. The first ACK reserves
+packets at $1$ and $5/4$. The ACK of the packet at $1$ arrives at $2$,
+raises the window to three and reserves packets at $2$ and $13/6$.
+Their trailing slot is $7/3$. The next ACK arrives at $9/4<7/3$, raises
+the window to four, and reserves at $7/3$ and $59/24$. Thus even the last
+parent's ACK can find earlier reservations still present. These are ideal
+fractional times, not timestamps from the millisecond SCP clock.
 
-\subsection{Gain, finite spans, and the limiting multiplier}
-Group $m$ contains packets $2q-1,\ldots,4q-2$. Its first-to-last send span $\Lambda_m$ and extra ACK waiting time $I_m$, excluding the nominal trailing spacing, are
-\begin{equation}
- \frac{\Lambda_m}{R}=\frac{2D(q)-1/(2q)}{g},\qquad
- \frac{I_m}{R}=\pos{1-\frac{2D(q)}g}.\label{eq:span}
-\end{equation}
-Because $D(q)\uparrow\ln2$, the limiting transition is $\gc=2\ln2\approx1.38629436112$. Below it, extra waiting eventually ends, $b_k=(2/g)H_k+\text{constant}$, and $w(\tau)=A_g e^{g\tau/2}+O(1)$. At or above it, $B_m=m+1$. Counting sends gives, for integer $n\ge1$ and $0\le u<1$,
-\begin{equation}
-\begin{aligned}
- w(n+u)&=2^{n-1}\min(e^{gu/2},2)+O_g(1),\\
- r(g)&:=\lim_{n\to\infty}\frac{W_{n+1}}{W_n}=\min(e^{g/2},2).
-\end{aligned}\label{eq:growth}
-\end{equation}
-For finite $g\ge\gc$, the boundary value is exactly $W_n=1+2^{n-1}$, rather than $2^n$. The group span approaches $\Lambda_m/R\to\gc/g$: higher gain compresses the active part of each group. This is an asymptotic statement about packet-index groups, not a claim that every fixed RTT interval has this span.
+\subsection{Which gaps belong to the tail span?}
+Generations are defined by parent packets: the initial packet is generation
+zero, and its ACK's children form generation one. A generation of $W=2^m$
+parents produces $2W$ children. The corresponding ACKs have indices
+$W,\ldots,2W-1$, so their post-ACK windows are $W+1,\ldots,2W$.
 
-\begin{figure*}[t]
-\centering
-\includegraphics[width=0.90\textwidth]{figures/cwnd-rtt.pdf}
-\caption{Actual SCP slow-start windows at RTT boundaries: all 22 gains in gray, six representative gains highlighted, with early and full-growth views. Time is measured from the first DATA send in units of the 100 ms feedback RTT; windows are in MSS on a base-two logarithmic axis. Lines connect samples.}\label{fig:cwnd}
-\Description{Early and full-growth views distinguish slower growth at low gains from a near-doubling envelope at higher gains.}
-\end{figure*}
-\section{From the reference model to an SCP experiment}
-\subsection{What an instantaneous-rate approximation predicts}
-A different idealization updates the entire sending rate continuously: in normalized units $x(\tau)=gw(\tau)$, while window credit remains available. Fixed feedback gives $w'(\tau)=x(\tau-1)=gw(\tau-1)$. Substitution of $w=Ae^{\lambda\tau}$ yields
-\begin{equation}
-\begin{aligned}
- \lambda e^\lambda&=g,\\
- F(\tau)&=\int_{\tau-1}^{\tau}x(v)\,dv=(e^\lambda-1)w(\tau).
-\end{aligned}
-\end{equation}
-The flight constraint requires $e^\lambda\le2$, reaching equality at $g=2\ln2$. Thus the two idealizations share a transition value but differ below it. At $g=1$, the instantaneous-rate multiplier is approximately $1.763223$, while the immutable-queue multiplier is $\sqrt e\approx1.648721$. Previously reserved packets retain older, wider spacings in the latter model. An exponential ansatz also fixes a compatible history; it does not determine the amplitude generated by a single initial packet.
+For this scheduler and fixed $g\ge1$, reservations within the child group
+are continuous. The check is that an internal ACK never arrives after the
+preceding reservation slot has expired. Appendix~\ref{app:ssclock} checks
+this inequality from \eqref{eq:queued}, using the monotonicity of
+$D(W)=\sum_{k=W+1}^{2W}1/k$. The example above shows the queue wait that this
+check must retain.
 
+Each ACK adds two intervals at its new window. Consequently the total
+service work is $2R\sum_{k=W+1}^{2W}1/(gk)$. It includes the final packet's
+trailing interval $R/(2gW)$; first-to-last span excludes that interval:
+\begin{equation}
+ \frac{L_{m+1}}R=\frac1g\left(2\sum_{k=W+1}^{2W}\frac1k-\frac1{2W}\right),
+ \qquad W=2^m.
+ \label{eq:span}
+\end{equation}
+For the four children in the example, this is
+$(1/3+1/4)-1/8=11/24$, exactly $59/24-2$.
+
+\subsection{The integral sandwich}
+The continuous function $1/x$ supplies upper and lower bounds on the
+discrete intervals. Since it decreases,
+\begin{equation}
+ \int_{W+1}^{2W+1}\frac{dx}{x}
+ \le\sum_{k=W+1}^{2W}\frac1k
+ \le\int_W^{2W}\frac{dx}{x}.
+ \label{eq:sssandwich}
+\end{equation}
+The two integrals tend to $\ln2$, and the excluded tail interval tends to
+zero. Thus the author's tail construction gives
+\begin{equation}
+ \boxed{\displaystyle\lim_{m\to\infty}\frac{L_{m+1}}R=\frac{2\ln2}{g}}.
+\end{equation}
+The integration estimates the discrete sum; it does not change the sender
+into continuously divisible packets.
+
+\subsection{From span to window growth}
+The same group uses $2D(W)/g$ RTTs of reservation service, including its
+tail interval. The next group waits for either the first returning ACK or
+that slot, whichever is later. Its start interval is therefore
+$\max(1,2D(W)/g)$. This connects the sending span to window growth.
+Since $D(W)\uparrow\ln2$, the limiting transition is
+$\gc=2\ln2$. Below it, service eventually dominates and harmonic service
+time gives exponential window growth. At or above it, ACK availability
+limits the multiplier:
+\begin{equation}
+ r(g):=\lim_{n\to\infty}\frac{W_{n+1}}{W_n}=\min(e^{g/2},2).
+ \label{eq:growth}
+\end{equation}
+Here $W_n=w(n)$ is a time-boundary sample, distinct from a generation's
+parent count $W$. The same harmonic inversion gives the window trajectory:
+\begin{equation}\begin{aligned}
+ w(\tau)&=A_g e^{g\tau/2}+O_g(1),&&1\le g<\gc,\\
+ w(n+v)&=2^{n-1}\min(e^{gv/2},2)+O_g(1),&&g\ge\gc,
+\end{aligned}\label{eq:sswindow}\end{equation}
+where $n\ge1$, $0\le v<1$, and $A_g$ is fixed by the initial packet history,
+not fitted to the observations. At finite $g\ge\gc$, $W_n=1+2^{n-1}$;
+the multiplier two does not remove the startup deficit relative to
+immediate sending. The exact event solution and tail-accounting check are
+in Appendix~\ref{app:ssclock}. Higher gain compresses the group without
+raising this limiting multiplier above two.
+
+
+\section{CA: The Same Sandwich with Whole-Packet Credit}\label{sec:ca}
+\subsection{What one returning packet permits}
+The tail construction is unchanged: an actual departure generates an ACK
+one RTT later. What changes is the window update. In the real-valued CA
+form of RFC~5681, Section~3.1, equation~(3)~\cite{rfc5681}, ACK $k$ gives
+$u_k=u_{k-1}+1/u_{k-1}$. Window values and packet times are different
+quantities. From one MSS the post-ACK windows are $2,5/2,29/10$; those
+ACKs permit respectively two, one and one new full packets.
+
+For the same $g=2$ example used in SS, ACKs at times $1,2,9/4$ therefore
+reserve CA packets at $\{1,5/4\}$, $\{2\}$ and $\{9/4\}$. The second
+child generation has span $1/4$, rather than the SS generation's $11/24$.
+The continuous window increase must cross an integer threshold before it
+creates a second full packet.
+
+Initially reserve $p_0=\lfloor a\rfloor$ packets, with $u_0=a\ge1$,
+starting at zero and leaving slot $T_0=p_0/(ga)$. After ACK $k$,
+\begin{equation}\begin{aligned}
+ m_k&=1+\lfloor u_k\rfloor-\lfloor u_{k-1}\rfloor,\\
+ b_k&=\max(a_k,T_{k-1}),\\
+ T_k&=b_k+\frac{m_k}{g u_k}.
+\end{aligned}\label{eq:careserve}\end{equation}
+The ACK time $a_k$ is the actual departure plus one RTT. The extra packet
+is admitted by the floor difference, not by rounding every group to an
+assumed one-MSS increase.
+
+\textbf{Why a smaller gap does not compress inherited phases.}
+At $g=3\ln3/2$, the first two children leave at $R$ and
+$R+R/(2g)$. Their ACKs return one RTT later with exactly the same
+separation. The first ACK sets the next slot to $2R+R/(2.5g)$,
+but the second ACK arrives later, at $2R+R/(2g)$. Its single replacement
+therefore retains the parent's phase. A smaller gap is permission to send
+earlier, not earlier availability of a window position. Old reservations
+can still delay a replacement; phase copying applies when its ACK finds
+the slot already available. This distinction explains why service work
+near $R/g$ need not compress the whole group into $R/g$.
+
+\subsection{Use the continuous window formula to bound the discrete ACKs}
+First keep ACK count $K$ separate from elapsed time. Treating ACK count
+continuously gives $du/dK=1/u$, hence $u^2=a^2+2K$. The discrete square
+identity tells us how far this approximation can be used:
+\begin{equation}\begin{aligned}
+ u_{k+1}^2-u_k^2&=2+u_k^{-2},\\
+ u_K^2&=a^2+2K+\sum_{k=0}^{K-1}u_k^{-2}\\
+       &=a^2+2K+O(\ln(K+1)).
+\end{aligned}\label{eq:caack}\end{equation}
+The lower bound $u_k^2\ge a^2+2k$ bounds the reciprocal sum above by a
+harmonic sum. Thus the continuous leading term has a controlled discrete
+error. If $K_p$ is the first ACK index with $u\ge p$, threshold overshoot
+changes $u^2$ by only $O(1)$, so
+\begin{equation}
+ K_p=\frac{p^2}{2}+O(\ln p).
+ \label{eq:cathresholdindex}
+\end{equation}
+This is enough for the front limit below. No elapsed-time formula
+$w_n=n-c\ln n+O(1)$ is assumed for this packet scheduler. The continuous
+full-flight time formula is derived separately later.
+
+\subsection{One group: squeeze its service work first}
+Suppose a parent group has $p=\lfloor w\rfloor$ packets and the window
+before its first ACK is $w$. Its $p$ ACKs raise the window by at most
+$p/w\le1$, and permit $N=p$ or $p+1$ children. Each new interval lies
+between $R/[g(w+1)]$ and $R/(gw)$. Therefore their total service work $S$,
+including the trailing interval, obeys
+\begin{equation}
+ \frac{N}{g(w+1)}\le\frac SR\le\frac{N}{gw},
+ \qquad\frac SR\longrightarrow\frac1g.
+ \label{eq:caservicesandwich}
+\end{equation}
+This sandwich counts assigned intervals. To recover actual first-to-last
+span, let $I$ be the internal gaps spent waiting for later ACKs to make
+new data eligible, and let $\delta_{\rm tail}$ be the last assigned interval.
+Exact-time reservation accounting gives
+\begin{equation}
+ \Omega=S+I,\qquad L=S+I-\delta_{\rm tail}.
+ \label{eq:caworkspan}
+\end{equation}
+In the CA example, service work is $1/5+5/29$, internal waiting is $1/20$,
+and the trailing gap is $5/29$; their combination is the calculated
+span $1/4$. Unlike the SS group, this CA group contains an ACK-limited
+idle interval. We must determine that waiting before identifying $S$ with
+a tail span.
+
+One-packet and fractional-window effects also matter when retaining a
+$1/w$ correction. From integer $p\ge2$, exactly $p$ ACKs give
+$u_p=p+\sum_{k=0}^{p-1}1/u_k<p+1$: that group has no extra whole packet.
+A claim that every group has $p+1$ children would change the very order
+of correction being calculated.
+
+\subsection{Many groups: why a logarithm accumulates}
+To see what can be accumulated exactly, define the idle time of the reservation clock as
+\[
+ \mathcal I_K=\sum_{k=1}^K[a_k-T_{k-1}]_+.
+\]
+This is waiting for new credit after the previous slot, distinct from the packet's queue wait $\eta_k$. Telescoping \eqref{eq:careserve} gives
+\begin{equation}\begin{aligned}
+ T_K&=T_0+\mathcal I_K+\frac{A_K+B_K}{g},\\
+ A_K&=\sum_{k=1}^K\frac1{u_k},\qquad
+ B_K=\sum_{k=1}^K\frac{\lfloor u_k\rfloor-\lfloor u_{k-1}\rfloor}{u_k}.
+\end{aligned}\label{eq:caservice}\end{equation}
+The first sum pays for replacement packets; the second pays for the additional whole packets born from growth.
+
+The replacement term has an exact finite sum. Shift the reciprocal sum by one ACK and use $1/u_{k-1}=u_k-u_{k-1}$:
+\begin{equation}\begin{aligned}
+ A_K&=\sum_{k=1}^K\frac1{u_{k-1}}-\frac1a+\frac1{u_K}\\
+ &=u_K-a-\frac1a+\frac1{u_K}.
+\end{aligned}\label{eq:careplacement}\end{equation}
+For the extra-packet term, let $v_n$ be the first post-ACK window satisfying $v_n\ge n$ for integer $n>p_0$. Its overshoot is at most $1/(n-1)$, giving
+\[
+ 0\le\frac1n-\frac1{v_n}\le\frac1{n^2(n-1)}.
+\]
+The correction is summable. The crossed thresholds therefore contribute a harmonic sum plus a convergent correction, so
+\[
+ B_K=\ln u_K+C_B+O(1/u_K).
+\]
+Consequently, for fixed $g\ge1$ and indefinitely continued CA,
+\begin{equation}
+ T_K=\mathcal I_K+\frac{u_K+\ln u_K}{g}+C+O(1/u_K).
+ \label{eq:caclock}
+\end{equation}
+This explains the linear contribution from replacements and the logarithmic contribution from occasional extra packets. The idle term has not disappeared: \eqref{eq:caclock} is not a closed formula for $\cwnd(t)$, nor does it determine the limiting tail span by itself.
+
+
+This is the multi-generation version of the same sandwich: replacement
+work grows with the window, and the extra whole packets contribute a
+harmonic sum. The two positive-part terms have different meanings:
+$[T-a]_+$ waits behind existing reservations, whereas $[a-T]_+$ waits for
+fresh ACK credit. Advancing an expired slot to now does not erase earlier
+group-start drift.
+
+\subsection{The extra packet moves from the group head to the tail}\label{sec:cafront}
+Follow where the next whole packet is born instead of predicting every
+departure. Choose the restart of a birth front: after a $q$-packet group
+produces no extra packet, the following $q$-packet group's first ACK
+crosses the next threshold. Its birth rank is $r_q=1$. To check this, its
+starting window $v$ satisfies $v^2\ge q^2+2q$ and $v<q+1$, so
+$v+1/v>q+1$. This restarts a credit rank, not the pacer's retained slot.
+
+Until the next group without an extra packet, group sizes are
+$q,q+1,\ldots$. Let $\kappa_p$ be the ACK count before processing the
+$p$-packet group. Then $r_p=K_{p+1}-\kappa_p$ and
+$\kappa_p-\kappa_q=\sum_{j=q}^{p-1}j$. Use the continuous leading term
+with its discrete error from \eqref{eq:cathresholdindex}:
+\begin{equation}\begin{aligned}
+ r_p-1
+ &=\frac{(p+1)^2-(q+1)^2}{2}
+   -\frac{(p-q)(p+q-1)}2+O(\ln q)\\
+ &=\frac32(p-q)+O(\ln q).
+\end{aligned}\label{eq:cabirthrank}\end{equation}
+The estimate is uniform for $q\le p\le4q$. The quadratic terms cancel;
+the remaining $3/2$ is the advance of the birth position, not the window
+increase per RTT.
+
+Let $b$ be the first group with $r_b>b$. It occurs before $4q$ for large
+$q$ by the last formula. The first crossing overshoots the tail by at
+most $O(\ln q)$, so $r_b=b+O(\ln q)$. Substituting into
+\eqref{eq:cabirthrank} gives
+\begin{equation}
+ b=3q+O(\ln q),\qquad b/q\longrightarrow3.
+\end{equation}
+Thus the size interval $q\to3q$ comes directly from moving the extra
+packet from the head to the tail.
+
+Weight that front movement by the interval scale $1/(p+1)$:
+\begin{equation}
+ \mathcal W_q=\sum_{p=q}^{b-1}\frac{r_{p+1}-r_p}{p+1}.
+ \label{eq:cafrontwork}
+\end{equation}
+Put $e_p=r_p-1-3(p-q)/2$, so $\max|e_p|=O(\ln q)$. A telescoping
+weighted sum bounds its entire contribution by
+\[
+ \left|\sum_{p=q}^{b-1}\frac{e_{p+1}-e_p}{p+1}\right|
+ \le\frac{2\max|e_p|}{q+1}=O(\ln q/q).
+\]
+The remaining harmonic sum has upper and lower integral bounds tending
+to $\ln(b/q)=\ln3$. Therefore
+\begin{equation}
+ \boxed{\mathcal W_q=\frac32\ln3+O(\ln q/q)
+ \longrightarrow\frac32\ln3.}
+ \label{eq:cafrontlimit}
+\end{equation}
+Clipping the final birth rank to the actual tail changes only
+$O(\ln q/q)$ here. This calculation needs the coarse controlled window
+approximation, not a high-order threshold expansion.
+
+\subsection{Return from the front sum to actual packet times}\label{sec:caspandrift}
+The front sum describes moving whole-packet credit. Connecting it to
+perfect pacing still requires the actual queue and group starts in
+\eqref{eq:caworkspan}. For a group with normalized first and last sends
+$h_n,t_n$, let $\theta_n$ be its final retained interval in RTT units.
+Then the next group starts at
+\begin{equation}\begin{aligned}
+ h_{n+1}&=\max(h_n+1,t_n+\theta_n),\\
+ E_n/R&=h_{n+1}-h_n-1
+       =[L_n/R+\theta_n-1]_+.
+\end{aligned}\label{eq:castartdrift}\end{equation}
+Here $L_n=R(t_n-h_n)$, $\Omega_n=L_n+R\theta_n$, and cumulative start
+drift is $R(h_n-n)$. Thus $L_n<R$ can coexist with $E_n>0$.
+Appendix~\ref{app:caindices} records the exact tail recursion, including
+old-queue waiting, an occasional birth gap and group-start motion.
+
+For this exact-time real-window model, fixed $g\ge1$ already guarantees
+every complete descendant group's actual span $L_n<R$; at $g=1$ it tends
+to $R$. For $0<g<1$ it tends to $R/g>R$. Appendix~\ref{app:caspan}
+proves these claims. These elementary bounds explain why measured low-gain spans should be
+described as close to an RTT, rather than forced into an inequality
+$L\ge R$ below the engineering CA value. The utilization question also
+includes the retained tail slot and the start delay in
+\eqref{eq:castartdrift}. We retain this distinction beside the operational
+constant rather than making an exact cold-start threshold the design
+criterion.
+
+\subsection{From the birth front to a fixed engineering policy}
+The three calculations now have distinct meanings. The one-group sum
+in \eqref{eq:caservicesandwich} approaches $1/g$. Continuous full flight
+adds the first-order correction $1/(2w)$. The cross-generation
+whole-packet front instead gives $3\ln3/(2g)$. Ordinary replacement ACKs
+can retain older phases, which a local service sum cannot compress.
+Setting the front-work reference to one RTT motivates our fixed choices:
+\begin{equation}
+ \boxed{g_{\rm SS}=2\ln2,\qquad
+ g_{\rm CA}=\tfrac32\ln3\simeq1.647918433.}\label{eq:engineeringgain}
+\end{equation}
+CA now uses this constant in both AIMD's CA phase and PROB. The latter
+has no separate slow-start gain. The earlier $1+M/(2C)$ calculation remains
+a continuous reference and a historical control, not the current policy.
+
+The CA choice is supported by the birth-front calculation and the
+engineering experiment below. Actual group span, occupied span and start
+delay are kept separate. At low gains the
+actual span can remain close to one RTT while starts move; greater gain
+compresses the group once this spreading plateau is passed.
+
+\section{From the Models to SCP Execution}
 \subsection{Integer scheduling in the tested core}
-The experiment executes the SCP C sender, receiver, pacing callback, and ACK processing. The virtual network transports their packets; it does not compute the window from a recurrence. The core stores reservation times in unsigned 64-bit Q32.32 milliseconds. Each congestion controller supplies a Q16 gain $K$. For a fixed target $g$, payload length $\ell$, measured RTT $R_{\rm ms}$, and byte window $C$, scheduling uses
+The experiment executes the SCP C sender, receiver, pacing callback, and ACK processing. The virtual network transports their packets; it does not compute the window from a recurrence. The core stores reservation times in unsigned 64-bit Q32.32 milliseconds. Each congestion controller supplies a Q16 gain $K$. AIMD selects $2\ln2$ in SS and $3\ln3/2$ in CA; PROB uses the same CA value throughout. For a fixed target $g$, payload length $\ell$, measured RTT $R_{\rm ms}$, and byte window $C$, scheduling uses
 \begin{equation}
 \begin{aligned}
  d_{\rm Q32}&=\left\lfloor\frac{\ell R_{\rm ms}G}{C}\right\rfloor,\\
  K&=\operatorname{round}(2^{16}g),\quad G=\left\lfloor 2^{48}/K\right\rfloor.
 \end{aligned}
 \end{equation}
-Write $g_Q=K/2^{16}$; reciprocal rounding adds the smaller difference between $g_Q$ and $2^{32}/G$. At each output call the next slot becomes $\max(T,\mathrm{now})$. A packet receives that timestamp, then advances $T$ by its own spacing. Fractional parts and the trailing slot survive an empty queue. Thus a packet constrains the next packet's earliest slot. The send routine uses the reservation's integer part: a reservation at $1.8$ ms is eligible at $1$ ms. The virtual clock advances by 1 ms, allowing multiple sends per tick. ACK-triggered scheduling and the pacing timer share the due-send routine.
+Write $g_Q=K/2^{16}$; reciprocal rounding adds the smaller difference between $g_Q$ and $2^{32}/G$. At each output call the next slot becomes $\max(T,\mathrm{now})$. A packet receives that timestamp, then advances $T$ by its own spacing. Fractional parts and the trailing slot survive an empty queue. This follows the next-slot principle in Linux v6.12 TCP~\cite{linux}; SCP does not reproduce its initial-segment exemption, jitter compensation or qdisc/offload behavior. The send routine uses the reservation's integer part: a reservation at $1.8$ ms is eligible at $1$ ms. The virtual clock advances by 1 ms, allowing multiple sends per tick. ACK-triggered scheduling and the pacing timer share the due-send routine.
 
-The absence of SRTT uses a 1 ms fallback. Once feedback is available, the measured RTT is 100 ms. An independent Python model uses the same next-slot rule but a 1 $\mu$s clock, truncates each spacing to whole microseconds, and uses the unquantized target gain. Its CA window is real-valued. These are declared differences, not interchangeable implementations: native Q32 accumulation retains fractions that the Python model discards. Python sends only full MSS packets, totaling 1 GiB plus 846 bytes; native SCP sends exactly 1 GiB with a short final packet.
+The absence of SRTT uses a 1 ms fallback. Once feedback is available, the measured RTT is 100 ms. The rebuilt independent Python model uses the same next-slot rule, retains fractional reservations, and dispatches their integer parts on a 1 $\mu$s clock. Gain is unquantized and CA is real-valued. Both clocks advance every tick, without jumping to events. Native ticks drain forward arrivals, reverse arrivals, then timers. Python drains forward arrivals, reverse ACKs and sends; each ACK may itself send due packets. These are declared differences, not interchangeable implementations. Python sends only full MSS packets, totaling 1 GiB plus 846 bytes; native SCP sends exactly 1 GiB with a short final packet. The initial single-packet trailing slot uses known $R$ in Python and the fallback in SCP; for the fixed gains $g\ge1$ it expires before the first ACK in both.
 
 \subsection{Configuration and verification}
 \begin{table}[t]\small
@@ -143,7 +539,7 @@ Gains & $\gc+0.05k$, $k=-6,\ldots,6$; $1,1.1,1.75,2,2.5,3,4,6,8$ \\
 Repetitions & Per phase: 22 fixed gains $\times$ 3, plus native policy $\times$ 3 \\
 Limits & cwnd cap $2^{31}-1$ bytes; buffer/window settings 1 GiB \\\bottomrule
 \end{tabularx}\end{table}
-All 138 native transfers completed with 750,869 DATA packets each and matching endpoint checksums. No loss, retransmission, or cwnd-cap contact occurred. Fifteen functional tests passed in each campaign. The shared core, library, virtual network, and common-transfer files exactly matched baseline \texttt{e41ac88}. CA is selected at the research entry by setting ssthresh to one MSS, without a core patch. Audits follow every DATA send through the receiver's input and ACK generation to the sender's ACK input, verify 100 ms feedback and every window update, and check actual sends against reserved timestamps. Three repetitions per configuration produced identical raw traces.
+In the frozen 24 October campaigns, all 138 native transfers completed with 750,869 DATA packets each and matching endpoint checksums. No loss, retransmission, or cwnd-cap contact occurred. Fifteen functional tests passed in each campaign. The shared core, library, virtual network, and common-transfer files exactly matched baseline \texttt{e41ac88}. CA is selected at the research entry by setting ssthresh to one MSS, without a core patch. Audits follow every DATA send through the receiver's input and ACK generation to the sender's ACK input, verify 100 ms feedback and every window update, and check actual sends against reserved timestamps. Three repetitions per configuration produced identical raw traces.
 
 At target $\gc$, $K=90852$, $g_Q=1.38629150390625$, and $G=3098170394$. The Q16 value is slightly below $\gc$, so the exact $g\ge\gc$ theorem cannot simply be assigned to this finite run. The first DATA send defines time zero; the handshake is excluded. Repetitions are determinism checks, without random-error bars. Span summaries require complete, non-final-send intervals with at least two packets; all other intervals remain in the raw tables. Middle--late summaries use bins from 50\% through 90\% of the final-send bin index.
 
@@ -154,6 +550,13 @@ At target $\gc$, $K=90852$, $g_Q=1.38629150390625$, and $G=3098170394$. The Q16 
 \Description{Measured spans rise over early RTTs; larger gains shorten the plateau. A separate panel compares middle--late spans across all gains.}
 \end{figure*}
 \section{Measured congestion-window growth}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.90\textwidth]{figures/cwnd-rtt.pdf}
+\caption{Actual SCP slow-start windows at RTT boundaries: all 22 gains in gray, six representative gains highlighted, with early and full-growth views. Time is measured from the first DATA send in units of the 100 ms feedback RTT; windows are in MSS on a base-two logarithmic axis. Lines connect samples.}\label{fig:cwnd}
+\Description{Early and full-growth views distinguish slower growth at low gains from a near-doubling envelope at higher gains.}
+\end{figure*}
 
 
 \textbf{The low-gain regime.} Figure~\ref{fig:cwnd} shows slower growth at low gain. For the eight sampled gains from $1$ through $\gc-0.05$, the measured boundary ratio $W_{18}/W_{17}$ differs from $e^{g_Q/2}$ by less than 0.003\%. At $g=1$ the ratio is $1.648756$, close to the queued reference $\sqrt e$ and distinct from the instantaneous-rate prediction $1.763223$. This supports the queued model's multiplier in this regime, without asserting equality of every timestamp or window value.
@@ -176,71 +579,158 @@ $8$ & 2.000000 & 136,422 & 20.08 \\\bottomrule
 
 For this figure, let $\mathcal{P}_n$ contain sends in the half-open interval $[nR,(n+1)R)$, measured from the first DATA transmission. Define
 \begin{equation}
- L_n=\max_{j\in\mathcal{P}_n}t_j-\min_{j\in\mathcal{P}_n}t_j.
+ L_n^{\rm bin}=\max_{j\in\mathcal{P}_n}t_j-\min_{j\in\mathcal{P}_n}t_j.
 \end{equation}
-A singleton has span zero; an empty interval has no defined span. This bin convention differs from the right-closed send-count intervals in \eqref{eq:account}. It also differs from the packet-index groups defining $\Lambda_m$ in \eqref{eq:span}. These measurements cannot be interchanged near a phase boundary.
+A singleton has span zero; an empty interval has no defined span. This bin convention differs from the right-closed send-count intervals in \eqref{eq:account}. It also differs from the packet-index groups defining $L_m$ in \eqref{eq:span}. These measurements cannot be interchanged near a phase boundary.
 
-\textbf{Evolution within one run.} At the critical target, $L_n$ begins $0,36,66,82,91,95,97,98$ ms for $n=0,\ldots,7$, then remains 99 ms for $n=8,\ldots,18$. The final-send interval has span 51 ms and is excluded from aggregates. The finite millisecond plateau is distinct from the harmonic convergence of the exact reference group's span.
+\textbf{Evolution within one run.} At the critical target, $L_n^{\rm bin}$ begins $0,36,66,82,91,95,97,98$ ms for $n=0,\ldots,7$, then remains 99 ms for $n=8,\ldots,18$. The final-send interval has span 51 ms and is excluded from aggregates. The finite millisecond plateau is distinct from the harmonic convergence of the exact reference group's span.
 
 \textbf{Variation across gains.} At RTT 18, fixed-bin spans are 99 ms at the critical target, 69 ms at $g=2$, and 17 ms at $g=8$. A 100 ms half-open interval sampled on a 1 ms grid has a maximum span of 99 ms. That value means sends reach both edge bins; it neither proves uniform density nor excludes a packet-index group extending across an RTT boundary. In particular, low-gain groups can exceed one RTT while their fixed-bin spans remain 99 ms.
 
-\textbf{Why precision matters.} With $R=100$ ms, an ideal full-packet spacing is $100/(gw)$ ms. Native SCP retains its sub-millisecond fraction in the next slot. The independent Python model instead truncates every spacing to microseconds; at $w>100000/g$ MSS, that spacing becomes zero. Thus a finer execution clock alone does not guarantee a closer approximation. At $g=1$, Python completes at 25.21217 RTTs, native SCP at 26.82, and numerical evaluation of the ideal ACK-index scheduler at 26.82611. These discrepancies arise in separately labeled models; the Python results are not native measurements.
+\textbf{A corrected implementation mismatch.} The earlier Python script truncated each spacing to microseconds. At $w>100000/g$ MSS the spacing became zero, so a finer execution clock did not preserve the intended reservation algorithm. At $g=1$, that historical script completed at 25.21217 RTTs. The rebuilt script retains the fraction and completes at 26.82611 RTTs, against native SCP's 26.82. The old result is retained as evidence of the mismatch, not as a current next-slot comparison. Figure~\ref{fig:layers} uses the rebuilt script. A separate ACK-index evaluator checks its window, ACK count, reservation, group span and drift tables. Across 264 runs, all checked fields agree within the declared binary64 comparison tolerance; this consistency check is not an exact-arithmetic proof or protocol execution.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.85\textwidth]{figures/ss-three-layers.pdf}
-\caption{Three distinct SS execution models, at the same elapsed RTT boundaries. Top: native SCP, the independent Python packet model, and numerical evaluation of the ideal ACK-index recurrence. Bottom: native minus each reference, divided by that reference. No time shift or amplitude fit is applied. The large late $g=1$ Python discrepancy exposes per-spacing truncation; jumps in pointwise error also depend on ACK phase.}\label{fig:layers}
+\caption{Rebuilt SS comparison at the same elapsed RTT boundaries. Top: observed SCP and clock-driven Python windows, plus continuous-time ACK-index recurrence evaluation. Bottom: native minus each reference, divided by that reference. No time shift or amplitude fit is applied. Fractional slots persist in both implementations; millisecond dispatch and gain quantization still shift ACK phase.}\label{fig:layers}
 \Description{Three selected gains compare window growth and relative differences across native, independent Python, and ideal mathematical models.}
 \end{figure*}
 
-From the critical target to $g=8$, the last DATA ACK moves from 2051 to 2008 ms, an improvement of 2.10\%. Meanwhile $L_{18}$ falls from 99 to 17 ms, and the largest millisecond bin's share of RTT-18 packets rises from 1.3813\% to 7.7396\%. Faster completion and more concentrated sending are distinct effects; span alone does not describe internal density.
+The three panels do not bound all gains' finite timing errors. Across the full rebuilt fixed-gain grid and policy controls, the largest common-boundary SS difference is 4.077\% of the Python window, at $g=8$, RTT~20. Both flows are still sending full-sized data there. This is an elapsed-time comparison, retaining the implementations' dispatch and gain differences, rather than a failure of the per-ACK window update.
+
+From the critical target to $g=8$, the last DATA ACK moves from 2051 to 2008 ms, an improvement of 2.10\%. Meanwhile $L_{18}^{\rm bin}$ falls from 99 to 17 ms, and the largest millisecond bin's share of RTT-18 packets rises from 1.3813\% to 7.7396\%. Faster completion and more concentrated sending are distinct effects; span alone does not describe internal density.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.86\textwidth]{figures/ss-cohort-L.pdf}
-\caption{The same packet-index groups compared across native SCP, the independent Python model, and the finite harmonic reference \eqref{eq:span} evaluated at the native Q16 gain. Dotted horizontal lines are its corresponding limits. Unlike fixed-bin spans, a group's span may exceed one RTT. Native millisecond execution and Python's per-spacing microsecond truncation remain visible.}\label{fig:cohort}
+\caption{Complete, non-terminal descendant groups in observed SCP and rebuilt Python runs, against the finite harmonic reference \eqref{eq:span} at the unquantized target gain. Gray dotted lines show its limits. Native SCP uses the corresponding Q16 gain and millisecond dispatch. Unlike fixed-bin spans, a complete group's span can exceed one RTT.}\label{fig:cohort}
 \Description{Packet-index group spans are compared without cutting them at fixed RTT boundaries.}
 \end{figure*}
 
-\section{Loss-free congestion avoidance}\label{sec:ca}
-\textbf{ACK count and elapsed time.} In the real-valued full-packet form of RFC~5681, Section~3.1, equation~(3)~\cite{rfc5681}, let $u_k$ be the window in MSS after CA ACK $k$, with $u_0=a\ge1$. Then
-\begin{equation}\begin{aligned}
- u_{k+1}&=u_k+\frac1{u_k},\\
- u_K^2&=a^2+2K+\sum_{i=0}^{K-1}\frac1{u_i^2}.
-\end{aligned}\label{eq:caack}\end{equation}
-The identity follows by squaring each update. Since $u_i^2\ge a^2+2i$, it gives $u_K^2=a^2+2K+O(\ln(K+1))$. Gain does not enter this ACK-indexed recurrence. The window at time $t$ is $M u_{K(t)}$, where $K(t)$ counts actual returning ACKs; substituting $t/R$ for $K$ would discard the many ACKs within an RTT.
+\section{CA Experiments: Spreading and Window Growth}\label{sec:caexperiments}
+\subsection{A CA-centered Python gain sweep}
+The engineering question is measured within each run: does fixed
+$C=3\ln3/2$ keep middle--late groups close to one feedback RTT, and does
+increasing gain shorten them? We ran the unchanged 1 $\mu$s clock model
+from one MSS in CA, with no loss and exactly 100 ms feedback. Each
+requested 1 GiB transfer is rounded up to full MSS packets. The 22 gains
+include $0.9,1,1.2,1.4,1.5,1.9,2,2.5,3,4,8$ and
+$C+\{-.10,-.05,-.02,-.01,-.005,0,.005,.01,.02,.05,.10\}$.
+All 66 runs completed; the three repetitions of every configuration have
+identical window and group CSV hashes. Deterministic repetitions are
+reported as repeatability checks, not statistical confidence intervals.
 
-\textbf{What the retained-tail model proves.} Extend the ideal scheduler of Section~3 with whole-packet credit $F+Q=\lfloor u\rfloor$. After ACK $k$ it reserves
-\begin{equation}\begin{aligned}
- m_k&=1+\lfloor u_k\rfloor-\lfloor u_{k-1}\rfloor,\\
- T_k&=\max(a_k,T_{k-1})+\frac{m_k}{g u_k}.
-\end{aligned}\label{eq:careserve}\end{equation}
-Here time is normalized by $R$, $a_k$ is the corresponding packet's send time plus one, and $T_k$ retains the trailing interval. Put $\mathcal I_K=\sum_{k=1}^K[a_k-T_{k-1}]_+$. Telescoping \eqref{eq:careserve} splits service into $\sum1/u_k$ for replacement packets and $\sum(\lfloor u_k\rfloor-\lfloor u_{k-1}\rfloor)/u_k$ for extra whole packets. For fixed $g\ge1$ and indefinitely continued CA,
-\begin{equation}
- T_K=\mathcal I_K+\frac{u_K+\ln u_K}{g}+C+O(1/u_K).
- \label{eq:caclock}
-\end{equation}
-Indeed, $1/u_k=(u_k-u_{k-1})-1/(u_{k-1}^2u_k)$ makes the first sum $u_K+C_1+O(1/u_K)$. Each sufficiently large integer threshold $n$ is crossed at a window $v_n=n+O(1/n)$, so the second sum is harmonic: $\ln u_K+C_2+O(1/u_K)$. This proves \eqref{eq:caclock}, but does not determine $\mathcal I_K$ or a closed window law in time. It uses a real window and ideal time; SCP's integer updates and execution grid still require separate examination.
+We prespecified groups 300--600 as middle and 900--1200 as late, excluding
+incomplete groups and the group containing the last packet. Every selected
+late group at $C$ has $L=99.569$ ms, within 0.431\% of $R$, with no observed
+start drift. At $C+0.005$, $C+0.01$ and $C+0.05$, spans fall to 99.282,
+98.972 and 96.637 ms. Below $C$, spans lie near the RTT plateau while
+start delay can accumulate: at $C-0.05$ the late span is 99.897 ms and
+accumulated delay at group 1200 is 7.151 ms. Gain 0.9 has late spans
+110.984--111.040 ms. Thus the experiment supports a constant near $C$
+for the stated engineering objective, including the observed plateau
+and compression trend for the stated configuration.
 
-\textbf{Integer-byte updates in SCP.} A new campaign uses Table~\ref{tab:setup}'s conditions but sets both initial cwnd and ssthresh to $M$. This artificial initial state isolates CA; it is not ordinary TCP startup. The research target changes threshold initialization while reusing the shared core, virtual network, and pacing rules. For an ACK covering $N_k$ new bytes, the core uses
+The CA update at a matching full-packet ACK count is identical across
+these gains. At common elapsed RTT boundaries, the largest window
+difference from gain 1 in this sweep is 3.197881 MSS. Thus the spreading
+change is substantial while the observed CA window-time difference is
+small; the two research questions should not be collapsed into one plot.
+
+\begin{table}[t]\small\centering
+\caption{Python CA: late-group median span and accumulated delay at group
+1200. Complete groups 900--1200, three identical repeats.}\label{tab:caengineering}
+\begin{tabular}{@{}rrr@{}}\toprule
+Gain & Median $L$ (ms) & Start delay (ms) \\\midrule
+$1$ & 99.964 & 320.165 \\
+$1.5$ & 99.89 & 32.538 \\
+$C-0.05$ & 99.897 & 7.151 \\
+$C$ & 99.569 & 0.0 \\
+$C+0.05$ & 96.637 & 0.0 \\
+$2$ & 82.026 & 0.0 \\
+$4$ & 40.972 & 0.0 \\
+$8$ & 20.465 & 0.0 \\
+\bottomrule
+\end{tabular}\end{table}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.94\textwidth]{figures/ca-critical-sweep.pdf}
+\caption{CA-centered Python clock sweep. Middle groups 300--600 and late
+groups 900--1200 are summarized by their median and within-run range.
+The right panel enlarges the neighborhood of $C=3\ln3/2$. Three repeated
+runs per gain produce identical tables. The near-RTT plateau and greater-gain
+compression are observations, not values generated from the front formula.}
+\label{fig:caengineering}
+\Description{Full and enlarged gain sweeps separate a near-RTT span plateau from decreasing spans above the selected constant.}
+\end{figure*}
+
+
+\subsection{New fixed-constant SCP execution}
+We then ran the actual SCP core with the new registered CA callback,
+not a model of that callback: three transfers of exactly 1 GiB, preceded
+by an 8 MiB path check. The local precommit research worktree records its
+source diff and hashes; its compiled core, virtual network and common
+transfer files match this change. The binary SHA-256 begins
+\texttt{af9ba7e5a274}; the complete identity is in
+\path{data/ca-native-constant.json}.
+
+Each run sends 750,869 DATA packets, with a final 584-byte payload.
+Both endpoints obtain checksum \texttt{7a4bb4de42097f8a}.
+
+Feedback is exactly 100 ms, with no loss or retransmission. Gain remains
+Q16 107998 throughout ($g_Q\simeq1.647918701$).
+Each transfer completes in 1339.38 RTTs, and the three raw event-log
+hashes are identical. Reconstruction identifies 1,338 complete groups per
+run, with no unattributed packets or group-start rule errors.
+
+In both selected ranges, groups 300--600 and 900--1200, actual SCP has
+$L=88$ ms throughout and zero accumulated start delay. Late occupied span
+has median 88.732585 ms. Figure~\ref{fig:cagroups} places these observations
+beside Python's $99.569$ ms at the unquantized target: the native span is
+11.569 ms shorter. The implementations share the retained-slot principle,
+but native SCP has integer-byte CA growth, Q16 gain and a 1 ms clock,
+versus real windows, unquantized gain and 1 $\mu$s in Python. The observed
+difference is retained rather than fitted away; this experiment does not
+separate each arithmetic and clock contribution.
+
+The final native window is 1,476,948 bytes, including the short final ACK;
+every update matches the integer law below with zero byte error. Thus
+the constant is exercised by the real transport path, while its 88 ms
+span also shows why an engineering gain selected from a model must still
+be checked in the target implementation.
+
+\subsection{Historical controls and the integer-window effect}
+\textbf{Policy and historical controls.} The current controllers use
+\eqref{eq:engineeringgain}; the research harness overrides gain for scans.
+The frozen 24 October CA policy control used the earlier $1+M/(2C)$
+policy: its three transfers completed at 1341.39 RTTs, while the
+corresponding real-window Python control completed at 1234.19889 RTTs.
+Those observations are retained as historical controls, not relabeled as
+runs of the new constant. Integer-byte CA growth is a separate and much
+larger difference between the two layers.
+
+That earlier adaptive control also gives a concrete early witness: group~5 sends from 500 to 586 ms after the initial packet, for an actual span of 86 ms. Its reconstructed trailing slot gives an occupied span of 104.113873 ms; group~6 begins at 604 ms, four milliseconds beyond its nominal start. This is a native observation separate from the exact real-valued example in \eqref{eq:capolicywitness}. Writing physical group starts and trailing slots as $H_n$ and $U_n$, integer dispatch follows $H_{n+1}=\max(H_n+R,\lfloor U_n\rfloor_{\rm ms})$. Thus sub-millisecond slot overruns need not produce an extra millisecond of drift.
+
+The native CA campaign uses Table~\ref{tab:setup}'s conditions but sets both initial cwnd and ssthresh to $M$. This artificial initial state isolates CA; it is not ordinary TCP startup. The research target changes threshold initialization while reusing the shared core, virtual network, and pacing rules. For an ACK covering $N_k$ new bytes, the core uses
 \begin{equation}
  C_k=C_{k-1}+\max\!\left(1,\left\lfloor\frac{M N_k}{C_{k-1}}\right\rfloor\right),
  \qquad C_0=M.\label{eq:cabyte}
 \end{equation}
 This differs from the real-valued recurrence, even for full-MSS ACKs. RFC~5681 also discusses the integer-zero increment and rounding it to one byte; its equation~(3) is one allowed CA method, not every implementation of Reno. For full packets, once $C>M^2/2=1{,}022{,}450$ bytes, \eqref{eq:cabyte} adds exactly one byte per ACK. Discarded fractional increments accumulate into a measurable difference.
 
-All 66 fixed-gain CA transfers and three native-policy transfers completed with matching checksums, exactly 100~ms feedback, no retransmission, and no cap contact. Every observed ACK update matched \eqref{eq:cabyte} with zero byte error. At full-packet ACK $K=750868$, the actual window was $1{,}476{,}947$ bytes, versus $1{,}752{,}403.2934$ bytes from \eqref{eq:caack}: measured minus reference, divided by reference, is $-15.719\%$. The final 584-byte ACK then raises the actual window to $1{,}476{,}948$ bytes and is excluded from this full-packet comparison.
+In that frozen campaign, all 66 fixed-gain CA transfers and three adaptive-policy transfers completed with matching checksums, exactly 100~ms feedback, no retransmission, and no cap contact. Every observed ACK update matched \eqref{eq:cabyte} with zero byte error. At full-packet ACK $K=750868$, the actual window was $1{,}476{,}947$ bytes, versus $1{,}752{,}403.2934$ bytes from \eqref{eq:caack}: measured minus reference, divided by reference, is $-15.719\%$. The final 584-byte ACK then raises the actual window to $1{,}476{,}948$ bytes and is excluded from this full-packet comparison.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/ca-growth.pdf}
-\caption{CA from one MSS, five representative fixed gains. (a) Observed RTT-boundary windows. (b) Differences from gain~1. (c) Critical-target window error against the real-valued recurrence at matching ACK counts, including the last full-packet ACK. (d) Actual fixed-interval spans, with the native adaptive policy in black; final-send intervals are excluded. Lines connect observations without fitting.}\label{fig:ca}
+\caption{Frozen 24 October SCP CA campaign from one MSS, five representative fixed gains. (a) Observed RTT-boundary windows. (b) Differences from gain~1; sawtooth drops occur when a faster flow reaches a lower integer per-ACK increment first. (c) The $2\ln2$ sample's window error against the real-valued recurrence at matching ACK counts, including the last full-packet ACK. (d) Actual fixed-interval spans, with the historical adaptive policy in black; final-send intervals are excluded. Lines connect observations without fitting.}\label{fig:ca}
 \Description{Four panels separate the small gain-dependent timing effect from the common ACK-indexed integer window deficit, and show shorter within-RTT spans at larger gains.}
 \end{figure*}
 At the same full-packet ACK count, the verified integer window sequence is identical across gains; gain changes when those ACKs occur. Among Figure~\ref{fig:ca}'s fixed gains, the largest RTT-boundary difference from gain~1 is 2.340 MSS. From $g=1$ to $8$, completion improves by only 0.204\%, while dispersion changes substantially. Table~\ref{tab:ca} reports the full span range over 1101 intervals $n=100,\ldots,1200$, rather than assuming exact periodicity. These millisecond observations do not make $2\ln2$ a CA transition. At matching elapsed times, native windows differ from the independent real-window models by up to about 21.9\%; this includes different ACK timing as well as integer updates, unlike the matching-ACK-count comparison above.
 
 \begin{table}[t]\small\centering
-\caption{CA completion and within-run span ranges, $n=100,\ldots,1200$.}\label{tab:ca}
+\caption{Historical SCP CA completion and within-run span ranges, $n=100,\ldots,1200$.}\label{tab:ca}
 \begin{tabular}{@{}rrr@{}}\toprule
 Target gain & Last ACK ($t/R$) & Span range (ms) \\\midrule
 $1$ & 1341.81 & 99 \\
@@ -250,46 +740,189 @@ $4$ & 1339.14 & 33--34 \\
 $8$ & 1339.07 & 16 \\\bottomrule
 \end{tabular}\end{table}
 
-\textbf{A continuous candidate for adaptive gain.} Normalize rate to packets per RTT. With actual send rate $q(\tau)$, fixed feedback gives $w'=q(\tau-1)/w$. The flight is therefore
-\begin{equation}\begin{aligned}
- f(\tau)&=\int_{\tau-1}^{\tau}q(s)\,ds\\
- &=\frac{w(\tau+1)^2-w(\tau)^2}{2}.
-\end{aligned}\end{equation}
-Continuous equality $f=w$ requires
-\[
- w(\tau+1)=\sqrt{w(\tau)^2+2w(\tau)},\quad q=(w+1)w'.
-\]
-On an additionally assumed smooth compatible growth branch, expansion gives $w'=1-1/(2w)+O(w^{-2})$, hence
-\begin{equation}
- g_{\rm fill}=q/w=1+\frac1{2w}+O(w^{-2}).\label{eq:cagain}
-\end{equation}
-This is a first-order fluid candidate, not an exact whole-packet optimum or a proof that every interval has $L=R$. The native AIMD policy uses $K=90852$ in SS and $K=65536+\lfloor M\,65536/(2C)\rfloor$ in CA. Its three additional CA runs complete at 1341.39 RTTs; gain falls from 1.5 to approximately 1.000473, with 99 ms spans throughout the 403 selected middle--late bins. The SS native policy matches its fixed-Q16 critical-target configuration. No matching dynamic-policy Python campaign is claimed. Integer-byte CA does not satisfy the real-valued premises exactly, especially after increments reach one byte.
+The gain-difference sawtooth in Figure~\ref{fig:ca}(b) follows the integer thresholds: the faster flow reaches a lower per-ACK increment first. From RTT 814 to 815, gain~1 receives 713 ACKs at 2 bytes each, while gain~8 receives 715 at 1 byte each. Their window difference shrinks by $1426-715=711$ bytes, or 0.497203 MSS, exactly matching the plotted drop. Real-valued CA has no such integer step.
 
-\section{Interpretation, scope, and reproducibility}
-\textbf{What the transition explains.} The exact reference gives a simple mechanism: when a group's required pacing time exceeds an RTT, reservations accumulate and the window multiplier is below two. Once it fits, ACK availability limits further growth and additional gain chiefly compresses transmission times. The finite threshold is $2D(2^m)$ and approaches $2\ln2$; it is not equal to that limit for every group. The instantaneous-rate model reaches the same limiting value through the flight constraint, despite predicting a different low-gain exponent.
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.90\textwidth]{figures/ca-native-constant.pdf}
+\caption{The selected fixed CA policy in the new Python and actual SCP runs. Complete non-terminal descendant groups compare actual span, retained occupied span and accumulated start delay. Python uses real windows and $3\ln3/2$; SCP uses integer-byte CA, Q16 107998 and millisecond dispatch. Late spans are 99.569 and 88 ms respectively. All three repetitions in each layer agree; no time shift or amplitude fit is applied.}\label{fig:cagroups}
+\Description{The fixed CA constant gives zero observed start delay in both layers while their actual group spans differ.}
+\end{figure*}
 
-\textbf{What the SCP measurements establish.} Retaining the trailing slot gives close agreement with the queued model's low-gain multiplier. The sample $\gc-0.05$ has multiplier 1.950624, while the critical target has multiplier two at the selected boundaries. This brackets a finite observed change, not the implementation's exact infinite-time threshold. Figure~\ref{fig:cohort} compares like-for-like packet-index groups; fixed-bin $L_n<R$ by construction cannot establish absence of group crossing. Neither native nor Python finite traces prove a universal CA critical gain.
+\section{Interpretation and Reproducibility}
+\textbf{What the constants explain.} SS admits two packets per ACK, and
+the discrete sum over windows $W\to2W$ gives $2\ln2$. CA usually admits
+one replacement; its extra whole-packet birth moves through growing groups
+$q\to3q$, yielding front work $3\ln3/2$. This is the basis for different
+fixed gains in the two phases. The continuous $1+M/(2C)$ result remains
+useful for explaining an earlier approach, rather than the deployed CA
+policy.
 
-\textbf{Relation to existing work.} Reno's slow-start update is specified in RFC 5681~\cite{rfc5681}. Pacing's interaction with TCP dynamics has been studied well before this work~\cite{aggarwal}. RFC 9002 gives a cwnd/RTT-based pacing example with a multiplicative factor~\cite{rfc9002}, and the ICCRG pacing draft discusses practical pacing behavior, including compensation for slow-start growth~\cite{pacing}. The contribution here is a compact event-level solution for a particular reservation rule, together with a reproducible examination of how an actual integer implementation changes its predictions. It is not a claim to have first observed that insufficient pacing rate can throttle slow start.
+\textbf{What the data show.} Beyond the near-RTT spreading region, larger
+gain chiefly compresses groups. The SS sample $\gc-0.05$ has multiplier
+1.950624, while the critical target has multiplier two at the selected
+boundaries. CA windows at the same full-packet ACK count are identical
+across gains; gain changes the ACK times. Integer-byte growth accounts
+for the much larger Python--SCP window deficit. Fixed-bin spans of 99 ms
+also reflect the native 1 ms grid; complete descendant groups and their
+tail slots supply the cross-generation check.
 
-\textbf{Limits.} The study isolates one flow, an initial window of one packet, fixed complete feedback delay, and separate loss-free SS and CA phases. The virtual network intentionally has no bottleneck serialization, propagation variation, cross traffic, delayed ACK policy, or receiver pressure. It therefore measures feedback and scheduling dynamics rather than performance on a real path. The sender executes genuine SCP code, but the environment remains an idealized virtual network. A different initial window, timer granularity, queue policy, or ACK policy can change finite behavior. No conclusion here establishes an optimal Internet pacing gain, an improvement in fairness, or a universal CA window law in time.
+\textbf{Scope.} The study starts one flow from one packet, with fixed
+feedback and separate loss-free phases. It excludes serialization,
+cross traffic, delayed ACKs and receiver pressure. These engineering
+gains do not establish Internet-wide fairness or remove finite-clock and
+integer-arithmetic effects. The derivation, reviewed Python clock model
+and actual SCP core have different evidentiary roles. The CA value is an
+engineering constant supported by the birth-front main term and gain
+sweeps; every finite group need not equal one RTT, and an exact all-time
+threshold for all packet histories is not asserted.
 
-\textbf{Reproduction.}\par
-SS uses successful Actions run \href{https://github.com/skaiui2/SCP/actions/runs/39697564304}{39697564304} (\texttt{ef0076b}) and its \href{https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction}{branch guide}. CA uses successful run \href{https://github.com/skaiui2/SCP/actions/runs/39697576064}{39697576064} (\texttt{9670889}) and its separate \href{https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction}{guide}. Both share baseline \texttt{e41ac88}. Each branch stores its own compact plotting tables and analysis scripts. Large raw logs remain in Actions; the guides supply rerun commands after expiry. Python data are identified by frozen source hash and settings. Cloning and redrawing the compact figures require no raw archive or Release asset.
+\textbf{Relation to prior work.} Reno's update is specified in RFC
+5681~\cite{rfc5681}. Pacing and TCP dynamics have long been studied~\cite{aggarwal}.
+RFC 9002 gives a cwnd/RTT pacing example~\cite{rfc9002}; the ICCRG pacing
+draft discusses compensation for SS growth~\cite{pacing}. Our contribution
+connects the packet construction and SS/CA sandwich explanations with
+reviewable execution of an integer protocol core.
+
+\textbf{Reproduction.} The separate
+\href{https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction}{SS}
+and
+\href{https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction}{CA}
+branches provide compact tables, scripts and rerun commands. Large logs
+remain in Actions. The frozen 24 October campaigns used shared baseline
+\texttt{e41ac88}: SS at \texttt{631ab7b}, and CA at \texttt{d53c6d5} in
+\href{https://github.com/skaiui2/SCP/actions/runs/40084981319}{Actions 40084981319}.
+All 138 native runs passed the execution audit. The earlier independent
+Python rebuild comprised 264 runs, including 141 full-size requests;
+all passed the separate ACK-index comparison. The additional 22-gain CA
+engineering sweep is identified in Section~\ref{sec:caexperiments}.
+The common \texttt{test/models/} scripts provide the tick model, independent
+checker, native group reconstruction and plots. Actual protocol runs
+include endpoint checksum, feedback, ACK-update and reservation audits.
+The new local fixed-constant campaign is recorded in
+\path{data/ca-native-constant.csv},
+\path{data/ca-native-transfers.csv} and the corresponding JSON source
+manifest; it is distinct from the frozen Actions campaigns above.
 
 \section{Conclusion}
-The ACK update alone does not determine growth in time. The immutable-reservation SS model has an exact gain-dependent solution; native transfers closely match its low-gain exponent while differing in phase and finite transition. In CA, gain changes ACK timing while integer-byte updates produce a substantial deficit against the real-valued ACK reference. In both campaigns, higher gain chiefly concentrates transmissions with little completion-time benefit. Evaluating pacing requires the window update rule, its integer representation, and actual packet timing.
+The useful route was to start with a packet and its returning ACK, derive
+continuous window references, return to whole-packet credit, and squeeze
+the relevant gap sum. SS gives $2\ln2$ through windows $W\to2W$.
+CA adds a birth front moving through $q\to3q$, motivating the fixed
+engineering value $3\ln3/2$. Python sweeps expose a near-RTT plateau and
+compression at greater gain, while actual SCP execution explains Q16,
+clock and integer-window differences. Keeping the construction, the
+earlier adaptive reference and the experimental corrections together
+makes the implementation choice and its limits understandable.
 
 \begin{thebibliography}{9}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
 \bibitem{rfc5681} M. Allman, V. Paxson, and E. Blanton. \emph{TCP Congestion Control}. RFC 5681, 2009. \url{https://www.rfc-editor.org/rfc/rfc5681}.
+\bibitem{linux} Linux v6.12, \texttt{net/ipv4/tcp\_output.c}, timestamp assignment and post-send pacing update. \href{https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/net/ipv4/tcp_output.c}{Source at commit \texttt{adc218676eef}}.
 \bibitem{aggarwal} A. Aggarwal, S. Savage, and T. Anderson. Understanding the performance of TCP pacing. \emph{IEEE INFOCOM}, 2000, pp. 1157--1165.
 \bibitem{rfc9002} J. Iyengar and I. Swett. \emph{QUIC Loss Detection and Congestion Control}. RFC 9002, Section 7.7, 2021. \url{https://www.rfc-editor.org/rfc/rfc9002}.
 \bibitem{pacing} M. Welzl et al. \emph{Pacing in Transport Protocols}. Internet-Draft, draft-irtf-iccrg-pacing-02, 2026. Work in progress. \url{https://datatracker.ietf.org/doc/html/draft-irtf-iccrg-pacing-02}.
 \end{thebibliography}
 
 \appendix
+\section{Checking the Exact SS Queue}\label{app:ssclock}
+\subsection{Checking the SS Reservation Clock}
+Write $c=2/g$, $H_k=\sum_{i=1}^k1/i$, and $D(q)=H_{2q}-H_q$. Group ACK indices as $q\le k<2q$, where $q=2^m$, and put $B_m=b_{2^m}$. These are analytical groups, not batches processed by the implementation. The exact solution is
+\begin{align}
+ B_{m+1}&=B_m+\max\{1,cD(2^m)\},\quad B_0=1,\label{eq:B}\\
+ b_k&=B_m+c(H_k-H_{2^m}),\quad 2^m\le k<2^{m+1}.\label{eq:b}
+\end{align}
+To verify it, note that $b_k=\max(a_k,b_{k-1}+c/k)$ for $k\ge2$, and $a_{2j}=b_j+1$, $a_{2j+1}=b_j+1+c/[2(j+1)]$. At the first index $q$ of a group, the two candidate times are $B_{m-1}+1$ and $B_{m-1}+cD(q/2)$, proving \eqref{eq:B}. Set $\Delta=B_m-B_{m-1}\ge1$. At interior even indices,
+\begin{equation}
+ T_{2j-1}-a_{2j}=\Delta-1+c[D(j)-D(q/2)]>0.
+\end{equation}
+At interior odd indices the bracket additionally contains $1/(2j+1)-1/(2j+2)>0$. Since $D(j+1)-D(j)=1/[(2j+1)(2j+2)]>0$, the queue branch wins throughout each group's interior. Summing its increments proves \eqref{eq:b} by induction. In particular,
+\begin{equation}
+ b_k=cH_k+1-c+
+ \sum_{i=0}^{\lfloor\log_2 k\rfloor-1}\pos{1-cD(2^i)}.\label{eq:closed}
+\end{equation}
+Here $[x]_+=\max(x,0)$. Together with \eqref{eq:queued} and \eqref{eq:account}, this determines the window at every time without fitting a growth curve.
+
+\subsection{Checking the SS Tail Identity}
+We return to the construction that motivated the model. Analytical group $m$, with $q=2^m$, contains packets $2q-1,\ldots,4q-2$ and corresponds to descendant generation $m+1$. Write its normalized tail time as $E_m=s_{4q-2}$ and its span as $\ell_m=E_m-B_m=L_{m+1}/R$. For $m\ge1$, the preceding group's tail $E_{m-1}=s_{2q-2}$ produces ACK $2q-1$, which permits this group's final pair. Put
+\begin{equation}\begin{aligned}
+ d_m&=b_{2q-1}-(E_{m-1}+1),\\
+ \delta_m&=\frac1{2gq},\qquad e_m=B_m-B_{m-1}-1.
+\end{aligned}\end{equation}
+Here $d_m\ge0$ is the old-queue wait after that ACK, $\delta_m$ is the final pair's spacing, and $e_m$ is the group start's extra drift. The tail moves by one RTT, the wait, and that spacing. Subtracting the group start gives the exact accounting identity
+\begin{equation}
+ \ell_m=\ell_{m-1}+d_m+\delta_m-e_m.\label{eq:tail}
+\end{equation}
+Thus following the tail does reduce the problem to accumulated increments, but the pair spacing alone is not the whole increment. Substituting \eqref{eq:b} into $d_m-e_m$ cancels the endpoint corrections and gives
+\begin{equation}
+ d_m-e_m=\frac2g[D(q)-D(q/2)].
+\end{equation}
+
+With $\ell_0=1/(2g)$, the increments telescope. Here analytical group $m=0$
+is descendant generation 1, so $\ell_m=L_{m+1}/R$. Summing the pair spacings
+and the waiting-minus-drift terms gives the finite expression in
+\eqref{eq:span}. This also verifies that within each group the queue branch
+supplies a continuous reservation train; it was not assumed from the
+number of admitted packets alone.
+\section{Exact CA Packet Indices and Tail Accounting}\label{app:caindices}
+These indices implement parent-ACK groups without using time bins.
+Let $\eta_k=[T_{k-1}-a_k]_+$ be the queue wait after ACK $k$. Its final
+new packet leaves at
+\begin{equation}
+ z_k=a_k+\eta_k+\frac{m_k-1}{g u_k}.
+ \label{eq:catail}
+\end{equation}
+Number packets from zero. ACK $k$ corresponds to packet $k-1$; its last child has index $J_k=k+\lfloor u_k\rfloor-1$, with $J_0=p_0-1$. Parent-ACK groups obey
+\begin{equation}\begin{aligned}
+ \alpha_0&=0,\qquad \beta_0=p_0-1,\\
+ \alpha_{n+1}&=\beta_n+1,\qquad
+ \beta_{n+1}=J_{\beta_n+1}.
+\end{aligned}\label{eq:cagroups}\end{equation}
+Let $h_n=s_{\alpha_n}$, $t_n=s_{\beta_n}$, $\ell_n=t_n-h_n=L_n/R$, and $k_n=\beta_n+1$. With
+\[
+ d_n=[T_{k_n-1}-(t_n+1)]_+,\quad
+ e_n=h_{n+1}-h_n-1,
+\]
+the last-child construction gives the exact identities
+\begin{equation}\begin{aligned}
+ t_{n+1}&=t_n+1+d_n+\frac{m_{k_n}-1}{g u_{k_n}},\\
+ \ell_{n+1}&=\ell_n+d_n+\frac{m_{k_n}-1}{g u_{k_n}}-e_n.
+\end{aligned}\label{eq:catailspan}\end{equation}
+Since $\beta_n=J_{\alpha_n}$, the old tail slot is $T_{\alpha_n}=t_n+1/(g u_{\alpha_n})$. Thus
+\begin{equation}
+ e_n=\left[\ell_n+\frac1{g u_{\alpha_n}}-1\right]_+.
+\end{equation}
+
+\section{The CA Actual-Span Bound}\label{app:caspan}
+This proof applies to exact reservation times, real-valued CA, fixed gain,
+full MSS packets and the one-packet initial state. Packet groups are those
+defined in Appendix~\ref{app:caindices}.
+Consider an old group of $p=\lfloor u\rfloor$ packets, where $u$ is the window just before its first ACK is processed. In normalized time, write its sends as $s_1,\ldots,s_p$ and set $\theta=1/(gu)$. Their original reservation windows were no greater than $u$, so $s_{j+1}-s_j\ge\theta$ and their retained trailing slot is $s_p+\theta$. The next $p$ ACKs permit $m_j=1+\epsilon_j$ new packets with $\sum\epsilon_j\le1$: their total window increase is at most $p/u\le1$. Let $u_j$ denote the local window after this group's ACK $j$, with $u_0=u$. Each new spacing $\delta_j=1/(g u_j)$ is strictly below $\theta$.
+
+The new group's first send is $B=\max(s_1+1,s_p+\theta)$. Put $P_j=\sum_{i=j}^p m_i\delta_i$. Expanding the reservation maximum gives its exact span:
+\begin{equation}\begin{aligned}
+ \ell_{\rm new}=\max\{&P_1-\delta_p,\\
+ &\max_{j\ge2}(s_j+1-B+P_j-\delta_p)\}.
+ \label{eq:camaxspan}
+\end{aligned}\end{equation}
+The service branch contains at most $p$ spacings, hence $P_1-\delta_p<p\theta\le1/g$. Each arrival branch satisfies
+\[
+ P_j-\delta_p<(p-j+1)\theta
+ \le s_p-s_j+\theta\le B-s_j,
+\]
+so it is below one. The initial single-packet case is immediate. Thus
+\begin{equation}
+ L_n<R\max(1,1/g),\qquad g\ge1\Rightarrow L_n<R.
+ \label{eq:caspupper}
+\end{equation}
+Conversely, after these ACKs $u_p\le u+p/u\le u+1<p+2$, and the new group has at least $p$ packets. Therefore
+\begin{equation}
+ L_{\rm new}>\frac{(p-1)R}{g(p+2)}.
+ \label{eq:casplower}
+\end{equation}
+With unlimited data the group-start ACK index is unbounded; \eqref{eq:caack} then implies $p\to\infty$. Consequently $L_n\to R$ at $g=1$ and $L_n\to R/g$ for $0<g<1$. If the objective is only that every complete group's actual span remain at most $R$, its fixed-gain threshold is one in this ideal model. This is not a solution of the window-utilization objective.
+
 \section{Packet-Time Comparison and the Burst Limit}\label{app:comparison}
-This appendix supplies the lower-comparison argument for the ideal reference scheduler in Section~3. Integer-time execution still requires separate packet-time comparison before transferring the theorem to an implementation. Both comparison systems use the same fixed feedback delay and one-MSS increase per ACK.
+Both systems use fixed feedback and one-MSS growth per ACK. The comparison concerns ideal packet times; integer execution requires its own check.
 
 \subsection{The Fixed-Batch Comparator Respects Flight}
 Let the preceding and current batch sizes be $p=F_{n+1}$ and $q=F_{n+2}$ in round $n\ge1$. After phase $0\le u<1$, its flight is
@@ -340,8 +973,10 @@ For $g\ge\gc$, $B_m=m+1$. For any fixed packet index $j$ in group $m$, its times
 \begin{equation}
  \lim_{g\to\infty}s_j(g)=\lfloor\log_2(j+1)\rfloor.
 \end{equation}
-This is the immediate-send sequence: one packet at time zero, two at one RTT, four at two RTTs, and so on. For finite gain, packets remain locally spaced, yet their group occupies a shrinking fraction of an RTT. Uniform spacing within a group therefore coexists with growing concentration across time.
-
-There is a boundary subtlety. At finite high gain, $W_n=1+2^{n-1}$, whereas the immediate-send window is $2^n$. ACKs just after a boundary coalesce onto that boundary as gain tends to infinity. Counting events at a jump is not continuous under convergence of their timestamps. The packet-time burst limit is valid without asserting pointwise convergence of the window at every integer RTT.
+This is the immediate-send packet sequence. At finite high gain,
+$W_n=1+2^{n-1}$, whereas immediate sending gives $2^n$: ACKs just after
+a boundary coalesce onto it as gain tends to infinity. Convergence of
+packet times therefore does not imply pointwise window convergence at
+an event boundary.
 
 \end{document}
