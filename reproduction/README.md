@@ -1,8 +1,12 @@
 # Reproduce the next-slot slow start study
 
-This directory lets readers inspect and redraw the completed slow start gain sweep without rerunning transfers. It compares how gain changes the congestion window and packet spreading, using three separately labelled sources: mathematical references, the reviewed Python packet model, and the actual SCP C core in the shared virtual network. The committed material belongs only to this branch's phase; historical campaigns remain frozen.
+This directory lets readers inspect and redraw the historical completed slow start gain sweep without rerunning transfers. It compares how gain changes the congestion window and packet spreading, using three separately labelled sources: mathematical references, the reviewed Python packet model, and the actual SCP C core in the shared virtual network. The committed material belongs only to this branch's phase.
 
-The protocol and shared network/transfer code are identical to baseline [`e41ac88`](https://github.com/skaiui2/SCP/commit/e41ac8821bc3e0864a552cea89c86d075744ae9e). Experiment commit: [`ef0076b`](https://github.com/skaiui2/SCP/commit/ef0076b39f8b3c6173f0d59273676e44f1c0e8f7); successful [Actions run 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304). The current manuscript is maintained on [main](https://github.com/skaiui2/SCP/blob/main/Pacing_and_Congestion_Window_Growth.pdf), rather than duplicated here. See the [execution-path review map](../test/research/README.md) and [experiment manifest](../test/research/scp_fixed_experiment.json) for the underlying code and exact gain list.
+Current source uses shared baseline `da52bfe3690752a393f17d26f0ec60e7966db0b8`, including fixed Q16 phase gains: SS `90852`, CA and PROB `107998`. The [branch workflow](https://github.com/skaiui2/SCP/actions/workflows/pacing-research.yml?query=branch%3Aresearch%2Fslowstart-nextslot-q16-20261022) reports reruns of this source. The stored compact data retain baseline [`e41ac88`](https://github.com/skaiui2/SCP/commit/e41ac8821bc3e0864a552cea89c86d075744ae9e), experiment commit [`ef0076b`](https://github.com/skaiui2/SCP/commit/ef0076b39f8b3c6173f0d59273676e44f1c0e8f7), and successful [Actions run 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304). The current manuscript is maintained on [main](https://github.com/skaiui2/SCP/blob/main/Pacing_and_Congestion_Window_Growth.pdf), rather than duplicated here. See the [execution-path review map](../test/research/README.md) and [experiment manifest](../test/research/scp_fixed_experiment.json) for the current code and gain list.
+
+## Current source and historical data
+
+Run the commands below to produce a fresh batch from the current baseline. Keep the new output directory, source manifest and gain list together. Existing `data/`, `comparison/` and figures retain their original revisions and gain meanings. This branch stores only SS material. Large DATA/ACK evidence remains in Actions artifacts or is regenerated locally.
 
 ## What this campaign measures
 
@@ -11,9 +15,47 @@ The protocol and shared network/transfer code are identical to baseline [`e41ac8
 - DATA and ACK each traverse 50 ms. Every observed DATA-send to corresponding ACK-processing delay must be 100 ms. Loss, serialization and bandwidth queues are disabled.
 - Gain requests are recorded together with `round(g * 65536) / 65536`. The shared core stores Q32.32 ms reservations and advances on the baseline 1 ms clock.
 
-SS starts at one MSS and keeps `ssthresh` above the attainable window. Its native-policy control uses Q16 `2*ln(2)` (`90852 / 65536`).
+SS starts at one MSS and keeps `ssthresh` above the attainable window. Its native-policy control uses Q16 `2*ln(2)` (`90852 / 65536`); this branch's fixed-gain list is unchanged. The shared baseline also supplies fixed Q16 `107998` for CA and PROB.
 
-The 66-case summary, complete repeat check, payload audit and RTT tables are in [`data/`](data/). Both large RTT CSVs retain **all 22 gains and all three repeats** and are compressed losslessly. No per-packet raw events, per-millisecond window tables, payload files, binaries or Release attachments are included. `source_manifest.json` identifies the source run and original CSV hashes; `checksums.json` verifies the committed native data. These compact tables are derived observations, not a replacement for the raw execution audit.
+The stored historical 66-case summary, complete repeat check, payload audit and RTT tables are in [`data/`](data/). Both large RTT CSVs retain **all 22 gains and all three repeats** and are compressed losslessly. No per-packet raw events, per-millisecond window tables, payload files, binaries or Release attachments are included. `source_manifest.json` identifies the source run and original CSV hashes; `checksums.json` verifies the committed native data. These compact tables are derived observations, not a replacement for the raw execution audit.
+
+## Current results and the Python difference
+
+The tables in this section are preserved **2026-10-22 observations**. Their Python
+source discarded each gap's fractional microseconds. The rebuilt model now in
+`test/models/pacing.py` retains fractional slots; running it creates a new batch,
+not a reproduction of those old Python curves. Historical comparison code and
+source remain available at the [frozen SS revision](https://github.com/skaiui2/SCP/tree/631ab7b1aa68f234ff06c3bf3d02aa0ef1daa670/reproduction).
+
+The completed sweep measures this next-slot implementation; the Python model is
+an independent comparison with different precision. Completion is measured from
+the first actual DATA send to the final ACK:
+
+| Requested gain | Native SCP (ms) | Python (ms) | Continuous-time numerical reference (ms) |
+|---|---:|---:|---:|
+| 1 | 2682 | 2521.217 | 2682.611 |
+| `2*ln(2)` | 2051 | 2051.628 | 2051.820 |
+
+These values come from [`three_layer_summary.csv`](comparison/three_layer_summary.csv).
+The reference column executes the labelled ACK-index model, not the SCP core.
+The native critical gain is `90852/65536`, slightly below the requested real
+`2*ln(2)`; the Python and numerical-reference columns use the requested gain.
+
+The earlier Python source computed each gap as `floor(100000/(g*w))` microseconds,
+with `w` in MSS.
+It discards the fractional remainder on every reservation. Once `w > 100000/g`,
+the computed gap becomes zero and packets can share a tick. The native scheduler
+retains Q32.32-ms fractional reservations even though it releases packets on a
+1 ms clock. This accumulated precision difference explains why the Python
+`g=1` run finishes substantially earlier; it is not evidence that the native
+100 ms feedback RTT changed.
+
+For complete packet-index cohort 18 at `g=1`, native `L` is **138 ms**, Python
+`L` is **99.999 ms**, and the finite ideal value is **138.628673 ms**; see
+[`ss_packet_index_group_L.csv`](comparison/ss_packet_index_group_L.csv).
+The native fixed-bin span of 99 ms is a different quantity: a half-open 100 ms
+bin on the 1 ms send grid cannot show a span above 99 ms. It does not establish
+that a packet cohort stays inside one RTT or that packets are uniformly spread.
 
 ## Redraw without running experiments
 
@@ -48,25 +90,55 @@ python test/research/run_scp_fixed_feedback.py --merge results/fixed --out resul
 
 The final merge must find all 66 completed fixed-gain cases, exact byte counts and matching checksums, feedback min/max of 100 ms, zero retransmissions, complete packet/ACK audit evidence, unchanged shared sources and identical deterministic repeats. The native-policy three transfers are checked separately. Three identical deterministic repeats do not supply statistical error bars.
 
-## Rerun the independent model and the comparison
+## Run and check the rebuilt independent model
 
-This optional section is substantially slower than redrawing stored results: it executes another **22 gains × three Python-model runs** for this phase. `run_python.py` only invokes the reviewed [`test/models/pacing.py`](../test/models/pacing.py); it does not implement another sender, network or window update rule. It freezes that source and emits the batch layout expected by `compare_layers.py`.
+The current model is shared with the baseline. It has an A sender, a B receiver,
+a pending pacing queue, and separate forward DATA and returning ACK queues. Its
+clock advances by 1 us without event jumps. New batches retain fractional slots
+and dispatch at the integer microsecond part; this replaces per-gap truncation.
+Existing comparison tables above keep their original model label.
+
+Run this branch's phase only, then check every repetition against the independent
+ACK-index recurrence and draw its observed windows, complete group spans,
+occupied spans and start drift:
 
 ```bash
-python reproduction/run_python.py --out results/python --workers 4
-python reproduction/compare_layers.py --native-ss results/reproduction-data --python-ss results/python/ss --metadata reproduction/actions_metadata.json --out results/three-layers
+python test/models/pacing.py --mode ss --out results/python-ss
+python test/models/check.py --runs results/python-ss --out results/python-ss-check
+python test/models/plot.py --python-root results/python-ss --out results/python-ss-figures
 ```
 
-The comparison command above uses the full committed native RTT tables and complete summaries. To include the separately rerun native gain-policy control, additionally pass `--native-policy-ss results/native`. To regenerate packet-index cohort observations from raw native events, additionally pass `--raw-ss` pointing to the extracted per-gain evidence or the local fixed campaign. The raw option is needed only for that packet-level observation; stored cohort results, where applicable, remain in `comparison/`.
+The default is 22 fixed gains, three repeats, and a 1 GiB request rounded up to
+full MSS packets. Use a fresh output directory. Run the native-style policy
+separately with `--policy`; it uses the unquantized fixed phase constant.
+Native Q16 gain and integer window arithmetic remain distinct. A small
+`--trace` run records reservation, send and ACK evidence. `--spacing gap-us`
+is an explicit arithmetic control with the new event order, not a replay of the
+entire earlier model. `--initial-mss 1..20` paces its initial train using known
+RTT; native experiments here still start from one MSS.
+
+After rerunning the actual core into `results/fixed`, derive native groups
+from its audited transport events and compare the two labelled sources:
+
+```bash
+python test/models/native_groups.py --runs results/fixed --out results/native-groups
+python test/models/plot.py --python-root results/python-ss --native-root results/fixed --native-groups results/native-groups/native_groups.csv --checks results/python-ss-check/rtt_comparison.csv --out results/current-comparison
+```
+
+The checker evaluates recurrences; it does not execute SCP or a second network.
+The native group analyzer attributes new packets to actual returning ACKs and
+labels reconstructed tail-slot fields. The plotter consumes those observations
+without fitting or shifting time. Native `vnet_step()` still advances by 1 ms;
+each direction's 50 ms delay starts only at an actual transport send.
 
 ## Compare like quantities
 
 | Source | Executed object | Clock, window and payload |
 |---|---|---|
-| Mathematical reference | ACK-index recurrence in `math_reference.py`, plus labelled analytical formulas | Continuous event times; no claim to be an SCP run or a new closed-form CA solution |
-| Independent Python model | This repository's `test/models/pacing.py` sender, receiver and network | 1 µs clock, gaps floored to 1 µs; real-valued CA `w += 1/w`; unquantized gain; every packet is a full MSS |
-| Native SCP plus virtual network | This branch's actual SCP core and shared network | 1 ms time progression, baseline integer-floor release rule and Q32.32 reservations; integer-byte CA increment `max(1, MSS*MSS/cwnd)`; Q16 gain; exact 1 GiB with a short tail |
+| Mathematical reference | Independent ACK-index evaluation in `test/models/check.py`, including labelled SS finite-group formulas | Clock-matched and continuous references are separate; neither executes SCP |
+| Independent Python model | This repository's `test/models/pacing.py` sender, receiver and network | 1 µs ticks; retain fractional slots and dispatch their integer µs part; one MSS added per ACK; unquantized gain; full MSS packets |
+| Native SCP plus virtual network | This branch's actual SCP core and shared network | 1 ms time progression, baseline integer-floor release rule and Q32.32 reservations; acknowledged bytes added to cwnd; Q16 gain; exact 1 GiB with a short tail |
 
 The full-MSS Python model sends 750,869 packets, or 1,073,742,670 bytes: **846 bytes more** than the native transfer. This deliberate algorithm-model convention must not be hidden when comparing completion times.
 
-Time zero is the first actual DATA send, and boundary state is labelled before/after ACK processing. Fixed-bin `L` is the last minus first new-DATA send in `[nR, (n+1)R)`; empty/single-packet bins do not define a dispersion span. Representative middle/late summaries exclude the terminal send bin. An SS packet-index cohort span is a separately labelled quantity and cannot be replaced by fixed-bin `L`. Finite-cohort formulas and asymptotic limits are also reported separately. No post-hoc time shift, fitted amplitude or interpolated measurement is used to force agreement.
+Time zero is the first actual DATA send, and boundary state is labelled before/after ACK processing. For the current group comparison, L is the last actual send minus the first within a complete descendant group. Read it together with occupied span including the trailing slot and accumulated start delay; exclude terminal groups. The stored fixed-bin `L` is instead the last minus first new-DATA send in `[nR, (n+1)R)`; empty bins have no span, and single-packet bins have zero span without establishing dispersion. Representative fixed-bin summaries exclude the terminal send bin. An SS packet-index cohort span cannot be replaced by fixed-bin `L`. Finite-cohort formulas and asymptotic limits are also reported separately. No post-hoc time shift, fitted amplitude or interpolated measurement is used to force agreement.

@@ -63,7 +63,7 @@ def transport_events(path, summary, mss):
                 gain = int(row['gain_q16'])
                 cwnd = int(row['cwnd_bytes'])
                 expected_gain = summary['gain_q16'] if policy == 'fixed_q16' else (
-                    90852 if mode == 'always_slow_start' else 65536 + (mss * 65536) // (cwnd << 1))
+                    90852 if mode == 'always_slow_start' else 107998)
                 if gain != expected_gain:
                     raise RuntimeError('Observed gain callback differs from its registered policy')
                 observed_slot = int(row['next_slot_q32_ms'])

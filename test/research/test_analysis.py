@@ -26,7 +26,7 @@ class AnalysisTests(unittest.TestCase):
 
         def record(event, direction, t, flags, data_seq, ack, size, echo, plan=''):
             gain = 65536 if policy == 'fixed_q16' else (
-                90852 if mode == 'always_slow_start' else 65536 + (mss * 65536) // (window << 1))
+                90852 if mode == 'always_slow_start' else 107998)
             rows.append(dict(zip(fields, (event, direction, t, flags, data_seq, ack, size,
                                          echo, window, plan, gain, next_slot))))
 
@@ -34,7 +34,7 @@ class AnalysisTests(unittest.TestCase):
             sent = 100 + index * 100
             plan = max(next_slot, sent << 32)
             gain = 65536 if policy == 'fixed_q16' else (
-                90852 if mode == 'always_slow_start' else 65536 + (mss * 65536) // (window << 1))
+                90852 if mode == 'always_slow_start' else 107998)
             gap = 1 << 32 if not index else size * 100 * ((65536 << 32) // gain) // window
             next_slot = plan + gap
             end = seq + size

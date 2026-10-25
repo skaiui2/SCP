@@ -138,7 +138,7 @@
   "origin": "first_forward_data_transport_send",
   "end": "all_payload_acked",
   "dense_log_interval_ms": 1,
-  "baseline_sha": "e41ac8821bc3e0864a552cea89c86d075744ae9e",
+  "baseline_sha": "da52bfe3690752a393f17d26f0ec60e7966db0b8",
   "gain_encoding": "round(target_gain * 65536); effective_gain = gain_q16 / 65536",
   "pacing_time": "Q32.32 ms; send at integer floor",
   "empty_queue": "next_slot = max(previous_next_slot, now); reserve at next_slot, then add this packet gap",
