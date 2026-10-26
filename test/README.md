@@ -311,3 +311,15 @@ python3 test/virtual/sweep.py test/build/scp_virtual --profile scenarios-1g --ou
 Each run uses the original state-log analyzer. `report.md` includes individual
 failures and successful-run median/min/max goodput relative to the zero-loss
 baseline; `sweep.png` plots loss versus median goodput with min/max shading.
+
+## Reanalyze existing pacing results
+
+When the native transfers succeeded but analysis needs a correction, use the
+[pacing reanalysis workflow](../.github/workflows/pacing-reanalysis.yml) instead
+of repeating the sweep. Select the SS or CA research branch containing the fixed
+analysis code and supply the original Actions run ID. The workflow requires all
+22 gain jobs to have succeeded, checks the existing data through the normal
+merge, and records the source run, original experiment commit, analysis commit
+and workflow commit separately. Its artifact contains only the analysis and
+small provenance files; the original transfer logs retain their original
+identity. Expired source artifacts require a new campaign.
