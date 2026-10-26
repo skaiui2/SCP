@@ -56,7 +56,7 @@ def native_boundaries(folder):
     result, boundary, cwnd, count = [], 0, MSS, 0
     with gzip.open(folder / "ack_updates.csv.gz", "rt", newline="") as stream:
         for row in csv.DictReader(stream):
-            elapsed = int(row["elapsed_ms"])
+            elapsed = float(row["elapsed_ms"])
             while boundary < elapsed:
                 result.append(dict(rtt=boundary // RTT, cwnd_bytes=cwnd, acked_packets=count))
                 boundary += RTT

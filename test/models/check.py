@@ -2,6 +2,7 @@
 import argparse
 import bisect
 import csv
+import gzip
 import hashlib
 import json
 import math
@@ -47,10 +48,12 @@ def gain_at(mode, fixed, window):
     return 2 * math.log(2) if mode == "ss" else 1.5 * math.log(3)
 
 
-def evaluate(mode, fixed, total, initial, truncate_gap, continuous=False):
+def evaluate(mode, fixed, total, initial, truncate_gap, continuous=False, ca_update="real"):
     sent, reserved, gaps, windows = (array("d") for _ in range(4))
     generations, assigned = array("I"), array("I")
     expected, slot, window = {0: initial}, 0.0, float(initial)
+    byte_window, credit = initial * MSS, 0
+    credits = array("Q", [0])
     windows.append(window)
 
     def append(limit, generation, ack_index, gap):
@@ -67,15 +70,26 @@ def evaluate(mode, fixed, total, initial, truncate_gap, continuous=False):
     append(math.floor(window), 0, 0, math.floor(gap) if truncate_gap else gap)
     for k in range(1, total + 1):
         arrival = sent[k - 1] + RTT_US
-        window += 1 if mode == "ss" else 1 / window
+        if mode == "ss":
+            window += 1
+        elif ca_update == "real":
+            window += 1 / window
+        else:
+            if ca_update == "byte-floor":
+                byte_window += max(1, MSS * MSS // byte_window)
+            else:
+                increase, credit = divmod(credit + MSS * MSS, byte_window)
+                byte_window += increase
+            window = byte_window / MSS
         windows.append(window)
+        credits.append(credit)
         generation = generations[k - 1] + 1
         expected[generation] = math.floor(window)
         gap = RTT_US / (gain_at(mode, fixed, window) * window)
         slot = max(slot, arrival)
         append(k + math.floor(window), generation, k, math.floor(gap) if truncate_gap else gap)
     return dict(sent=sent, reserved=reserved, gaps=gaps, generations=generations,
-                assigned=assigned, windows=windows, expected=expected,
+                assigned=assigned, windows=windows, credits=credits, expected=expected,
                 last_ack_ms=(sent[-1] + RTT_US) / 1000)
 
 
@@ -189,9 +203,10 @@ def main():
         indices = {}
         with path.open(newline="") as stream:
             for row in csv.DictReader(stream):
+                row.setdefault("ca_update", "real")
                 if row["gain"] == "adaptive" and row.get("gain_policy") == "continuous_aimd_candidate":
                     row["gain"] = "legacy-adaptive"
-                key = tuple(row[f] for f in ("mode", "gain", "packets", "initial_mss", "pacing_rounding"))
+                key = tuple(row[f] for f in ("mode", "gain", "packets", "initial_mss", "pacing_rounding", "ca_update"))
                 indices.setdefault(key, len(indices) + 1)
                 directory = path.parent / f"g{indices[key]:02d}-r{int(row['repeat']):02d}"
                 cases[key].append((directory, row))
@@ -211,13 +226,31 @@ def main():
         gw.writerow(("observed_run", "generation", "observed_span_ms", "computed_tick_span_ms", "computed_continuous_span_ms",
                      "observed_start_drift_ms", "computed_tick_start_drift_ms", "computed_continuous_start_drift_ms",
                      "observed_occupancy_ms", "computed_tick_occupancy_ms", "computed_continuous_occupancy_ms"))
-        for (mode, gain, total, initial, rounding), entries in cases.items():
-            reference = evaluate(mode, gain, int(total), int(initial), rounding.startswith("floor_each_gap"))
-            ideal = evaluate(mode, gain, int(total), int(initial), False, True)
+        for (mode, gain, total, initial, rounding, ca_update), entries in cases.items():
+            reference = evaluate(mode, gain, int(total), int(initial), rounding.startswith("floor_each_gap"), ca_update=ca_update)
+            ideal = evaluate(mode, gain, int(total), int(initial), False, True, ca_update)
             bins, ideal_bins = spans(reference, False), spans(ideal, False)
             generation_rows, ideal_groups = group_rows(reference), group_rows(ideal)
             for directory, summary in entries:
                 count, worst, first = check_trace(directory / "events.csv", reference)
+                ack_path = directory / "ack_windows.csv.gz"
+                if ack_path.exists():
+                    ack_count = 0
+                    with gzip.open(ack_path, "rt", newline="") as source:
+                        for k, observed in enumerate(csv.DictReader(source), 1):
+                            ack_count += 1
+                            if k > int(total):
+                                raise ValueError(f"Extra per-ACK window: {directory}")
+                            for field, predicted in (("ack_index", k), ("now_us", reference["sent"][k - 1] + RTT_US),
+                                                     ("cwnd_bytes", reference["windows"][k] * MSS),
+                                                     ("ca_credit", reference["credits"][k])):
+                                error = difference(observed[field], predicted)
+                                count += 1
+                                if error:
+                                    first = first or f"ack_windows:{k}:{field}"
+                                    worst = max(worst, error)
+                    if ack_count != int(total):
+                        raise ValueError(f"Missing per-ACK windows: {directory}")
                 for field, predicted in (("last_ack_ms", reference["last_ack_ms"]),
                                          ("final_cwnd_bytes", reference["windows"][-1] * MSS),
                                          ("zero_gap_reservations", sum(g == 0 for g in reference["gaps"]))):
@@ -225,6 +258,12 @@ def main():
                     count += 1
                     if error:
                         first = first or f"summary:{field}"
+                        worst = max(worst, error)
+                if "final_ca_credit" in summary:
+                    error = difference(summary["final_ca_credit"], reference["credits"][-1])
+                    count += 1
+                    if error:
+                        first = first or "summary:final_ca_credit"
                         worst = max(worst, error)
                 for filename, coordinate in (("rtt.csv", "rtt"), ("generations.csv", "generation")):
                     with (directory / filename).open(newline="") as stream:
@@ -261,7 +300,7 @@ def main():
         observed_source="independent Python packet-model CSVs",
         tick_reference="same gap profile; reservation sent at floor(slot) us",
         continuous_reference="unquantized gap and exact reservation departure",
-        arithmetic="binary64 recurrence evaluation, not interval certification",
+        arithmetic="binary64 timing/real CA; exact integer byte CA, not interval certification",
         comparison_relative_tolerance=2e-12, comparison_absolute_tolerance=1e-6,
         observed_summary_sha256=sources,
         fixed_feedback_us=RTT_US, checked_runs=sum(map(len, cases.values())), failed_runs=failed,

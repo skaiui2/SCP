@@ -2,9 +2,11 @@
 
 This directory lets readers inspect and redraw the historical completed slow start gain sweep without rerunning transfers. It compares how gain changes the congestion window and packet spreading, using three separately labelled sources: mathematical references, the reviewed Python packet model, and the actual SCP C core in the shared virtual network. The committed material belongs only to this branch's phase.
 
-Current source uses shared baseline `da52bfe3690752a393f17d26f0ec60e7966db0b8`, including fixed Q16 phase gains: SS `90852`, CA and PROB `107998`. The [branch workflow](https://github.com/skaiui2/SCP/actions/workflows/pacing-research.yml?query=branch%3Aresearch%2Fslowstart-nextslot-q16-20261022) reports reruns of this source. The stored compact data retain baseline [`e41ac88`](https://github.com/skaiui2/SCP/commit/e41ac8821bc3e0864a552cea89c86d075744ae9e), experiment commit [`ef0076b`](https://github.com/skaiui2/SCP/commit/ef0076b39f8b3c6173f0d59273676e44f1c0e8f7), and successful [Actions run 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304). The current manuscript is maintained on [main](https://github.com/skaiui2/SCP/blob/main/Pacing_and_Congestion_Window_Growth.pdf), rather than duplicated here. See the [execution-path review map](../test/research/README.md) and [experiment manifest](../test/research/scp_fixed_experiment.json) for the current code and gain list.
+The current shared baseline is `ddea25420afa0fc6dbd4bbeb5cff35f99a21a503`, with fixed Q16 phase gains: SS `90852`, CA and PROB `107998`. The [branch workflow](https://github.com/skaiui2/SCP/actions/workflows/pacing-research.yml?query=branch%3Aresearch%2Fslowstart-nextslot-q16-20261022) identifies the committed source of each run. The stored compact data retain baseline [`e41ac88`](https://github.com/skaiui2/SCP/commit/e41ac8821bc3e0864a552cea89c86d075744ae9e), experiment commit [`ef0076b`](https://github.com/skaiui2/SCP/commit/ef0076b39f8b3c6173f0d59273676e44f1c0e8f7), and successful [Actions run 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304). The current manuscript is maintained on [main](https://github.com/skaiui2/SCP/blob/main/Pacing_and_Congestion_Window_Growth.pdf), rather than duplicated here. See the [execution-path review map](../test/research/README.md) and [experiment manifest](../test/research/scp_fixed_experiment.json) for the current code and gain list.
 
 ## Current source and historical data
+
+Current shared sources match `ddea25420afa0fc6dbd4bbeb5cff35f99a21a503` and use scalable ticks, deadline wakeups and CA byte remainders. The normal campaign freeze verifies them against that commit. Earlier local validations retain their original commit plus source diff, compilation inputs and binary hashes; the stored Actions results below retain their original source identities.
 
 Run the commands below to produce a fresh batch from the current baseline. Keep the new output directory, source manifest and gain list together. Existing `data/`, `comparison/` and figures retain their original revisions and gain meanings. This branch stores only SS material. Large DATA/ACK evidence remains in Actions artifacts or is regenerated locally.
 
@@ -13,7 +15,7 @@ Run the commands below to produce a fresh batch from the current baseline. Keep 
 - 22 fixed gains, three transfers per gain: **66 actual SCP transfers**. A separate native AIMD gain-policy control adds three transfers; it is not relabelled as a fixed gain.
 - Each actual transfer is exactly **1 GiB = 1,073,741,824 bytes**, starts at one MSS, and uses MSS = 1430 bytes. The final DATA payload is 584 bytes.
 - DATA and ACK each traverse 50 ms. Every observed DATA-send to corresponding ACK-processing delay must be 100 ms. Loss, serialization and bandwidth queues are disabled.
-- Gain requests are recorded together with `round(g * 65536) / 65536`. The shared core stores Q32.32 ms reservations and advances on the baseline 1 ms clock.
+- Gain requests are recorded together with `round(g * 65536) / 65536`. Current reservations use Q32.32 ticks; virtual targets default to 1 us (`SCP_TICK_SCALE=1000U`) and `--tick-scale 1` selects the 1 ms control. Pacing timers wake for the head deadline. Historical tables keep their original 1 ms grid.
 
 SS starts at one MSS and keeps `ssthresh` above the attainable window. Its native-policy control uses Q16 `2*ln(2)` (`90852 / 65536`); this branch's fixed-gain list is unchanged. The shared baseline also supplies fixed Q16 `107998` for CA and PROB.
 
@@ -73,7 +75,7 @@ Choose a new output directory when preparing data again. `prepare_data.py` verif
 
 On [the successful run](https://github.com/skaiui2/SCP/actions/runs/39697564304), download **`scp-ss-results`** for the original analysis tables and manifest. The optional **`scp-ss-native`** contains the three native-policy runs. Optional `scp-ss-gain-*` artifacts contain the full native evidence for individual fixed gains: source/binary identity, configuration, DATA/ACK event logs and execution audits. Those raw evidence artifacts are much larger; download only the gains needed for a packet-path audit. They are not required for the redraw command above.
 
-Actions artifacts are retained for 14 days. Once unavailable, rerun the source commands below or this branch's workflow. Large raw data is intentionally not duplicated in Git or Releases.
+Actions artifacts are retained for 14 days. Once unavailable, rerun the frozen source revision for those historical conditions, or use the commands below for a new current-source campaign. Large raw data is intentionally not duplicated in Git or Releases.
 
 ## Rerun the actual SCP campaign
 
@@ -128,7 +130,8 @@ python test/models/plot.py --python-root results/python-ss --native-root results
 The checker evaluates recurrences; it does not execute SCP or a second network.
 The native group analyzer attributes new packets to actual returning ACKs and
 labels reconstructed tail-slot fields. The plotter consumes those observations
-without fitting or shifting time. Native `vnet_step()` still advances by 1 ms;
+without fitting or shifting time. Native `vnet_step()` advances one tick at a time
+(default 1 us; 1 ms control with scale 1);
 each direction's 50 ms delay starts only at an actual transport send.
 
 ## Compare like quantities
@@ -137,7 +140,7 @@ each direction's 50 ms delay starts only at an actual transport send.
 |---|---|---|
 | Mathematical reference | Independent ACK-index evaluation in `test/models/check.py`, including labelled SS finite-group formulas | Clock-matched and continuous references are separate; neither executes SCP |
 | Independent Python model | This repository's `test/models/pacing.py` sender, receiver and network | 1 µs ticks; retain fractional slots and dispatch their integer µs part; one MSS added per ACK; unquantized gain; full MSS packets |
-| Native SCP plus virtual network | This branch's actual SCP core and shared network | 1 ms time progression, baseline integer-floor release rule and Q32.32 reservations; acknowledged bytes added to cwnd; Q16 gain; exact 1 GiB with a short tail |
+| Native SCP plus virtual network | This branch's actual SCP core and shared network | 1 us default tick; Q32.32 tick reservations with integer-floor release; acknowledged bytes added to cwnd; Q16 gain; exact 1 GiB with a short tail |
 
 The full-MSS Python model sends 750,869 packets, or 1,073,742,670 bytes: **846 bytes more** than the native transfer. This deliberate algorithm-model convention must not be hidden when comparing completion times.
 

@@ -80,7 +80,7 @@ def compare(root, out):
                     if elapsed != expected_elapsed:
                         raise ValueError('Missing millisecond core observations')
                     expected_elapsed += 1
-                    while ack is not None and int(ack['elapsed_ms']) <= elapsed:
+                    while ack is not None and float(ack['elapsed_ms']) <= elapsed:
                         count = int(ack['ack_index'])
                         acknowledged += int(ack['payload_bytes'])
                         reference = mss+acknowledged if slow_start else float(ack['paper_ack_reference_bytes'])
@@ -106,7 +106,15 @@ def compare(root, out):
                     dense_writer.writerow(row)
                     if elapsed % case['rtt_ms'] == 0:
                         boundary_writer.writerow(row)
-                if expected_elapsed != end-origin+1 or count != summary['new_packets'] or ack is not None:
+                if not expected_elapsed - 1 <= end-origin < expected_elapsed:
+                    raise ValueError('Incomplete millisecond state observations')
+                while ack is not None:
+                    if float(ack['elapsed_ms']) > end-origin:
+                        raise ValueError('ACK is beyond the actual transfer end')
+                    count = int(ack['ack_index'])
+                    acknowledged += int(ack['payload_bytes'])
+                    ack = next(reader, None)
+                if count != summary['new_packets'] or acknowledged != summary['received_bytes']:
                     raise ValueError('Incomplete state/ACK observation join')
             eligible_late = []
             for row in load_packets(folder/case['packet_rtt_file'], case, summary):
@@ -140,7 +148,7 @@ def compare(root, out):
             summaries.append(dict(g_target=g, g_effective=effective, gain_q16=case['gain_q16'],
                 repeat=case['repeat'], mode=mode, ack_reference_rule=rule,
                 data_duration_ms=end-origin, observed_max_cwnd_bytes=summary['max_cwnd'],
-                mean_growth_MSS_per_RTT=(state['cwnd']/mss-1)/((end-origin)/case['rtt_ms']),
+                mean_growth_MSS_per_RTT=(summary['max_cwnd']/mss-1)/((end-origin)/case['rtt_ms']),
                 **{k: audit[k] for k in ('max_integer_update_error_bytes',
                     'last_full_packet_observed_cwnd_bytes', 'last_full_packet_paper_reference_bytes',
                     'last_full_packet_paper_relative_error', 'max_paper_square_identity_residual') if k in audit}))

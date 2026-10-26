@@ -45,7 +45,8 @@ int main(int argc, char **argv)
         else return 2;
     }
     if (!total || total > (1U << 30) || delay != 50 || rate || loss || seed != 1 ||
-        !timeout) return 2;
+        !timeout || timeout > UINT32_MAX / SCP_TICK_SCALE) return 2;
+    timeout *= SCP_TICK_SCALE;
     summary = fopen("summary.json", "w");
     if (!summary) return 2;
     vnet_init(delay, rate, loss, seed);
@@ -65,7 +66,11 @@ int main(int argc, char **argv)
     initial_cwnd = a.stream->cwnd;
     initial_ssthresh = a.stream->ssthresh;
     research_sender = a.stream;
+#if SCP_RESEARCH_CA
+    a.send_backlog_bytes = 8U << 20;
+#else
     a.send_backlog_bytes = 1U << 30;
+#endif
     printf("Generated SCP transfer: %" PRIu64 " bytes, %s, %u ms one-way, loss %u ppm, seed %u\n",
         total, rate ? "serialized link" : "fixed delay without serialization", delay, loss, seed);
     while (scp_now_time() < timeout) {
@@ -94,33 +99,37 @@ int main(int argc, char **argv)
     if (research_finish(observed_end)) ++research_errors;
     ok = ok && data_acked && received == total && sent == total && hash_a == hash_b && !research_errors;
     transfer_cleanup(&a); transfer_cleanup(&b);
-    fprintf(summary, "{\"success\":%s,\"requested_bytes\":%" PRIu64 ",\"accepted_bytes\":%" PRIu64 ",\"received_bytes\":%" PRIu64 ",\"checksum_algorithm\":\"FNV-1a-64\",\"checksum_a\":\"%016" PRIx64 "\",\"checksum_b\":\"%016" PRIx64 "\",\"simulated_ms\":%u,\"mbps\":%u,\"delay_ms\":%u,\"loss_ppm\":%u,\"seed\":%u,\"packets\":%" PRIu64 ",\"dropped\":%" PRIu64 "}\n", ok ? "true" : "false", total, sent, received, hash_a, hash_b, scp_now_time(), rate, delay, loss, seed, vnet_packets, vnet_dropped);
-    printf("%s: received=%" PRIu64 " A=%016" PRIx64 " B=%016" PRIx64 " virtual_ms=%u dropped=%" PRIu64 "\n", ok ? "PASS" : "FAIL", received, hash_a, hash_b, scp_now_time(), vnet_dropped);
+    fprintf(summary, "{\"success\":%s,\"requested_bytes\":%" PRIu64 ",\"accepted_bytes\":%" PRIu64 ",\"received_bytes\":%" PRIu64 ",\"checksum_algorithm\":\"FNV-1a-64\",\"checksum_a\":\"%016" PRIx64 "\",\"checksum_b\":\"%016" PRIx64 "\",\"simulated_ms\":%.3f,\"mbps\":%u,\"delay_ms\":%u,\"loss_ppm\":%u,\"seed\":%u,\"packets\":%" PRIu64 ",\"dropped\":%" PRIu64 "}\n", ok ? "true" : "false", total, sent, received, hash_a, hash_b, (double)scp_now_time() / SCP_TICK_SCALE, rate, delay, loss, seed, vnet_packets, vnet_dropped);
+    printf("%s: received=%" PRIu64 " A=%016" PRIx64 " B=%016" PRIx64 " virtual_ms=%.3f dropped=%" PRIu64 "\n", ok ? "PASS" : "FAIL", received, hash_a, hash_b, (double)scp_now_time() / SCP_TICK_SCALE, vnet_dropped);
     fclose(summary);
     summary = fopen("research_summary.json", "w");
     if (!summary) return 2;
-    fprintf(summary, "{\"initial_cwnd_bytes\":%u,\"initial_ssthresh_bytes\":%u,", initial_cwnd, initial_ssthresh);
-    fprintf(summary, "\"mode\":\"%s\",\"gain_policy\":\"%s\",\"gain_q16\":",
+    fprintf(summary, "{\"initial_cwnd_bytes\":%u,\"initial_ssthresh_bytes\":%u,\"tick_scale\":%u,\"clock_tick_ms\":%.3f,",
+        initial_cwnd, initial_ssthresh, (unsigned)SCP_TICK_SCALE, 1.0 / SCP_TICK_SCALE);
+    fprintf(summary, "\"ca_update\":\"byte-remainder\",\"mode\":\"%s\",\"gain_policy\":\"%s\",\"gain_q16\":",
         SCP_RESEARCH_CA ? "always_congestion_avoidance" : "always_slow_start",
         SCP_RESEARCH_GAIN_Q16 ? "fixed_q16" : "native_aimd");
     if (SCP_RESEARCH_GAIN_Q16) fprintf(summary, "%u", (unsigned)SCP_RESEARCH_GAIN_Q16);
     else fprintf(summary, "null");
-    fprintf(summary, ",\"engine\":\"scp_virtual\",\"transport\":\"%s\",\"rate_mbps\":%u,\"delay_ms\":%u,\"loss_ppm\":%u,\"seed\":%u,\"feedback_count\":%" PRIu64 ",\"feedback_min_ms\":%u,\"feedback_max_ms\":%u,",
+    fprintf(summary, ",\"engine\":\"scp_virtual\",\"transport\":\"%s\",\"rate_mbps\":%u,\"delay_ms\":%u,\"loss_ppm\":%u,\"seed\":%u,\"feedback_count\":%" PRIu64 ",\"feedback_min_ms\":%.3f,\"feedback_max_ms\":%.3f,",
         rate ? "serialized_link" : "fixed_delay", rate, delay, loss, seed,
-        research_feedback_count, research_feedback_min_ms, research_feedback_max_ms);
-    fprintf(summary, "\"mss_bytes\":%u,\"cwnd_limit_bytes\":%u,\"send_window_bytes\":%u,\"recv_window_bytes\":%u,",
-        (unsigned)MSS, CWND_WIN_MAX, SEND_WIN_INIT, RECV_WIN_INIT);
-    fprintf(summary, "\"status\":\"%s\",\"received_bytes\":%" PRIu64 ",\"accepted_bytes\":%" PRIu64 ",\"checksum_ok\":%s,\"checksum_a\":\"%016" PRIx64 "\",\"checksum_b\":\"%016" PRIx64 "\",\"dropped\":%" PRIu64 ",\"last_observed_ms\":%u,\"first_data_tx_ms\":",
+        research_feedback_count, (double)research_feedback_min_ticks / SCP_TICK_SCALE,
+        (double)research_feedback_max_ticks / SCP_TICK_SCALE);
+    fprintf(summary, "\"mss_bytes\":%u,\"application_backlog_bytes\":%u,\"cwnd_limit_bytes\":%u,\"send_window_bytes\":%u,\"recv_window_bytes\":%u,",
+        (unsigned)MSS, a.send_backlog_bytes, CWND_WIN_MAX, SEND_WIN_INIT, RECV_WIN_INIT);
+    fprintf(summary, "\"status\":\"%s\",\"received_bytes\":%" PRIu64 ",\"accepted_bytes\":%" PRIu64 ",\"checksum_ok\":%s,\"checksum_a\":\"%016" PRIx64 "\",\"checksum_b\":\"%016" PRIx64 "\",\"dropped\":%" PRIu64 ",\"last_observed_ms\":%.3f,\"first_data_tx_ms\":",
         ok ? "complete" : (scp_now_time() >= timeout ? "sim_timeout" : "failed"), received, sent,
-        hash_a == hash_b ? "true" : "false", hash_a, hash_b, vnet_dropped, observed_end);
-    if (research_first_data_ms == UINT32_MAX) fprintf(summary, "null");
-    else fprintf(summary, "%u", research_first_data_ms);
+        hash_a == hash_b ? "true" : "false", hash_a, hash_b, vnet_dropped, (double)observed_end / SCP_TICK_SCALE);
+    if (research_first_data_tick == UINT32_MAX) fprintf(summary, "null");
+    else fprintf(summary, "%.3f", (double)research_first_data_tick / SCP_TICK_SCALE);
     fprintf(summary, ",\"data_acked_ms\":");
-    if (data_acked) fprintf(summary, "%u", data_acked); else fprintf(summary, "null");
-    fprintf(summary, ",\"receiver_payload_complete_ms\":%u,\"last_data_tx_ms\":%u,\"close_kind\":\"%s\",\"simulated_ms\":%u,\"new_bytes\":%u,\"new_packets\":%" PRIu64 ",\"retrans_packets\":%" PRIu64 ",\"retrans_bytes\":%" PRIu64 ",\"observer_errors\":%u,\"max_cwnd\":%u,\"max_flight\":%u,\"max_backlog\":%u,\"min_snd_wnd\":%u,\"min_rcv_wnd\":%u,",
-        received_complete, research_last_data_ms, a.done && b.done ? "both_closed" : "incomplete",
-        scp_now_time(), research_new_bytes, research_new_packets,
+    if (data_acked) fprintf(summary, "%.3f", (double)data_acked / SCP_TICK_SCALE); else fprintf(summary, "null");
+    fprintf(summary, ",\"receiver_payload_complete_ms\":%.3f,\"last_data_tx_ms\":%.3f,\"close_kind\":\"%s\",\"simulated_ms\":%.3f,\"new_bytes\":%u,\"new_packets\":%" PRIu64 ",\"retrans_packets\":%" PRIu64 ",\"retrans_bytes\":%" PRIu64 ",\"observer_errors\":%u,\"max_cwnd\":%u,\"max_flight\":%u,\"max_backlog\":%u,\"min_snd_wnd\":%u,\"min_rcv_wnd\":%u,",
+        (double)received_complete / SCP_TICK_SCALE, (double)research_last_data_tick / SCP_TICK_SCALE, a.done && b.done ? "both_closed" : "incomplete",
+        (double)scp_now_time() / SCP_TICK_SCALE, research_new_bytes, research_new_packets,
         research_retrans_packets, research_retrans_bytes, research_errors, max_cwnd, max_flight, max_backlog, min_snd_wnd, min_rcv_wnd);
+    fprintf(summary, "\"first_data_tx_tick\":%u,\"data_acked_tick\":%u,\"last_observed_tick\":%u,\"last_data_tx_tick\":%u,",
+        research_first_data_tick, data_acked, observed_end, research_last_data_tick);
     fprintf(summary, "\"nonfinal_short_packets\":%" PRIu64 ",\"last_new_payload_bytes\":%u,\"data_payload_packet_counts\":{",
         research_nonfinal_short_packets, research_last_new_payload_bytes);
     for (i = 1; i <= MSS; ++i) {

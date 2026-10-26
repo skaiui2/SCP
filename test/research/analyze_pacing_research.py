@@ -40,7 +40,7 @@ def representative_gains(gains):
 
 
 def packet_metrics(slots, first_ms, last_ms, rtt_ms, exposure_ms):
-    """Exact statistics at 1 ms resolution; empty/singleton bins are flagged."""
+    """Exact endpoint span/mean and 1 ms histogram CV; empty/singleton bins are flagged."""
     if len(slots) != rtt_ms or any(type(n) is not int or n < 0 for n in slots):
         raise ValueError("slot_counts must contain rtt_ms nonnegative integers")
     n = sum(slots)
@@ -56,15 +56,16 @@ def packet_metrics(slots, first_ms, last_ms, rtt_ms, exposure_ms):
     if first_ms is None or last_ms is None:
         raise ValueError("Nonempty bins need first_tx_ms and last_tx_ms")
     span = last_ms - first_ms
-    if span != occupied[-1] - occupied[0]:
+    if abs(span - (occupied[-1] - occupied[0])) >= 1:
         raise ValueError("first/last timestamps disagree with the 1 ms histogram")
     hhi = sum(count * count for count in slots) / (n * n)
     mean_gap = span / (n - 1) if n >= 2 else None
+    histogram_mean = (occupied[-1] - occupied[0]) / (n - 1) if n >= 2 else None
     cv = None
-    if n >= 2 and mean_gap > 0:
+    if n >= 2 and histogram_mean > 0:
         positive_gaps = np.diff(occupied)
         mean_square = float(np.square(positive_gaps).sum()) / (n - 1)
-        cv = math.sqrt(max(0.0, mean_square - mean_gap ** 2)) / mean_gap
+        cv = math.sqrt(max(0.0, mean_square - histogram_mean ** 2)) / histogram_mean
     result.update(span_ms=span, span_rtt=span / rtt_ms,
                   occupied_fraction=len(occupied) / rtt_ms,
                   burst_fraction=max(slots) / n, hhi=hhi, effective_ms=1 / hhi,
@@ -85,7 +86,7 @@ def load_states(path, stream_fd):
                 raise ValueError(f"{path}:{line_number}: invalid JSON") from error
             if row.get("type") != "ss" or int(row.get("stream_fd", -1)) != stream_fd:
                 continue
-            t, window = int(row["t"]), int(row["cwnd"])
+            t, window = float(row["t"]), int(row["cwnd"])
             if times and t < times[-1]:
                 raise ValueError(f"{path}: decreasing timestamps; this experiment expects <24h")
             if window < 0:
@@ -97,7 +98,7 @@ def load_states(path, stream_fd):
                 windows.append(window)
     if not times:
         raise ValueError(f"{path}: no state records for stream_fd={stream_fd}")
-    return np.asarray(times, dtype=np.int64), np.asarray(windows, dtype=np.int64)
+    return np.asarray(times, dtype=float), np.asarray(windows, dtype=np.int64)
 
 
 def past_samples(times, windows, query):
@@ -113,9 +114,10 @@ def past_samples(times, windows, query):
 def load_packets(path, case, summary):
     rows, histograms, payloads = [], {}, {}
     rtt = int(case["rtt_ms"])
-    anchor = int(summary["first_data_tx_ms"])
-    end = int(summary.get("data_acked_ms") or summary["last_observed_ms"])
-    final_bin = (int(summary["last_data_tx_ms"])-anchor)//rtt
+    anchor = float(summary["first_data_tx_ms"])
+    end = float(summary.get("data_acked_ms") or summary["last_observed_ms"])
+    final_bin = math.floor((float(summary["last_data_tx_ms"])-anchor)/rtt)
+    scale = int(summary.get("tick_scale", case.get("tick_scale", 1)))
     with open_text(path) as source:
         for raw in csv.DictReader(source):
             k = int(raw["rtt_index"])
@@ -128,8 +130,8 @@ def load_packets(path, case, summary):
             slots = json.loads(raw["slot_counts"])
             if not isinstance(slots, list) or len(slots) != rtt or any(type(n) is not int or n < 0 for n in slots):
                 raise ValueError(f"{path}: invalid slot_counts")
-            first = int(raw["first_tx_ms"]) if raw["first_tx_ms"] else None
-            last = int(raw["last_tx_ms"]) if raw["last_tx_ms"] else None
+            first = float(raw["first_tx_ms"]) if raw["first_tx_ms"] else None
+            last = float(raw["last_tx_ms"]) if raw["last_tx_ms"] else None
             start = anchor + k * rtt
             exposure = max(0, min(rtt, end - start))
             if exposure <= 0:
@@ -138,13 +140,14 @@ def load_packets(path, case, summary):
                 if not raw["first_seq"] or not raw["last_seq"]:
                     raise ValueError(f"{path}: nonempty bin needs first/last sequence numbers")
                 occupied = [i for i, n in enumerate(slots) if n]
-                if first != start + occupied[0] or last != start + occupied[-1]:
+                if (round((first-start)*scale)//scale != occupied[0] or
+                        round((last-start)*scale)//scale != occupied[-1]):
                     raise ValueError(f"{path}: timestamps do not match the RTT bin")
                 if last >= end:
                     raise ValueError(f"{path}: DATA timestamp beyond the observation end")
             elif first is not None or last is not None or raw["first_seq"] or raw["last_seq"]:
                 raise ValueError(f"{path}: empty bin has packet metadata")
-            if any(slots[i] for i in range(exposure, rtt)):
+            if any(slots[i] for i in range(math.ceil(exposure), rtt)):
                 raise ValueError(f"{path}: histogram includes unobserved time")
             metrics = packet_metrics(slots, first, last, rtt, exposure)
             if int(raw["packet_count"]) != metrics["packet_count"]:
@@ -321,8 +324,8 @@ def analyze(root, out, allow_incomplete):
                           close_kind=summary.get("close_kind", "unknown")))
         if summary.get("first_data_tx_ms") is None:
             continue
-        anchor = int(summary["first_data_tx_ms"])
-        end = int(summary.get("data_acked_ms") or summary["last_observed_ms"])
+        anchor = float(summary["first_data_tx_ms"])
+        end = float(summary.get("data_acked_ms") or summary["last_observed_ms"])
         if end <= anchor:
             raise ValueError(f"{summary_path}: invalid data observation interval")
         times, windows = load_states(config.parent / case["state_log"], int(case["stream_fd"]))
@@ -336,7 +339,7 @@ def analyze(root, out, allow_incomplete):
                                    gain_q16=case.get('gain_q16'), repeat=repeat,
                                    status=status, rtt_index=k, elapsed_ms=k*rtt,
                                    cwnd_bytes=int(value) if np.isfinite(value) else None,
-                                   sample_age_ms=int(age) if np.isfinite(age) else None))
+                                   sample_age_ms=float(age) if np.isfinite(age) else None))
         cases[gain].append((anchor, end, times, windows))
         packet_rows.extend(load_packets(config.parent / case["packet_rtt_file"], case, summary))
     missing = sorted(expected - seen)
@@ -378,7 +381,7 @@ def analyze(root, out, allow_incomplete):
         dense_end = min(duration, 5000)
         grid = np.unique(np.concatenate((np.arange(dense_end+1, dtype=np.int64),
                                          np.arange(5000, duration+1, 100, dtype=np.int64),
-                                         np.asarray([duration], dtype=np.int64))))
+                                         np.asarray([duration], dtype=float))))
         matrix = np.asarray([past_samples(times, windows, anchor+grid)[0]
                              for anchor, end, times, windows in group])
         valid = np.isfinite(matrix).all(axis=0)

@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -51,7 +52,45 @@ def plot_sweep(directory):
     save(fig, directory / 'sweep.png')
 
 
+def normalize_log(path):
+    summary = path.parent / 'summary.json'
+    scale = json.loads(summary.read_text()).get('tick_scale', 1) if summary.exists() else 1
+    if scale == 1:
+        return
+    with path.open(encoding='utf-8') as source:
+        for line in source:
+            try: row = json.loads(line)
+            except ValueError: continue
+            if not isinstance(row, dict) or 't' not in row: continue
+            if 't_tick' in row:
+                if row.get('tick_scale') != scale: raise ValueError('Log tick scale differs from summary')
+                return
+            break
+    raw = path.with_name(path.stem + '-ticks' + path.suffix)
+    shutil.copyfile(path, raw)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    previous, epoch = None, 0
+    with raw.open(encoding='utf-8') as source, temporary.open('w', encoding='utf-8') as output:
+        for line in source:
+            try: row = json.loads(line)
+            except ValueError:
+                output.write(line)
+                continue
+            if isinstance(row, dict) and 't' in row:
+                tick = row['t']
+                if previous is not None and previous - tick > 2**31: epoch += 2**32
+                previous = tick
+                row['t_tick'], row['tick_scale'] = tick, scale
+                row['t'] = (tick + epoch) / scale
+                for field in ('srtt', 'rtt_base', 'rto'):
+                    if field in row: row[field] /= scale
+                line = json.dumps(row, separators=(',', ':')) + '\n'
+            output.write(line)
+    temporary.replace(path)
+
+
 def plot_log(path, out, stream_fd, max_points):
+    normalize_log(path)
     streams = set()
     with path.open(encoding='utf-8') as f:
         for line in f:
@@ -73,6 +112,7 @@ parser.add_argument('--out', type=Path, default=Path('plots'))
 parser.add_argument('--stream-fd', type=int)
 parser.add_argument('--max-points', type=int, default=10000)
 parser.add_argument('--recursive', action='store_true', help='Plot each completed sweep case')
+parser.add_argument('--normalize-only', action='store_true', help='Preserve virtual raw ticks and convert log times to ms')
 args = parser.parse_args()
 if args.max_points < 1: parser.error('--max-points must be positive')
 def plot_directory(directory):
@@ -80,7 +120,9 @@ def plot_directory(directory):
         if path.exists():
             plot_log(path, directory / path.stem, args.stream_fd, args.max_points)
 
-if args.input.is_file():
+if args.normalize_only:
+    normalize_log(args.input)
+elif args.input.is_file():
     plot_log(args.input, args.out, args.stream_fd, args.max_points)
 else:
     if (args.input / 'sweep.csv').exists(): plot_sweep(args.input)
@@ -96,4 +138,5 @@ else:
                 failures.append(directory)
                 print(f'Plot failed: {directory}: {error}', file=sys.stderr)
         if failures: raise SystemExit(f'Plotting failed for {len(failures)} cases')
-print(f'Plots written under {args.out if args.input.is_file() else args.input}')
+print(f'Time units normalized: {args.input}' if args.normalize_only else
+      f'Plots written under {args.out if args.input.is_file() else args.input}')

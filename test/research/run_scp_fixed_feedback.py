@@ -86,7 +86,12 @@ def validate_settings(settings):
     required = dict(rtt_ms=100, rate_mbps=0, loss_ppm=0, seed=1,
                     link_serialization=False, queue_delay=False,
                     backend='scp_virtual_fixed_delay', initial_cwnd_bytes=1430,
-                    mss_bytes=1430, payload_policy='full_mss_except_final')
+                    mss_bytes=1430, payload_policy='full_mss_except_final',
+                    application_backlog_bytes=(8 << 20) if settings.get('mode') == 'always_congestion_avoidance' else (1 << 30))
+    if settings.get('ca_update', 'byte-floor') not in ('byte-floor', 'byte-remainder'):
+        raise RuntimeError('Unknown configured CA update rule')
+    if settings.get('tick_scale', 1) not in (1, 1000):
+        raise RuntimeError('Research tick scale must be 1 or 1000 ticks per millisecond')
     if (settings.get('mode') not in modes or
             settings.get('initial_ssthresh_bytes') != modes[settings['mode']] or
             any(settings.get(field) != value for field, value in required.items())):
@@ -100,6 +105,10 @@ def validate(summary, settings, gain):
     required = dict(transport='fixed_delay', rate_mbps=0, delay_ms=50, loss_ppm=0, seed=1)
     if any(summary.get(field) != value for field, value in required.items()):
         raise RuntimeError('Actual C transport differs from the research conditions')
+    if summary.get('tick_scale', 1) != settings.get('tick_scale', 1):
+        raise RuntimeError('Compiled clock scale differs from the experiment')
+    if summary.get('ca_update', 'byte-floor') != settings.get('ca_update', 'byte-floor'):
+        raise RuntimeError('Compiled CA update differs from the experiment')
     for field in ('received_bytes', 'accepted_bytes', 'new_bytes'):
         if summary[field] != settings['bytes']:
             raise RuntimeError(f'Payload count differs: {field}')
@@ -126,7 +135,7 @@ def validate(summary, settings, gain):
             summary['gain_q16'] != gain_q16):
         raise RuntimeError('Actual C phase or gain policy differs from requested configuration')
     for field in ('cwnd_limit_bytes', 'send_window_bytes', 'recv_window_bytes',
-                  'initial_cwnd_bytes', 'initial_ssthresh_bytes'):
+                  'initial_cwnd_bytes', 'initial_ssthresh_bytes', 'application_backlog_bytes'):
         if summary[field] != settings[field]:
             raise RuntimeError(f'Compiled limit differs from configuration: {field}')
 
@@ -140,10 +149,12 @@ def run_case(out, executable, gain, repeat, settings, provenance):
     effective = gain_q16 / 65536 if gain_q16 is not None else None
     command = [str(executable), '--bytes', str(settings['bytes']), '--mbps', '0',
                '--delay-ms', '50', '--loss-ppm', '0', '--seed', '1']
+    scale = settings.get('tick_scale', 1)
     config = dict(settings, case_id=name, gain_id=gain['id'], g=gain['value'],
                   g_expression=gain['expression'], gain_policy=policy, gain_q16=gain_q16,
                   g_effective=effective, repeat=repeat,
-                  stream_fd=1, state_log='run.log.gz', packet_rtt_file='packet_rtt.csv.gz',
+                  stream_fd=1, state_log='run.log.gz', raw_state_log='run-ticks.log.gz' if scale != 1 else 'run.log.gz',
+                  state_log_units='ms', raw_state_log_units='ticks', packet_rtt_file='packet_rtt.csv.gz',
                   command=command, commit=provenance['commit'], engine='scp_virtual',
                   binary_sha256=provenance['binary_sha256'],
                   source_identity_sha256=provenance['source_identity_sha256'])
@@ -160,10 +171,13 @@ def run_case(out, executable, gain, repeat, settings, provenance):
         if run.returncode:
             raise RuntimeError(f'C executable exited with {run.returncode}')
         validate(summary, settings, gain)
-        atomic_json(folder / 'execution_audit.json', audit.transport_events(
-            folder / 'network_events.csv', summary, settings['mss_bytes']))
+        execution_audit = audit.transport_events(folder / 'network_events.csv', summary, settings['mss_bytes'])
+        atomic_json(folder / 'execution_audit.json', execution_audit)
         if digest(executable) != provenance['binary_sha256']:
             raise RuntimeError('Executable changed during the sweep')
+        with (folder / 'plot.log').open('wb') as output:
+            subprocess.run([sys.executable, str(ROOT / 'test/plot.py'), str(folder / 'run.log'), '--normalize-only'],
+                           stdout=output, stderr=subprocess.STDOUT, check=True, timeout=600)
         origin = summary['first_data_tx_ms']
         initial = growth = last = None
         with (folder / 'run.log').open(encoding='utf-8') as source:
@@ -178,26 +192,31 @@ def run_case(out, executable, gain, repeat, settings, provenance):
                             if (row['ssthresh'] != settings['initial_ssthresh_bytes'] or
                                     in_ss != (settings['mode'] == 'always_slow_start')):
                                 raise RuntimeError('Observed core left the configured congestion-control phase')
-                        if row['t'] == origin:
+                        if initial is None and row['t'] >= origin:
                             initial = row
                         if initial and growth is None and row['cwnd'] > initial['cwnd']:
                             growth = row
                         last = row
-        if not growth or growth['t'] - origin != 100 or growth['srtt'] != 100:
-            raise RuntimeError('First core window update is not at +100 ms')
-        summary.update(first_window_growth_ms=growth['t'], initial_cwnd_bytes=initial['cwnd'],
+        actual_growth = execution_audit['first_window_growth_ms']
+        if (execution_audit['first_window_growth_elapsed_ms'] != 100 or not growth or
+                not actual_growth <= growth['t'] < actual_growth + 1 or growth['srtt'] != 100 or
+                initial['cwnd'] != settings['initial_cwnd_bytes']):
+            raise RuntimeError('First ACK growth or its next millisecond state sample differs')
+        summary.update(first_window_growth_ms=actual_growth, first_window_growth_state_sample_ms=growth['t'], initial_cwnd_bytes=initial['cwnd'],
                        final_state_time_ms=last['t'],
                        cwnd_cap_reached=summary['max_cwnd'] >= settings['cwnd_limit_bytes'])
         atomic_json(folder / 'summary.json', summary)
         if policy == 'fixed_q16':
             analysis.load_packets(folder / 'packet_rtt.csv', config, summary)
-        with (folder / 'plot.log').open('wb') as output:
+        with (folder / 'plot.log').open('ab') as output:
             subprocess.run([sys.executable, str(ROOT / 'test/plot.py'), str(folder / 'run.log'),
                             '--out', str(folder / 'curves'), '--max-points', '10000'],
                            stdout=output, stderr=subprocess.STDOUT, check=True, timeout=600)
         integrity = {key: compress_verified(folder / filename) for key, filename in (
             ('state_log', 'run.log'), ('packet_rtt_file', 'packet_rtt.csv'),
             ('network_events', 'network_events.csv'))}
+        if scale != 1:
+            integrity['raw_state_log'] = compress_verified(folder / 'run-ticks.log')
         atomic_json(folder / 'artifact_integrity.json', integrity)
         atomic_json(folder / 'derived_integrity.json', {name: digest(folder / name) for name in
                     ('ack_updates.csv.gz', 'execution_audit.json', 'summary.json', 'config.json')})
@@ -228,9 +247,9 @@ def merge(inputs, out, settings):
                 config.get('gain_q16') != round(gain['value'] * 65536) or
                 config.get('g_effective') != round(gain['value'] * 65536) / 65536):
             raise ValueError('Incorrect gain identity')
-        for field in ('rtt_ms', 'bytes', 'loss_ppm', 'backend', 'mode', 'seed', 'rate_mbps',
+        for field in ('rtt_ms', 'bytes', 'loss_ppm', 'backend', 'mode', 'seed', 'rate_mbps', 'application_backlog_bytes', 'ca_update',
                       'initial_cwnd_bytes', 'initial_ssthresh_bytes',
-                      'link_serialization', 'queue_delay', 'mss_bytes', 'payload_policy'):
+                      'link_serialization', 'queue_delay', 'mss_bytes', 'payload_policy', 'tick_scale'):
             if config[field] != settings[field]:
                 raise ValueError(f'Mixed experimental condition: {field}')
         summary = json.loads((path.parent / 'summary.json').read_text())
@@ -271,6 +290,7 @@ def build(folder, gain, cmake, settings):
     commands = [[cmake, '-S', str(ROOT / 'test'), '-B', str(folder),
                  '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
                  '-DSCP_RESEARCH=ON', '-DSCP_TEST_LOG_INTERVAL_MS=1',
+                 f'-DSCP_TEST_TICK_SCALE={settings.get("tick_scale", 1)}',
                  f'-DSCP_RESEARCH_GAIN_Q16={gain_q16}',
                  f'-DSCP_RESEARCH_CA={int(settings["mode"] == "always_congestion_avoidance")}',
                  f'-DPython3_EXECUTABLE={sys.executable}'],
@@ -291,9 +311,13 @@ def main():
     parser.add_argument('--gain-id')
     parser.add_argument('--repeats', type=int)
     parser.add_argument('--bytes', type=int)
+    parser.add_argument('--tick-scale', type=int, choices=(1, 1000))
     parser.add_argument('--merge', type=Path)
     args = parser.parse_args()
     settings = json.loads((HERE / 'scp_fixed_experiment.json').read_text())
+    if args.tick_scale is not None:
+        settings['tick_scale'] = args.tick_scale
+        settings['timestamp_resolution_ms'] = 1 / args.tick_scale
     validate_settings(settings)
     if args.merge:
         merge(args.merge, args.out.resolve(), settings)
