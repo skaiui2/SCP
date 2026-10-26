@@ -266,7 +266,7 @@ def plot_dispersion(rows, path):
     ticks = sorted(set(np.linspace(0, len(gains)-1, min(12, len(gains))).astype(int)))
     axes[0].set_yticks(ticks, [f"{gains[i]:g}" for i in ticks])
     axes[0].set_ylabel("g rows (ordered categories; reference gains have unequal spacing)")
-    fig.suptitle("DATA transport-send callback dispersion · 1 ms resolution\n"
+    fig.suptitle("DATA transport-send callback dispersion · 1 ms histogram bins\n"
                  "Full nonfinal bins with at least two packets; blank cells are excluded")
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     fig.savefig(path, dpi=180)
@@ -395,7 +395,7 @@ def analyze(root, out, allow_incomplete):
                   statuses={status:sum(row["status"] == status for row in audit)
                             for status in sorted({row["status"] for row in audit})},
                   interpretation=["Fixed feedback RTT bins [nR,(n+1)R), not tail-packet genealogies.",
-                                  "Only transport-send callback DATA; 1 ms timestamp resolution.",
+                                  "Only transport-send callback DATA; configured tick timestamps and 1 ms histogram bins.",
                                   "State values use last observed sample; no linear interpolation or extrapolation.",
                                   "All available repetitions participate in cwnd common-support medians, including failure prefixes.",
                                   "Final DATA-send bin, partial bins and N<2 bins are excluded from dispersion aggregates.",

@@ -4,6 +4,7 @@ import gzip
 import json
 import math
 from collections import defaultdict
+from decimal import Decimal
 from statistics import median
 
 import numpy as np
@@ -11,18 +12,39 @@ from analyze_pacing_research import open_text, write_csv, load_packets, represen
 import matplotlib.pyplot as plt
 
 
-def native_states(path, origin, end):
-    previous = None
+def observed_tick(ms, scale, raw=None):
+    value = Decimal(str(ms)) * scale
+    tick = int(value)
+    if value != tick or (raw is not None and tick != raw):
+        raise ValueError('Observation disagrees with its declared tick grid or raw tick')
+    return tick
+
+
+def ack_tick(row, scale, duration):
+    tick = observed_tick(row['elapsed_ms'], scale, row.get('elapsed_tick'))
+    if tick > duration:
+        raise ValueError('ACK is beyond the actual transfer end')
+    return tick
+
+
+def native_states(path, origin, end, scale=1):
+    start_tick, end_tick = observed_tick(origin, scale), observed_tick(end, scale)
+    previous = previous_tick = None
     with open_text(path) as source:
         for line in source:
             if not line.startswith('{'):
                 continue
             row = json.loads(line)
-            if row.get('type') != 'ss' or row.get('stream_fd') != 1 or not origin <= row['t'] <= end:
+            if row.get('type') != 'ss' or row.get('stream_fd') != 1:
                 continue
-            if previous is not None and row['t'] != previous['t']:
+            if row.get('tick_scale', scale) != scale:
+                raise ValueError('State clock scale differs from the experiment')
+            tick = observed_tick(row['t'], scale, row.get('t_tick'))
+            if not start_tick <= tick <= end_tick:
+                continue
+            if previous is not None and tick != previous_tick:
                 yield previous
-            previous = row
+            previous, previous_tick = row, tick
     if previous is not None:
         yield previous
 
@@ -66,6 +88,14 @@ def compare(root, out):
             summary = json.loads((folder/'summary.json').read_text(encoding='utf-8'))
             audit = json.loads((folder/'execution_audit.json').read_text(encoding='utf-8'))
             origin, end, mss = summary['first_data_tx_ms'], summary['data_acked_ms'], case['mss_bytes']
+            scale = summary.get('tick_scale', case.get('tick_scale', 1))
+            if scale not in (1, 1000) or case.get('tick_scale', scale) != scale:
+                raise ValueError('Clock scale differs from the experiment')
+            origin_tick = observed_tick(origin, scale, summary.get('first_data_tx_tick'))
+            end_tick = observed_tick(end, scale, summary.get('data_acked_tick'))
+            duration_tick = end_tick - origin_tick
+            last_send_tick = observed_tick(summary['last_data_tx_ms'], scale, summary.get('last_data_tx_tick'))
+            rtt_tick = observed_tick(case['rtt_ms'], scale)
             g, effective = case['g'], case['g_effective']
             if effective != case['gain_q16']/65536:
                 raise ValueError('Effective gain disagrees with the Q16 callback')
@@ -74,13 +104,15 @@ def compare(root, out):
             with gzip.open(folder/'ack_updates.csv.gz', 'rt') as source:
                 reader = csv.DictReader(source)
                 ack = next(reader, None)
-                reference, count, acknowledged, expected_elapsed = mss, 0, 0, 0
-                for state in native_states(folder/case['state_log'], origin, end):
-                    elapsed = state['t']-origin
-                    if elapsed != expected_elapsed:
+                reference, count, acknowledged, expected_tick = mss, 0, 0, 0
+                for state in native_states(folder/case['state_log'], origin, end, scale):
+                    state_tick = observed_tick(state['t'], scale, state.get('t_tick'))
+                    elapsed_tick = state_tick - origin_tick
+                    elapsed = elapsed_tick / scale
+                    if elapsed_tick != expected_tick:
                         raise ValueError('Missing millisecond core observations')
-                    expected_elapsed += 1
-                    while ack is not None and float(ack['elapsed_ms']) <= elapsed:
+                    expected_tick += scale
+                    while ack is not None and ack_tick(ack, scale, duration_tick) <= elapsed_tick:
                         count = int(ack['ack_index'])
                         acknowledged += int(ack['payload_bytes'])
                         reference = mss+acknowledged if slow_start else float(ack['paper_ack_reference_bytes'])
@@ -95,22 +127,21 @@ def compare(root, out):
                         raise ValueError('Observed state is outside the configured congestion phase')
                     row = dict(case_id=case['case_id'], mode=mode, g_target=g, g_effective=effective,
                         gain_q16=case['gain_q16'], repeat=case['repeat'], elapsed_ms=elapsed,
-                        rtt=elapsed/case['rtt_ms'], cwnd_bytes=state['cwnd'], flight_bytes=state['flight'],
+                        rtt=elapsed_tick/rtt_tick, cwnd_bytes=state['cwnd'], flight_bytes=state['flight'],
                         reserved_bytes=state['reserved'], srtt_ms=state['srtt'], ssthresh_bytes=state['ssthresh'],
                         ack_count=count, ack_reference_bytes=reference, ack_error_bytes=state['cwnd']-reference,
                         ack_relative_error=(state['cwnd']-reference)/reference,
                         sqrt_ack_reference_bytes=None if slow_start else mss*math.sqrt(1+2*count),
                         linear_1_MSS_per_RTT_reference_bytes=None if slow_start else mss*(1+elapsed/case['rtt_ms']),
-                        all_payload_sent=state['t']>=summary['last_data_tx_ms'],
+                        all_payload_sent=state_tick>=last_send_tick,
                         cwnd_cap_reached=state['cwnd']>=case['cwnd_limit_bytes'])
                     dense_writer.writerow(row)
-                    if elapsed % case['rtt_ms'] == 0:
+                    if elapsed_tick % rtt_tick == 0:
                         boundary_writer.writerow(row)
-                if not expected_elapsed - 1 <= end-origin < expected_elapsed:
+                if not expected_tick - scale <= duration_tick < expected_tick:
                     raise ValueError('Incomplete millisecond state observations')
                 while ack is not None:
-                    if float(ack['elapsed_ms']) > end-origin:
-                        raise ValueError('ACK is beyond the actual transfer end')
+                    ack_tick(ack, scale, duration_tick)
                     count = int(ack['ack_index'])
                     acknowledged += int(ack['payload_bytes'])
                     ack = next(reader, None)
@@ -147,8 +178,8 @@ def compare(root, out):
                                          ('state_log', 'packet_rtt_file', 'network_events')))
             summaries.append(dict(g_target=g, g_effective=effective, gain_q16=case['gain_q16'],
                 repeat=case['repeat'], mode=mode, ack_reference_rule=rule,
-                data_duration_ms=end-origin, observed_max_cwnd_bytes=summary['max_cwnd'],
-                mean_growth_MSS_per_RTT=(summary['max_cwnd']/mss-1)/((end-origin)/case['rtt_ms']),
+                data_duration_ms=duration_tick/scale, observed_max_cwnd_bytes=summary['max_cwnd'],
+                mean_growth_MSS_per_RTT=(summary['max_cwnd']/mss-1)/(duration_tick/rtt_tick),
                 **{k: audit[k] for k in ('max_integer_update_error_bytes',
                     'last_full_packet_observed_cwnd_bytes', 'last_full_packet_paper_reference_bytes',
                     'last_full_packet_paper_relative_error', 'max_paper_square_identity_residual') if k in audit}))
