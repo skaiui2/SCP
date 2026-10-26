@@ -47,7 +47,7 @@ case summaries -> sweep merge/report -> aggregate tables and overview
 ```
 
 - `common/transfer.c` owns the shared generated-data workload, receive validation, checksum reply, and close progression. File transfers reuse the UDP/SCP path with input/output files. Fairness runs add a timed two-flow workload; short CTest competition runs check liveness.
-- `virtual/vnet.c` owns packet delivery and link conditions, not retransmission or congestion control. Those remain in SCP. Each `vnet_step()` increments the clock by one tick (1 us by default), drains A-to-B arrivals, drains B-to-A arrivals, then processes core timers; the caller subsequently steps the applications. The optional rate model serializes packets before propagation and applies seeded random loss to DATA and control traffic in both directions; it has no finite queue, duplication, or deliberate reordering model. Setting the rate to zero disables serialization.
+- `virtual/vnet.c` owns packet delivery and link conditions, not retransmission or congestion control. Those remain in SCP. Each `vnet_step()` increments the clock by one tick (1 us by default), drains A-to-B arrivals, drains B-to-A arrivals, then processes core timers; the caller subsequently steps the applications. The rate model serializes packets before propagation and applies seeded random loss to DATA and control traffic in both directions. `--queue-packets N` bounds each direction's serialization queue, including service but excluding propagation; full queues drop the arriving packet without consuming link service. Zero keeps the unlimited default. Setting the rate to zero disables serialization. There is no duplication or deliberate reordering model.
 - `common/udp_runner.c` and `common/real_clock.c` provide real sockets and time. `run.py` starts the receiver before the sender, checks endpoint results, and organizes logs, file hashes, and plots. Localhost tests exercise OS networking but impose no WAN link constraints.
 - Focused virtual cases exercise lifecycle, allocation failure, control-packet loss, and closure. Bulk transfers and sweeps reuse the shared workload rather than separate transfer implementations.
 - `virtual/sweep.py` reads the single `network_sweep.json` grid, runs cases with explicit configurations and seeds, and merges results. GitHub distributes the grid across eight shards. Each case and connection retains its own core-state plots; the aggregate overview supplements them.
@@ -242,24 +242,51 @@ python3 test/virtual/sweep.py --merge test/results
 ```
 
 `virtual/network_sweep.json` is the only grid configuration. Profiles: quick
-(18 cases), broad (300), large (144 at 1 GiB plus 8 at 10 GiB), stress (8 at
+(21 cases of 1 MiB, three seeds), broad (300), large (144 at 1 GiB plus 8 at 10 GiB), stress (8 at
 100 GiB). `--config`, `--jobs`, `--shard-index` and `--shard-count` control execution.
-Every sweep automatically calls the original `analyze_scp.py` for each case and each stream.
-Images and `summary.txt` are saved in `<case>/run/flow1/` and `flow2/`.
-Each case has its own configuration, curves, summary and log. CSV/Markdown reports
-include failures; goodput includes startup, ACK drain and close time.
+Main guards functional correctness and adaptation rather than repeating phase-specific
+pacing research. Every sweep consumes core stdout as a stream and keeps at most 256
+state snapshots per connection in `curve.csv`, with `curve.png`, `summary.json` and
+`config.json`. Successful sweeps write no raw text logs. Failures retain at most 32
+diagnostic lines and an exact one-line `Repro:` command. `plan.json` records source
+revision/dirty state and executable SHA-256. Standalone `run.py` continues using the
+author's original log analyzer. Goodput includes startup, ACK drain and closure.
+
+The virtual transfer harness includes the unchanged `scp.c`, as the lifecycle test
+does, to count core allocations and inspect timers. A test-side timeout callback
+counts RTO invocations and forwards to the installed controller callback; the core's
+`timeout_count` is consecutive, not cumulative. Every tick checks send sequence
+ordering, allowing FIN's extra sequence. Transport observations check contiguous
+first DATA transmissions and count repeated sequences in both directions. B validates
+every byte and returns its FNV-1a checksum. Cleanup requires no outstanding core
+allocations, streams or timers. CI additionally runs virtual CTest under AddressSanitizer
+with leak detection. Plot decimation does not decimate these checks.
+
+`summary.json` adds checksum/sequence/cleanup booleans, cumulative DATA `timeouts`,
+`retrans_packets`, `queue_dropped`, SRTT mean/max, bufferbloat and startup. `timeouts`
+is the sum of both endpoints (`timeouts_a` and `timeouts_b`). SRTT is
+sampled after sender ACK processing, excluding initial zeros: its mean is ACK-weighted,
+not time-weighted. Bufferbloat divides it by propagation RTT. Startup measures the
+first crossing of 80% of the **observed peak cwnd**, from first DATA in propagation
+RTTs, not 80% BDP utilization. Unavailable startup or zero-delay bufferbloat is -1.
+The requested `spurious_rexmit_ratio` is DATA retransmissions / max(1, all drops);
+it does not identify which retransmissions were spurious. `sweep.csv` distinguishes
+`transfer_success` from overall `success`, which also applies the profile's zero-RTO
+gate. A quality failure may reproduce a complete transfer with nonzero `timeouts`.
 
 GitHub Actions first reports functional/integrity PASS/FAIL, then runs two
 1 GiB transfers: a virtual network with a 1000 Mbps link and a real Linux UDP
 file transfer over localhost. `transfer-1g-curves` contains reports, summaries and
-curves; `transfer-1g-logs` contains the original protocol logs for redrawing.
+curves; `transfer-1g-logs` is uploaded only on failure.
 Generated input/output files are not uploaded.
 The real UDP link has no imposed bandwidth/delay cap and is not a WAN measurement.
-Eight virtual-network shards sweep configured parameters. The report job uses
-the original analyzer in each sweep shard to draw every case's core-state curves;
-the report job adds the sweep overview. `network-report` contains only the aggregate
-`report.md`, `sweep.csv` and `sweep.png`; download `network-shard-*` for individual
-case configurations, raw logs and per-connection plots. Artifacts are retained for
+Eight virtual-network shards sweep configured parameters and draw compact per-case
+cwnd/flight and SRTT curves for both connections. `network-report` contains
+`report.md`, `sweep.csv`, `sweep.png` and `bufferbloat.png`; download `network-shard-*`
+for individual configurations, compact CSVs and curves, without raw packet logs.
+The Actions Summary renders tables and links the image bundle. Artifact-local PNGs
+are not hosted image URLs; the downloaded Markdown embeds the PNGs alongside it.
+Artifacts are retained for
 14 days; after expiration, rerun the workflow or the commands above. Local Linux real
 network tests remain available (`ctest --test-dir test/build -L real`).
 Relevant pushes run `scenarios`; manual runs can select any configured profile. Missing cases in recovered shards or failed
@@ -293,14 +320,15 @@ remain explicit runs rather than mandatory local smoke tests.
 
 ## Focused loss scenarios
 
-The default GitHub push sweep is `scenarios`: 150 runs of 64 MiB, using five
+The default GitHub push sweep is `scenarios`: 200 runs of 64 MiB, using five
 seeds and losses of 0, 0.01, 0.05, 0.1, 0.3, 0.5, 1, 2, 3 and 5 percent.
-All scenarios use 100 Mbps: `wan` has 50 ms base RTT, `wifi-simplified` 10 ms,
-and `intercontinental` 200 ms. These are controlled experimental settings,
+`wan` uses 100 Mbps, 50 ms base RTT and 100 queue slots; `wifi-simplified` uses
+100 Mbps, 10 ms and unlimited queueing. `intercontinental` uses 200 ms, both
+100 and 1000 Mbps, and unlimited queueing. These are controlled experimental settings,
 not measured representative networks. Loss affects both directions, including
 ACK and control packets. Wi-Fi contention and link-layer retries are not modeled.
 
-Select `scenarios-1g` manually in Actions for 36 runs: 1 GiB, three seeds,
+Select `scenarios-1g` manually in Actions for 48 runs: 1 GiB, three seeds,
 and 0, 0.1, 1 and 3 percent loss in each scenario. Local equivalents:
 
 ```sh
@@ -308,9 +336,19 @@ python3 test/virtual/sweep.py test/build/scp_virtual --profile scenarios --out t
 python3 test/virtual/sweep.py test/build/scp_virtual --profile scenarios-1g --out test/results/scenarios-1g
 ```
 
-Each run uses the original state-log analyzer. `report.md` includes individual
+The optional `shallow-stress` profile uses 8 MiB, three seeds, 100 Mbps, 50 ms RTT,
+20 queue slots and zero random loss. It tests drop-tail recovery and completion.
+Wi-Fi emphasizes loss retention and seed spread; WAN emphasizes bufferbloat and the
+retransmission/drop ratio; intercontinental adds a strict zero-DATA-RTO gate and
+startup measurement. Current baseline: serialization makes the first 200 ms path
+feedback later than the 200 ms initial RTO. The new gate reports this even when
+integrity and closure pass; tests do not alter core timers to hide it.
+
+`report.md` includes individual
 failures and successful-run median/min/max goodput relative to the zero-loss
-baseline; `sweep.png` plots loss versus median goodput with min/max shading.
+baseline; `sweep.png` plots loss versus median goodput with min/max shading and seed
+dots. `bufferbloat.png` shows delay inflation. Grouping includes bandwidth, delay,
+queue capacity and payload size. Failed gates appear as red crosses and in repro lists.
 
 ## Reanalyze existing pacing results
 
