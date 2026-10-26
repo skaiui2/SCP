@@ -16,19 +16,20 @@ spec.loader.exec_module(analysis)
 
 
 class AnalysisTests(unittest.TestCase):
-    def native_trace(self, mode='always_congestion_avoidance', policy='fixed_q16', sizes=(1430, 1430)):
+    def native_trace(self, mode='always_congestion_avoidance', policy='fixed_q16', sizes=(1430, 1430), ca_update='byte-floor'):
         mss = window = 1430
+        counter = 0
         next_slot = 0
         seq = 10
         rows = []
         fields = ['event', 'direction', 't_ms', 'flags', 'seq', 'ack', 'payload_bytes',
-                  'echo_send_ms', 'cwnd_bytes', 'planned_q32_ms', 'gain_q16', 'next_slot_q32_ms']
+                  'echo_send_ms', 'cwnd_bytes', 'cwnd_cnt', 'planned_q32_ms', 'gain_q16', 'next_slot_q32_ms']
 
         def record(event, direction, t, flags, data_seq, ack, size, echo, plan=''):
             gain = 65536 if policy == 'fixed_q16' else (
                 90852 if mode == 'always_slow_start' else 107998)
             rows.append(dict(zip(fields, (event, direction, t, flags, data_seq, ack, size,
-                                         echo, window, plan, gain, next_slot))))
+                                         echo, window, counter, plan, gain, next_slot))))
 
         for index, size in enumerate(sizes):
             sent = 100 + index * 100
@@ -43,10 +44,16 @@ class AnalysisTests(unittest.TestCase):
             record('send', 1, sent + 50, 2, 0, end, 0, sent)
             record('input_returned', 0, sent + 50, 1, seq, 0, size, sent)
             record('arrival', 1, sent + 100, 2, 0, end, 0, sent)
-            window += size if mode == 'always_slow_start' else max(1, mss * size // window)
+            if mode == 'always_slow_start':
+                window += size
+            elif ca_update == 'byte-remainder':
+                increment, counter = divmod(mss * size + counter, window)
+                window += increment
+            else:
+                window += max(1, mss * size // window)
             record('input_returned', 1, sent + 100, 2, 0, end, 0, sent)
             seq = end
-        summary = dict(mode=mode, gain_policy=policy,
+        summary = dict(mode=mode, gain_policy=policy, ca_update=ca_update,
                        gain_q16=65536 if policy == 'fixed_q16' else None,
                        data_acked_ms=sent + 100, received_bytes=sum(sizes), new_packets=len(sizes),
                        first_data_tx_ms=100)
@@ -107,7 +114,7 @@ class AnalysisTests(unittest.TestCase):
         settings = json.loads((ROOT / 'scp_fixed_experiment.json').read_text())
         settings['bytes'] = 2 * settings['mss_bytes'] + 17
         gain = next(g for g in settings['gains'] if g['id'] == 'critical')
-        summary = dict(engine='scp_virtual', status='complete', g=gain['value'],
+        summary = dict(engine='scp_virtual', status='complete', g=gain['value'], ca_update=settings['ca_update'],
                        mode=settings['mode'], gain_policy='fixed_q16',
                        gain_q16=round(gain['value'] * 65536),
                        transport='fixed_delay', rate_mbps=0, delay_ms=50, loss_ppm=0, seed=1,
@@ -118,14 +125,14 @@ class AnalysisTests(unittest.TestCase):
                        feedback_count=3, feedback_min_ms=100, feedback_max_ms=100,
                        observer_errors=0, dropped=0, retrans_packets=0,
                        **{field: settings[field] for field in
-                          ('cwnd_limit_bytes', 'send_window_bytes', 'recv_window_bytes')})
-        summary.update(initial_cwnd_bytes=1430, initial_ssthresh_bytes=settings['initial_ssthresh_bytes'])
+                          ('cwnd_limit_bytes', 'send_window_bytes', 'recv_window_bytes', 'application_backlog_bytes')})
+        summary.update(tick_scale=settings.get('tick_scale', 1), initial_cwnd_bytes=1430, initial_ssthresh_bytes=settings['initial_ssthresh_bytes'])
         runner.validate(summary, settings, gain)
         for changes in (dict(nonfinal_short_packets=1), dict(last_new_payload_bytes=1430),
                         dict(data_payload_packet_counts={'1430': 1, '17': 1, '715': 2}),
                         dict(feedback_count=2), dict(feedback_max_ms=102),
                         dict(gain_q16=1), dict(gain_policy='native_aimd'),
-                        dict(loss_ppm=1), dict(rate_mbps=1000), dict(transport='serialized_link')):
+                        dict(ca_update='byte-floor'), dict(application_backlog_bytes=1), dict(loss_ppm=1), dict(tick_scale=7), dict(rate_mbps=1000), dict(transport='serialized_link')):
             with self.subTest(changes=changes), self.assertRaises(RuntimeError):
                 runner.validate(dict(summary, **changes), settings, gain)
         with self.assertRaises(RuntimeError):
@@ -133,12 +140,52 @@ class AnalysisTests(unittest.TestCase):
         native = dict(id='native', value=None, expression='native AIMD gain', policy='native_aimd')
         runner.validate(dict(summary, gain_q16=None, gain_policy='native_aimd', g=None), settings, native)
 
+    def test_microsecond_tick_audit_preserves_packet_timing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'events.csv'
+            fields, original, summary = self.native_trace()
+            fields = [name.replace('planned_q32_ms', 'planned_q32_tick').replace('next_slot_q32_ms', 'next_slot_q32_tick') for name in fields]
+            fields += ['t_tick', 'echo_send_tick']
+            rows = []
+            for raw in original:
+                row = dict(raw)
+                row['t_tick'] = row['t_ms'] * 1000 + 371
+                row['echo_send_tick'] = row['echo_send_ms'] * 1000 + 371
+                row['t_ms'] = row['t_tick'] / 1000
+                row['echo_send_ms'] = row['echo_send_tick'] / 1000
+                for key in ('planned_q32', 'next_slot_q32'):
+                    value = row.pop(key + '_ms')
+                    row[key + '_tick'] = int(value) * 1000 + (371 << 32) if value != '' else ''
+                rows.append(row)
+            summary.update(tick_scale=1000, first_data_tx_tick=100371, data_acked_tick=300371,
+                           first_data_tx_ms=100.371, data_acked_ms=300.371)
+            self.write_trace(path, fields, rows)
+            result = audit.transport_events(path, summary, 1430)
+            self.assertEqual(result['tick_scale'], 1000)
+            self.assertEqual(result['first_window_growth_elapsed_ms'], 100)
+            rows[1]['t_tick'] += 1
+            rows[1]['t_ms'] = rows[1]['t_tick'] / 1000
+            self.write_trace(path, fields, rows)
+            with self.assertRaisesRegex(RuntimeError, 'Forward DATA'):
+                audit.transport_events(path, summary, 1430)
+
+    def test_microsecond_endpoints_and_histogram_resolution(self):
+        slots = [1] + [0] * 98 + [1]
+        metrics = analysis.packet_metrics(slots, 100.123, 199.999, 100, 100)
+        self.assertAlmostEqual(metrics['span_ms'], 99.876)
+        self.assertAlmostEqual(metrics['gap_mean_ms'], 99.876)
+
     def test_ca_audit_uses_the_second_ack_and_integer_rounding(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'events.csv'
             fields, rows, summary = self.native_trace()
+            fields.remove('cwnd_cnt')
+            for row in rows:
+                row.pop('cwnd_cnt')
+            summary.pop('ca_update')
             self.write_trace(path, fields, rows)
             result = audit.transport_events(path, summary, 1430)
+            self.assertEqual(result['ca_update'], 'byte-floor')
             self.assertEqual(result['max_integer_update_error_bytes'], 0)
             with gzip.open(path.with_name('ack_updates.csv.gz'), 'rt') as source:
                 updates = list(csv.DictReader(source))
@@ -146,6 +193,25 @@ class AnalysisTests(unittest.TestCase):
             rows[-1]['cwnd_bytes'] = 4290
             self.write_trace(path, fields, rows)
             with self.assertRaises(RuntimeError):
+                audit.transport_events(path, summary, 1430)
+
+    def test_ca_remainder_and_zero_increment_are_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'events.csv'
+            fields, rows, summary = self.native_trace(sizes=(1430,) * 8 + (1,), ca_update='byte-remainder')
+            self.write_trace(path, fields, rows)
+            result = audit.transport_events(path, summary, 1430)
+            self.assertTrue(result['remainder_per_ack_verified'])
+            self.assertEqual(rows[-1]['cwnd_bytes'], rows[-2]['cwnd_bytes'])
+            self.assertEqual(rows[-1]['cwnd_cnt'], 3716)
+            rows[-1]['cwnd_cnt'] += 1
+            self.write_trace(path, fields, rows)
+            with self.assertRaisesRegex(RuntimeError, 'remainder'):
+                audit.transport_events(path, summary, 1430)
+            rows[-1]['cwnd_cnt'] -= 1
+            rows[-2]['cwnd_cnt'] += 1
+            self.write_trace(path, fields, rows)
+            with self.assertRaisesRegex(RuntimeError, 'remainder'):
                 audit.transport_events(path, summary, 1430)
 
     def test_phase_gain_and_short_tail_audits(self):

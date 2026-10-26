@@ -18,7 +18,7 @@ static void observe_network(unsigned direction, int event, const void *buf, size
     assert(len == 1000 && ((const unsigned char *)buf)[sizeof(*hdr)] == 0x5a);
     ++arrivals;
     delivered |= UINT64_C(1) << ntohl(hdr->seq);
-    if (now < 11) assert(now == 3);
+    if (now < 11U * SCP_TICK_SCALE) assert(now == 3U * SCP_TICK_SCALE);
 }
 
 static void raw_packet(unsigned direction, unsigned seq)
@@ -43,13 +43,13 @@ static uint64_t network_batch(uint32_t rate, uint32_t loss, uint32_t seed)
     vnet_observe(observe_network);
     arrivals = inputs = 0; delivered = 0;
     for (i = 0; i < 64; ++i) raw_packet(i % 2, i);
-    for (i = 1; i <= 300; ++i) {
+    for (i = 1; i <= 300U * SCP_TICK_SCALE; ++i) {
         assert(!vnet_step() && scp_now_time() == i);
-        if (!rate && i < 3) assert(!arrivals);
-        if (!rate && i == 3) assert(arrivals + vnet_dropped == 64);
-        if (rate && i < 11) assert(!arrivals);
-        if (rate && i == 11) assert(arrivals == 2);
-        if (rate && i == 19) assert(arrivals == 4);
+        if (!rate && i < 3U * SCP_TICK_SCALE) assert(!arrivals);
+        if (!rate && i == 3U * SCP_TICK_SCALE) assert(arrivals + vnet_dropped == 64);
+        if (rate && i < 11U * SCP_TICK_SCALE) assert(!arrivals);
+        if (rate && i == 11U * SCP_TICK_SCALE) assert(arrivals == 2);
+        if (rate && i == 19U * SCP_TICK_SCALE) assert(arrivals == 4);
     }
     assert(vnet_packets == 64 && arrivals + vnet_dropped == 64 && inputs == arrivals);
     if (!loss) assert(delivered == UINT64_MAX);
@@ -79,13 +79,13 @@ static void observe_transfer(unsigned direction, int event, const void *buf, siz
     if (direction != 1 || event != VNET_INPUT_RETURNED || hdr->flags != SCP_FLAG_ACK) return;
     for (i = 0; i < sent_count; ++i) {
         if (ntohl(hdr->ack) != sequence[i] + size[i]) continue;
-        assert(!confirmed[i] && now - sent_at[i] == 100);
+        assert(!confirmed[i] && now - sent_at[i] == 100U * SCP_TICK_SCALE);
         assert(ntohl(hdr->time_val) == sent_at[i]);
         confirmed[i] = 1;
         ++ack_count;
         assert(!scp_is_closed(transfer_a.fd));
         assert(transfer_a.stream->cwnd == MSS + (i < 32 ? (i + 1) * MSS : 32 * MSS + 17));
-        assert(transfer_a.stream->srtt == 100);
+        assert(transfer_a.stream->srtt == 100U * SCP_TICK_SCALE);
         break;
     }
 }
@@ -105,7 +105,7 @@ static void native_transfer(uint32_t backlog, int observe)
     assert(!transfer_init(&transfer_a, &ta, 1, 2, 1, total, SCP_CC_AIMD));
     transfer_a.send_backlog_bytes = backlog;
     vnet_attach(&transfer_a, &transfer_b);
-    while (scp_now_time() < 10000) {
+    while (scp_now_time() < 10000U * SCP_TICK_SCALE) {
         assert(!vnet_step() && !transfer_step(&transfer_a) && !transfer_step(&transfer_b));
         if (!transfer_a.done) assert(transfer_a.stream->snd_seq_q - transfer_a.stream->snd_una <= backlog);
         if (transfer_a.done && transfer_b.done) { ok = 1; break; }
@@ -121,6 +121,7 @@ int main(void)
 {
     uint64_t pattern;
     unsigned fired = 0;
+    unsigned i;
     struct scp_timer timer = {0};
     assert(!scp_init(16));
     network_batch(0, 0, 7);
@@ -133,13 +134,14 @@ int main(void)
     vnet_observe(observe_network);
     arrivals = inputs = 0; delivered = 0;
     raw_packet(0, 0);
-    scp_timer_create(&timer, after_delivery, &fired, 3);
-    assert(!vnet_step() && !vnet_step() && !fired);
+    scp_timer_create(&timer, after_delivery, &fired, 3U * SCP_TICK_SCALE);
+    for (i = 1; i < 3U * SCP_TICK_SCALE; ++i)
+        assert(!vnet_step() && !fired);
     assert(!vnet_step() && fired == 1);
     vnet_free();
     native_transfer(TRANSFER_SEND_BACKLOG_BYTES, 1);
     native_transfer(2 * MSS, 1);
     native_transfer(TRANSFER_SEND_BACKLOG_BYTES, 0);
-    puts("PASS: shared network modes, 1ms order, duplex serialization, loss replay, copies, native 100ms feedback, MSS and backlog");
+    puts("PASS: shared network modes, tick order, duplex serialization, loss replay, copies, native 100ms feedback, MSS and backlog");
     return 0;
 }

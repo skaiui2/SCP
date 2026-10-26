@@ -47,7 +47,7 @@ case summaries -> sweep merge/report -> aggregate tables and overview
 ```
 
 - `common/transfer.c` owns the shared generated-data workload, receive validation, checksum reply, and close progression. File transfers reuse the UDP/SCP path with input/output files. Fairness runs add a timed two-flow workload; short CTest competition runs check liveness.
-- `virtual/vnet.c` owns packet delivery and link conditions, not retransmission or congestion control. Those remain in SCP. Each `vnet_step()` increments the clock by 1 ms, drains A-to-B arrivals, drains B-to-A arrivals, then processes core timers; the caller subsequently steps the applications. The optional rate model serializes packets before propagation and applies seeded random loss to DATA and control traffic in both directions; it has no finite queue, duplication, or deliberate reordering model. Setting the rate to zero disables serialization.
+- `virtual/vnet.c` owns packet delivery and link conditions, not retransmission or congestion control. Those remain in SCP. Each `vnet_step()` increments the clock by one tick (1 us by default), drains A-to-B arrivals, drains B-to-A arrivals, then processes core timers; the caller subsequently steps the applications. The optional rate model serializes packets before propagation and applies seeded random loss to DATA and control traffic in both directions; it has no finite queue, duplication, or deliberate reordering model. Setting the rate to zero disables serialization.
 - `common/udp_runner.c` and `common/real_clock.c` provide real sockets and time. `run.py` starts the receiver before the sender, checks endpoint results, and organizes logs, file hashes, and plots. Localhost tests exercise OS networking but impose no WAN link constraints.
 - Focused virtual cases exercise lifecycle, allocation failure, control-packet loss, and closure. Bulk transfers and sweeps reuse the shared workload rather than separate transfer implementations.
 - `virtual/sweep.py` reads the single `network_sweep.json` grid, runs cases with explicit configurations and seeds, and merges results. GitHub distributes the grid across eight shards. Each case and connection retains its own core-state plots; the aggregate overview supplements them.
@@ -60,14 +60,16 @@ Both clocks advance one tick at a time, including idle ticks. Neither virtual ne
 
 | Detail | Reviewed Python model | SCP plus shared virtual network |
 |---|---|---|
-| Clock | 1 µs ticks | 1 ms ticks |
+| Clock | 1 µs ticks | 1 µs virtual ticks by default; configurable 1 ms; real UDP stays 1 ms |
 | Queues | Sender holds pending reservations; network has a DATA queue and an ACK queue | Pending pacing is in the core; two FIFO queues contain packets actually sent in each direction |
 | Same-tick order | Forward arrivals, reverse ACKs, then due sends; each ACK may itself send due packets | Drain forward arrivals, reverse arrivals and then core timers; ACK handling can itself send due packets |
-| Pacing arithmetic | Retain fractional slots; dispatch at their integer µs part; unquantized gain | Q32.32 ms accumulated slots, Q16 gain; due-send check uses the integer part |
-| CA window | Real-valued `w += 1/w` | Integer bytes: `max(1, floor(MSS * acked / cwnd))` |
+| Pacing arithmetic | Retain fractional slots; dispatch at their integer µs part; unquantized gain | Q32.32 tick slots, Q16 gain; timer wakes at the head packet's integer due tick |
+| CA window | Real-valued `w += 1/w` by default; optional byte-floor and byte-remainder ablations | Integer bytes: divide `MSS * acked + cwnd_cnt` by the old window and retain the remainder |
 | Payload | Full MSS packets, rounding the request up | Exact requested bytes, possibly a short last packet |
 
-These are explicit differences. The old Python script floored each gap, which could erase SS spacing; the rebuilt model fixes that arithmetic mismatch. Integer CA still discards fractional growth at each ACK. Formula evaluation remains a mathematical reference, not clock-driven Python or native execution. Complete descendant groups have separate actual span, occupied span including the retained slot, and start drift. Exclude terminal groups from summaries; do not equate fixed-bin span with absence of drift.
+These are explicit differences. The old Python script floored each gap, which could erase SS spacing; the rebuilt model fixes that arithmetic mismatch. AIMD now retains fractional CA growth in `cwnd_cnt`, clearing it on initialization, loss and timeout; SS still adds the actual acknowledged bytes. A CA update may add zero bytes while retaining credit for later ACKs. Formula evaluation remains a mathematical reference, not clock-driven Python or native execution. Complete descendant groups have separate actual span, occupied span including the retained slot, and start drift. Exclude terminal groups from summaries; do not equate fixed-bin span with absence of drift.
+
+`SCP_TICK_SCALE` is the number of protocol ticks per physical millisecond. The core default is 1; virtual targets use 1000 through `SCP_TEST_TICK_SCALE`, while `scp_udp` keeps 1. Build the two virtual clock configurations with `cmake -S test -B build-us -DSCP_TEST_TICK_SCALE=1000` and `cmake -S test -B build-ms -DSCP_TEST_TICK_SCALE=1`. RTT, retransmission, persist and idle state remain in ticks. PROB calibration and its Q16 delay retain physical milliseconds. When plotting a high-resolution run, `test/plot.py` preserves the original `run-ticks.log` and converts the analysis copy to milliseconds; `--normalize-only` performs just this conversion. Summary metadata records `tick_scale`, and raw packet events remain available for timing audits.
 
 The [packet model](models/pacing.py) and [independent checker](models/check.py) make the continuous model → discrete algorithm → sandwich argument → Python comparison reviewable. The engineering CA gain is the fixed constant `C = 1.5 * ln(3)`; SS uses `2 * ln(2)`. SCP supplies their Q16 approximations through the controller callbacks: AIMD uses SS/CA values `90852`/`107998`, while PROB always uses the CA value. A small trace can be inspected before the 22-gain, three-repeat scan:
 
@@ -80,6 +82,8 @@ python3 test/models/check.py --runs results/python-ss --out results/ss-check
 python3 test/models/check.py --runs results/python-ca --out results/ca-check
 ```
 
+To isolate CA byte rounding while keeping the same clock, gain and queues, run the model with `--ca-update real`, `--ca-update byte-floor` or `--ca-update byte-remainder`. The floor mode reproduces the old per-ACK truncation and minimum one-byte increase; the remainder mode reproduces the current core's quotient and retained credit. Add `--ack-windows` to save each observed ACK's window and remainder for the independent checker. For a native-gain comparison, pass `--gain 1.647918701171875` (`107998 / 65536`) to each run. Python keeps full MSS packets, so compare matching ACKs before the native short final packet. Retained credit closely follows the real-valued recurrence, but does not guarantee a window error strictly below one byte.
+
 For the CA sweep centred on `C = 1.5 * ln(3)`:
 
 ```sh
@@ -90,7 +94,7 @@ python3 test/models/plot.py --python-root results/python-ca-critical --out resul
 
 This grid has 22 fixed gains and three repeats per gain: it adds `C ± 0.005`, `±0.01`, `±0.02`, `±0.05` and `±0.10`, with wider points from 0.9 to 8. Compare complete groups 300–600 and 900–1200 within each 1 GiB run. The compact [CA sweep table](https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-critical-sweep.csv) and [figure](https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-sweep.pdf) retain the plotted measurements without bundling raw logs.
 
-The same batch also provides [cwnd and gain comparisons](https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-cwnd.pdf) and [within-run span and start-delay trajectories](https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-trajectories.pdf). The [new native control table](https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-native-constant.csv) records the actual SCP result separately: 88 ms late-group span under the same 100 ms feedback, versus the real-window Python model's 99.569 ms.
+The same batch also provides [cwnd and gain comparisons](https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-cwnd.pdf) and [within-run span and start-delay trajectories](https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-trajectories.pdf). The [1 ms native baseline table](https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-native-constant.csv) records the earlier actual SCP result: 88 ms late-group span under the same 100 ms feedback, versus the real-window Python model's 99.569 ms. It retains its original clock and source identity when compared with a fresh 1 us run.
 
 Default input is a 1 GiB request rounded up to full MSS packets. `--policy` runs the current phase policy with unquantized model gains. The checker evaluates the ACK-index recurrence without importing the network loop; it checks every repetition and exports both clock-matched and continuous-time references. The earlier `1 + 1/(2w)` formula remains a continuous reference in the paper and discussion notes; earlier policy results identify that adaptive formula explicitly.
 
