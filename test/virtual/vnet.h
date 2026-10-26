@@ -9,8 +9,10 @@ void vnet_observe(vnet_observer callback);
 void vnet_attach(struct transfer *a, struct transfer *b);
 struct vnet_endpoint { unsigned direction; };
 void vnet_init(uint32_t delay_ms, uint32_t mbps, uint32_t loss_ppm, uint32_t seed);
+void vnet_queue_limit(uint32_t packets);
 int vnet_send(void *user, const void *buf, size_t len);
 int vnet_step(void);
 void vnet_free(void);
 extern uint64_t vnet_packets, vnet_dropped;
+extern uint64_t vnet_queue_dropped, vnet_pending;
 #endif

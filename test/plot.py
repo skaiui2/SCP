@@ -19,20 +19,38 @@ def plot_sweep(directory):
     with (directory / 'sweep.csv').open() as f:
         rows = list(csv.DictReader(f))
     if any(row.get('scenario') for row in rows):
-        fig, ax = plt.subplots(figsize=(9, 5))
         groups = {}
         for row in rows:
-            groups.setdefault((row['scenario'], int(row['bytes'])), []).append(row)
-        for (scene, size), group in sorted(groups.items()):
-            losses = sorted({int(row['loss_ppm']) for row in group})
-            values = [[float(row['goodput_mbps']) for row in group if int(row['loss_ppm']) == loss and row['success'].lower() == 'true'] for loss in losses]
-            points = [(loss, data) for loss, data in zip(losses, values) if data]
-            ax.plot([loss / 10000 for loss, data in points], [median(data) for loss, data in points], 'o-', label=f'{scene}, {size / 2**20:g} MiB')
-            ax.fill_between([loss / 10000 for loss, data in points], [min(data) for loss, data in points], [max(data) for loss, data in points], alpha=0.15)
-        ax.set(xlabel='Independent packet loss (%)', ylabel='Goodput Mbps', title='Successful runs: median and min/max; failures listed in report')
-        ax.grid(alpha=0.3)
-        ax.legend()
-        save(fig, directory / 'sweep.png')
+            key = (row['scenario'], int(row['bytes']), int(row['mbps']), int(row['delay_ms']), int(row.get('queue_packets', 0)))
+            groups.setdefault(key, []).append(row)
+        for field, output, ylabel in [('goodput_mbps', 'sweep.png', 'Goodput (Mbps)'),
+                                      ('bufferbloat_ratio', 'bufferbloat.png', 'Mean SRTT / propagation RTT')]:
+            fig, ax = plt.subplots(figsize=(11, 6))
+            for (scene, size, rate, delay, queue), group in sorted(groups.items()):
+                losses = sorted({int(row['loss_ppm']) for row in group})
+                points = []
+                for loss in losses:
+                    data = [float(row[field]) for row in group if int(row['loss_ppm']) == loss
+                            and row['success'].lower() == 'true' and row.get(field) not in (None, '')
+                            and float(row[field]) >= 0]
+                    if data: points.append((loss / 10000, data))
+                failed = [row for row in group if row['success'].lower() != 'true'
+                          and row.get(field) not in (None, '') and float(row[field]) >= 0]
+                if failed:
+                    ax.scatter([int(row['loss_ppm'])/10000 for row in failed],
+                               [float(row[field]) for row in failed], marker='x', color='crimson',
+                               label=f'{scene}, {rate} Mbps: failed gate (observed value)', zorder=5)
+                if not points: continue
+                label = f'{scene}, {size/2**20:g} MiB, {rate} Mbps, RTT {2*delay} ms, Q {queue}'
+                line, = ax.plot([x for x, v in points], [median(v) for x, v in points], 'o-', label=label)
+                ax.fill_between([x for x, v in points], [min(v) for x, v in points], [max(v) for x, v in points], color=line.get_color(), alpha=0.12)
+                for x, values in points:
+                    ax.scatter([x]*len(values), values, color=line.get_color(), s=12, alpha=0.5)
+            ax.set(xlabel='Independent loss (%)', ylabel=ylabel,
+                   title=f'SCP virtual network: {sum(r["success"].lower() != "true" for r in rows)} failed / {len(rows)} runs\nSuccessful seeds: dots, median and min/max envelope; failures retained in report')
+            ax.grid(alpha=0.3)
+            if ax.get_legend_handles_labels()[0]: ax.legend(fontsize=8)
+            save(fig, directory / output)
         return
     size = min(int(r['bytes']) for r in rows)
     grid = [r for r in rows if int(r['bytes']) == size]
@@ -50,6 +68,32 @@ def plot_sweep(directory):
     axes[0][-1].legend()
     fig.suptitle(f'{size / 2**20:g} MiB; successful cases averaged across seeds')
     save(fig, directory / 'sweep.png')
+
+
+def plot_curve(path):
+    summary = path.with_name('summary.json')
+    metadata = json.loads(summary.read_text()) if summary.exists() else {}
+    scale = metadata.get('tick_scale', 1000)
+    with path.open() as source:
+        rows = list(csv.DictReader(source))
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    for fd in sorted({r['stream_fd'] for r in rows}):
+        flow = [r for r in rows if r['stream_fd'] == fd]
+        ticks, epoch, previous = [], 0, 0
+        for row in flow:
+            tick = int(row['tick'])
+            if previous - tick > 2**31: epoch += 2**32
+            ticks.append((tick + epoch) / scale / 1000)
+            previous = tick
+        axes[0].plot(ticks, [int(r['cwnd'])/1024 for r in flow], label=f'flow {fd} cwnd')
+        axes[0].plot(ticks, [int(r['flight'])/1024 for r in flow], '--', label=f'flow {fd} flight')
+        axes[1].plot(ticks, [int(r['srtt_ticks'])/scale for r in flow], label=f'flow {fd}')
+    axes[0].set(ylabel='KiB', title='Bounded core-state samples (up to 256 per flow); integrity checked throughout')
+    axes[1].set(xlabel='Virtual time (s)', ylabel='SRTT (ms)')
+    for ax in axes:
+        ax.grid(alpha=0.3)
+        if rows: ax.legend()
+    save(fig, path.with_suffix('.png'))
 
 
 def normalize_log(path):
@@ -128,6 +172,8 @@ else:
     if (args.input / 'sweep.csv').exists(): plot_sweep(args.input)
     elif not args.recursive: plot_directory(args.input)
     if args.recursive:
+        for curve in sorted(args.input.rglob('curve.csv')):
+            plot_curve(curve)
         failures = []
         for log in sorted(args.input.rglob('run.log')):
             directory = log.parent
