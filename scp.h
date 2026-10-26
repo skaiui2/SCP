@@ -24,18 +24,21 @@ struct scp_timer {
 
 //Set by yourself.
 #define SCP_DEBUG 0
+#ifndef SCP_TICK_SCALE
+#define SCP_TICK_SCALE 1U
+#endif
 #ifndef SCP_DUMP_SS
 #define SCP_DUMP_SS 0
 #endif
 #ifndef SCP_DUMP_INTERVAL_MS
-#define SCP_DUMP_INTERVAL_MS 100U
+#define SCP_DUMP_INTERVAL_MS (100U * (SCP_TICK_SCALE))
 #endif
 #define SCP_RUN_DEBUG 0
 #define SCP_DUMP_HDR  0
 
 #define RETRANS_COUNT_MAX 1000
-#define SCP_RTO_MIN 200
-#define SCP_RTO_MAX 2000
+#define SCP_RTO_MIN (200U * (SCP_TICK_SCALE))
+#define SCP_RTO_MAX (2000U * (SCP_TICK_SCALE))
 #define RETRANS_RECO_MAX 1
 #define RETRANS_GAP_MAX  4
 #ifndef SCP_RECV_LIMIT
@@ -51,14 +54,13 @@ struct scp_timer {
 #define CWND_WIN_MAX  (1 << 20)
 #endif
 #define MTU 1460
-#define PERSIST_INTERVAL 200
-#define SCP_PACING_TICK_MS 1U
+#define PERSIST_INTERVAL (200U * (SCP_TICK_SCALE))
 #define SCP_PACING_SHIFT 32U
 #define SCP_GAIN_ONE_Q16 (1U << 16)
 #define SCP_GAIN_SS_Q16 90852U     /* round(2 * ln(2) * 2^16). */
 #define SCP_GAIN_CA_Q16 107998U    /* round((3 * ln(3) / 2) * 2^16). */
 #define MAX_IDLE_FAIL  3
-#define IDLE_TIMEOUT 100000
+#define IDLE_TIMEOUT (100000U * (SCP_TICK_SCALE))
 #define MSS (MTU - sizeof(struct scp_hdr))
 #define P_WND  32
 #define SEND_MEM_MAX  (1 << 30)
@@ -78,7 +80,7 @@ struct scp_buf {
     };
     size_t len;
     uint32_t seq; // save it from hdr.
-    uint64_t sent_time; // planned pacing send time, Q32.32 milliseconds
+    uint64_t sent_time; // planned pacing send time, Q32.32 ticks
     uint8_t dir:1;
     uint8_t *data;
     uint32_t payload_off;
@@ -191,6 +193,7 @@ struct scp_stream {
     uint8_t peer_fin;
 
     uint32_t cwnd;                      // congestion window
+    uint32_t cwnd_cnt;                  // CA byte-counting remainder (< cwnd)
     uint8_t dup_acks;                   // duplicate ACK counter
 
     uint8_t fr_active;

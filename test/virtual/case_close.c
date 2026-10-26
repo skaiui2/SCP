@@ -36,7 +36,7 @@ int main(void)
     assert(!scp_set_cc(1, SCP_CC_AIMD) && !scp_set_cc(2, SCP_CC_AIMD));
     assert(!scp_connect(1));
     while (sender->state != SCP_ESTABLISHED || receiver->state != SCP_ESTABLISHED) {
-        assert(scp_now_time() < 13000 && !vnet_step());
+        assert(scp_now_time() < 13000U * SCP_TICK_SCALE && !vnet_step());
     }
     assert(!scp_send(1, data, size));
     assert(!scp_send(2, data, size));
@@ -44,7 +44,7 @@ int main(void)
     assert(!fin_seen && sender->close_pending);
     while (!scp_is_closed(1) || !scp_is_closed(2)) {
         int n;
-        assert(scp_now_time() < 200000 && !vnet_step());
+        assert(scp_now_time() < 200000U * SCP_TICK_SCALE && !vnet_step());
         if (!scp_is_closed(1)) {
             while ((n = scp_recv(1, buf, sizeof(buf))) > 0) {
                 assert(received_a + (size_t)n <= size);

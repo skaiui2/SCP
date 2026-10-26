@@ -35,7 +35,7 @@ int main(int argc, char **argv)
         transfer_init(&b, &tb, 2, 1, 0, 1048576, SCP_CC_AIMD) ||
         transfer_init(&a, &ta, 1, 2, 1, 1048576, SCP_CC_AIMD)) return 1;
     vnet_attach(&a, &b);
-    while (scp_now_time() < 30000) {
+    while (scp_now_time() < 30000U * SCP_TICK_SCALE) {
         if (vnet_step() || transfer_step(&a) || transfer_step(&b)) break;
         if (!established && !scp_is_closed(a.fd) && !scp_is_closed(b.fd) &&
             a.stream->state == SCP_ESTABLISHED && b.stream->state == SCP_ESTABLISHED) {

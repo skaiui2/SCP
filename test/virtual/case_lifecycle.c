@@ -154,7 +154,7 @@ int main(void)
     {
         struct transfer listener;
         assert(!transfer_init(&listener, &t, 3, 4, 0, 1073741824, SCP_CC_AIMD));
-        for (now = 0; now < 1000; ++now) {
+        for (now = 0; now < 1000U * SCP_TICK_SCALE; ++now) {
             scp_timer_process();
             assert(!transfer_step(&listener) && !listener.failed && !listener.done);
         }
@@ -167,7 +167,7 @@ int main(void)
     assert(!scp_stream_alloc(&t, 1, 3));
     assert(hashmap_get(&scp_stream_map, (void *)1) == s);
     assert(!scp_connect(1));
-    for (now = 1; now < 13000; ++now) scp_timer_process();
+    for (now = 1; now < 13000U * SCP_TICK_SCALE; ++now) scp_timer_process();
     assert(scp_is_closed(1) && !hashmap_get(&scp_stream_map, (void *)1) && live == 0);
     s = scp_stream_alloc(&t, 1, 2); s->state = SCP_ESTABLISHED;
     assert(!scp_send(1, data, sizeof(data)));

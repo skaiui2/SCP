@@ -1,4 +1,7 @@
 #include <assert.h>
+#ifndef CWND_WIN_MAX
+#define CWND_WIN_MAX (1U << 30)
+#endif
 #include "../../scp.c"
 
 static uint32_t now, sent_at[28];
@@ -110,6 +113,7 @@ static void test_rate_change(uint32_t start)
     assert(last->sent_time == base + 5 * ms);
     assert(s->pacing_next_time == base + 7 * ms + ms / 2);
     assert(sent_count == 1);
+    assert(s->t_pacing.expire == start + 5 && s->t_pacing.timeout == 4);
 
     s->cwnd = 2 * MSS;
     assert(!scp_send(1, data, sizeof(data)));
@@ -126,7 +130,7 @@ static void test_rate_change(uint32_t start)
     assert(last->sent_time == base + 8 * ms);
     assert(s->pacing_next_time == base + 10 * ms + ms / 2);
     assert(sent_count == 3 && sent_at[2] == now);
-    assert(!s->schedule_next && !s->pacing_next);
+    assert(!s->schedule_next && !s->pacing_next && !s->t_pacing.active);
     scp_stream_free(s);
     assert(!scp_timer_tree.count);
 }
@@ -141,7 +145,7 @@ static void test_pacing_gain(void)
     assert(!scp_install_cc(&ss, SCP_CC_AIMD));
     assert(ss.cc_pacing_gain == scp_aimd_pacing_gain);
     assert(ss.cc_pacing_gain(&ss) == 90852U);
-    assert(scp_pacing_time(&ss, MSS) == ms);
+    assert(scp_pacing_time(&ss, MSS) == ms * SCP_TICK_SCALE);
     ss.srtt = 100;
     assert(scp_pacing_time(&ss, MSS) == UINT64_C(309817039400));
 
@@ -172,6 +176,114 @@ static void test_pacing_gain(void)
     assert(scp_pacing_time(&ss, MSS) == UINT64_C(26062980490));
 }
 
+static void test_timer_due(uint32_t start)
+{
+    struct scp_stream ss = {0};
+    struct scp_buf packet = {0};
+    uint64_t tick = 1ULL << SCP_PACING_SHIFT;
+    uint64_t base = (uint64_t)start << SCP_PACING_SHIFT;
+
+    now = start;
+    ss.pacing_next = &packet;
+    packet.sent_time = base + 25 * tick + tick / 2;
+    scp_pacing_arm_timer(&ss);
+    assert(ss.t_pacing.active && ss.t_pacing.expire == start + 25);
+    assert(ss.t_pacing.timeout == 25 && scp_timer_tree.count == 1);
+    now = start + 1;
+    scp_pacing_arm_timer(&ss);
+    assert(ss.t_pacing.expire == start + 25 && ss.t_pacing.timeout == 25);
+    assert(scp_timer_tree.count == 1);
+
+    packet.sent_time = base + 30 * tick;
+    scp_pacing_arm_timer(&ss);
+    assert(ss.t_pacing.expire == start + 30 && ss.t_pacing.timeout == 29);
+    packet.sent_time = base;
+    scp_pacing_arm_timer(&ss);
+    assert(ss.t_pacing.expire == now + 1 && ss.t_pacing.timeout == 1);
+    packet.sent_time = (uint64_t)now << SCP_PACING_SHIFT;
+    scp_pacing_arm_timer(&ss);
+    assert(ss.t_pacing.expire == now + 1 && ss.t_pacing.timeout == 1);
+    ss.pacing_next = NULL;
+    scp_pacing_arm_timer(&ss);
+    assert(!ss.t_pacing.active && !scp_timer_tree.count);
+}
+
+static void test_prob_time_units(void)
+{
+    struct scp_stream ss = {0};
+
+    assert(!scp_prob_configure(&ss, 100, 8000));
+    assert(ss.prob_beta_q16 == 1817 && ss.prob_gamma_q16 == -134460);
+    ss.rtt_base = 100U * SCP_TICK_SCALE;
+    ss.srtt = 150U * SCP_TICK_SCALE;
+    scp_md_prob(&ss);
+    assert(ss.d == 50 * 65536);
+#if SCP_TICK_SCALE == 1000U
+    ss.srtt = ss.rtt_base + SCP_TICK_SCALE / 2;
+    scp_md_prob(&ss);
+    assert(ss.d == 32768);
+#endif
+    ss.p_ema = 65535;
+    ss.rtt_sample = 100U * SCP_TICK_SCALE;
+    assert(scp_prob_on_rtt(&ss) == 100U * SCP_TICK_SCALE +
+           (uint32_t)(((uint64_t)65535 * SCP_RTO_MIN) >> 16));
+}
+
+static void test_ca_credit(void)
+{
+    struct scp_stream ss = {0};
+    uint32_t acked[] = {MSS, 584, 2 * MSS, 3 * MSS + 584, 0};
+    uint32_t before, high;
+    uint64_t credit;
+    unsigned i;
+
+    ss.cwnd_cnt = 17;
+    scp_aimd_init(&ss);
+    assert(ss.cwnd == MSS && !ss.cwnd_cnt);
+    ss.ssthresh = MSS;
+    ss.cwnd = 4 * MSS;
+    for (i = 0; i < 200; ++i) {
+        before = ss.cwnd;
+        credit = ((uint64_t)MSS * acked[i % 5]) + ss.cwnd_cnt;
+        scp_aimd_on_ack(&ss, acked[i % 5]);
+        assert(ss.cwnd >= before && ss.cwnd_cnt < before);
+        assert(((uint64_t)(ss.cwnd - before) * before) + ss.cwnd_cnt == credit);
+    }
+
+    high = 3U * MSS * MSS;
+    ss.cwnd = high;
+    ss.cwnd_cnt = 0;
+    scp_aimd_on_ack(&ss, MSS);
+    assert(ss.cwnd == high && ss.cwnd_cnt == MSS * MSS);
+    scp_aimd_on_ack(&ss, MSS);
+    assert(ss.cwnd == high && ss.cwnd_cnt == 2U * MSS * MSS);
+    scp_aimd_on_ack(&ss, MSS);
+    assert(ss.cwnd == high + 1 && !ss.cwnd_cnt);
+    ss.cwnd = high;
+    scp_aimd_on_ack(&ss, high);
+    assert(ss.cwnd == high + MSS && !ss.cwnd_cnt);
+
+    ss.cwnd = CWND_WIN_MAX - 1;
+    ss.cwnd_cnt = 0;
+    scp_aimd_on_ack(&ss, (2U * CWND_WIN_MAX / MSS) + 1);
+    assert(ss.cwnd == CWND_WIN_MAX && ss.cwnd_cnt < ss.cwnd);
+
+    ss.cwnd = 20 * MSS;
+    ss.cwnd_cnt = 17;
+    scp_aimd_on_loss(&ss);
+    assert(ss.cwnd == 10 * MSS && ss.ssthresh == 10 * MSS && !ss.cwnd_cnt);
+    ss.cwnd = 20 * MSS;
+    ss.cwnd_cnt = 17;
+    scp_aimd_on_timeout(&ss);
+    assert(ss.cwnd == MSS && ss.ssthresh == 10 * MSS && !ss.cwnd_cnt);
+    scp_aimd_init(&ss);
+    for (i = 0; i < 4; ++i) {
+        before = ss.cwnd;
+        scp_aimd_on_ack(&ss, acked[i]);
+        assert(ss.cwnd == before + acked[i] && !ss.cwnd_cnt);
+    }
+}
+
 int main(void)
 {
     struct scp_stream ss = {0};
@@ -179,12 +291,12 @@ int main(void)
 
     ss.cc_pacing_gain = unit_gain;
     ss.cwnd = MSS;
-    ss.rto = 200;
-    assert(scp_pacing_time(&ss, MSS) == ms);
-    ss.rto = 2000;
-    assert(scp_pacing_time(&ss, MSS) == ms);
+    ss.rto = SCP_RTO_MIN;
+    assert(scp_pacing_time(&ss, MSS) == ms * SCP_TICK_SCALE);
+    ss.rto = SCP_RTO_MAX;
+    assert(scp_pacing_time(&ss, MSS) == ms * SCP_TICK_SCALE);
     ss.cwnd = 2 * MSS;
-    assert(scp_pacing_time(&ss, MSS) == ms);
+    assert(scp_pacing_time(&ss, MSS) == ms * SCP_TICK_SCALE);
 
     ss.srtt = 100;
     assert(scp_pacing_time(&ss, MSS) == 50 * ms);
@@ -192,11 +304,15 @@ int main(void)
     assert(scp_pacing_time(&ss, MSS) == 100 * ms);
     assert(scp_pacing_time(&ss, 1) > 0 && scp_pacing_time(&ss, 1) < ms);
     test_pacing_gain();
+    test_prob_time_units();
+    test_ca_credit();
     assert(!scp_init(4));
     test_fractional_queue(0);
     test_fractional_queue(UINT32_MAX);
     test_rate_change(0);
     test_rate_change(UINT32_MAX);
-    puts("PASS: integer scaling, fractional append, floor dispatch, tail gap, rate change, window credit, idle restart, wrap");
+    test_timer_due(0);
+    test_timer_due(UINT32_MAX - 10);
+    puts("PASS: integer scaling, fractional append, floor dispatch, tail gap, on-demand expiry, rate change, CA credit carry/reset, window credit, idle restart, wrap");
     return 0;
 }

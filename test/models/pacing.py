@@ -1,6 +1,7 @@
 """Independent packet model; it does not execute or replace the SCP core."""
 import argparse
 import csv
+import gzip
 import hashlib
 import math
 from collections import deque
@@ -64,10 +65,13 @@ class Span:
 
 
 class Sender:
-    def __init__(self, mode, gain, total, network, spacing, initial_mss):
+    def __init__(self, mode, gain, total, network, spacing, initial_mss, ca_update):
         self.mode, self.fixed_gain, self.total = mode, gain, total
         self.network, self.spacing = network, spacing
         self.cwnd = float(initial_mss)
+        self.ca_update = ca_update
+        self.byte_cwnd = initial_mss * MSS
+        self.ca_credit = 0
         self.flight = self.scheduled = self.acked = self.zero_gaps = 0
         self.next_send_time = 0.0
         self.pending = deque()
@@ -110,7 +114,22 @@ class Sender:
         assert self.network.tick - packet.sent == RTT_TICKS
         self.flight -= 1
         self.acked += 1
-        self.cwnd += 1 if self.mode == "ss" else 1 / self.cwnd
+        if self.mode == "ss":
+            self.cwnd += 1
+        elif self.ca_update == "real":
+            self.cwnd += 1 / self.cwnd
+        else:
+            if self.ca_update == "byte-floor":
+                self.byte_cwnd += max(1, (MSS * MSS) // self.byte_cwnd)
+            else:
+                self.ca_credit += MSS * MSS
+                increment = self.ca_credit // self.byte_cwnd
+                self.ca_credit %= self.byte_cwnd
+                self.byte_cwnd += increment
+            self.cwnd = self.byte_cwnd / MSS
+        if self.network.ack_windows:
+            self.network.ack_windows.writerow((self.acked, self.network.tick,
+                                               self.network.state()[0], self.ca_credit))
         self.update_gap()
         self.network.expected_groups[packet.generation + 1] = math.floor(self.cwnd)
         self.network.record("ACK_RECEIVED", packet, self.network.tick)
@@ -131,16 +150,18 @@ class Receiver:
 
 
 class Network:
-    def __init__(self, trace=None):
+    def __init__(self, trace=None, ack_windows=None):
         self.tick = self.sent = 0
         self.data, self.acks = deque(), deque()
         self.trace = trace
+        self.ack_windows = ack_windows
         self.windows, self.rtts, self.generations, self.expected_groups = {}, {}, {}, {}
 
     def state(self):
         a = self.sender
         assert a.flight == (self.sent - a.acked) + len(a.pending)
-        return (a.cwnd * MSS, a.flight * MSS,
+        window = a.cwnd * MSS if a.ca_update == "real" else a.byte_cwnd
+        return (window, a.flight * MSS,
                 (self.sent - a.acked) * MSS, len(a.pending) * MSS)
 
     def record(self, event, packet, due):
@@ -184,9 +205,10 @@ def milliseconds(ticks):
     return f"{ticks / TICKS_PER_MS:.3f}"
 
 
-def simulate(mode, gain, packets, trace=None, spacing="accumulated", initial_mss=1):
-    network = Network(trace)
-    network.sender = Sender(mode, gain, packets, network, spacing, initial_mss)
+def simulate(mode, gain, packets, trace=None, spacing="accumulated", initial_mss=1,
+             ca_update="real", ack_windows=None):
+    network = Network(trace, ack_windows)
+    network.sender = Sender(mode, gain, packets, network, spacing, initial_mss, ca_update)
     network.receiver = Receiver(network)
     network.expected_groups[0] = initial_mss
     network.sender.try_send(0)
@@ -234,13 +256,17 @@ def main():
     gain_choice.add_argument("--policy", action="store_true", help="unquantized phase policy: SS 2 ln(2), CA 1.5 ln(3)")
     parser.add_argument("--spacing", choices=("accumulated", "gap-us"), default="accumulated")
     parser.add_argument("--initial-mss", type=int, choices=range(1, 21), default=1)
+    parser.add_argument("--ca-update", choices=("real", "byte-floor", "byte-remainder"), default="real")
     parser.add_argument("--bytes", type=int, default=1 << 30, help="requested size, rounded up to full MSS packets")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--trace", action="store_true")
+    parser.add_argument("--ack-windows", action="store_true", help="save observed per-ACK window and remainder as CSV.gz")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.gain_grid == "ca-critical" and args.mode != "ca":
         parser.error("ca-critical gain grid requires --mode ca")
+    if args.mode != "ca" and args.ca_update != "real":
+        parser.error("byte CA updates require --mode ca")
     grid = CA_GAINS if args.gain_grid == "ca-critical" else GAINS
     gains = [None] if args.policy else grid if args.gain is None else [args.gain]
     if args.bytes <= 0 or args.repeats <= 0 or any(g is not None and (not math.isfinite(g) or g <= 0) for g in gains):
@@ -253,33 +279,41 @@ def main():
         summary.writerow(("backend", "mode", "gain", "repeat", "requested_bytes", "packets", "transferred_bytes",
                           "mss", "rtt_ms", "tick_ms", "pacing_rounding", "last_ack_ms", "final_cwnd_bytes",
                           "reservation_rule", "script_sha256", "gain_policy", "initial_mss", "initial_train",
-                          "event_order", "old_model_replay", "zero_gap_reservations"))
+                          "event_order", "old_model_replay", "zero_gap_reservations", "ca_update", "final_ca_credit"))
         for index, gain in enumerate(gains, 1):
             for repeat in range(1, args.repeats + 1):
                 directory = args.out / f"g{index:02d}-r{repeat:02d}"
                 directory.mkdir()
                 events = (directory / "events.csv").open("w", newline="") if args.trace else None
+                windows = gzip.open(directory / "ack_windows.csv.gz", "wt", newline="") if args.ack_windows else None
                 try:
                     trace = csv.writer(events) if events else None
+                    ack_windows = csv.writer(windows) if windows else None
+                    if ack_windows:
+                        ack_windows.writerow(("ack_index", "now_us", "cwnd_bytes", "ca_credit"))
                     if trace:
                         trace.writerow(("event", "now_ms", "seq", "bytes", "generation", "due_ms", "sent_ms",
                                         "cwnd_bytes", "flight_bytes", "sent_unacked_bytes", "queued_bytes", "current_gain",
                                         "reservation_gain", "reservation_cwnd_bytes", "reserved_us", "gap_us",
                                         "packet_tail_slot_us", "next_slot_us"))
-                    result = simulate(args.mode, gain, packets, trace, args.spacing, args.initial_mss)
+                    result = simulate(args.mode, gain, packets, trace, args.spacing, args.initial_mss,
+                                      args.ca_update, ack_windows)
                     write_tables(directory, result)
                     summary.writerow(("independent_python_packet_model", args.mode, gain if gain is not None else "policy",
                                       repeat, args.bytes, packets, packets * MSS, MSS, RTT, 1 / TICKS_PER_MS,
                                       "retain_slot_fraction_floor_send_us" if args.spacing == "accumulated" else "floor_each_gap_us_and_send_us",
-                                      milliseconds(result.tick), result.sender.cwnd * MSS,
+                                      milliseconds(result.tick), result.state()[0],
                                       "max_now_next_slot_then_reserve_then_add_gap", source_hash,
                                       "fixed" if gain is not None else "phase_constant_reference", args.initial_mss,
-                                      "paced_from_zero_using_known_RTT", EVENT_ORDER, False, result.sender.zero_gaps))
+                                      "paced_from_zero_using_known_RTT", EVENT_ORDER, False, result.sender.zero_gaps,
+                                      args.ca_update, result.sender.ca_credit))
                     stream.flush()
                     print(f"{directory.name}: g={gain if gain is not None else result.sender.gain}, ACK={milliseconds(result.tick)} ms", flush=True)
                 finally:
                     if events:
                         events.close()
+                    if windows:
+                        windows.close()
 
 
 if __name__ == "__main__":
