@@ -37,6 +37,6 @@ def write_report(root, rows, expected=None):
               "|:---|---:|---:|---:|---:|---:|:---:|---:|---:|---:|"]
     for r in rows:
         result = "PASS" if str(r["success"]).lower() == "true" else "FAIL"
-        lines.append(f"| {r.get('scenario', 'network')} | {int(r['bytes'])/2**20:g} | {r['mbps']} | {int(r['delay_ms'])*2} | {int(r['loss_ppm'])/10000:g} | {r['seed']} | {result} | {r['goodput_mbps']} | {int(r.get('simulated_ms', 0))/1000:g} | {r.get('dropped', '?')} |")
+        lines.append(f"| {r.get('scenario', 'network')} | {int(r['bytes'])/2**20:g} | {r['mbps']} | {int(r['delay_ms'])*2} | {int(r['loss_ppm'])/10000:g} | {r['seed']} | {result} | {r['goodput_mbps']} | {float(r.get('simulated_ms', 0))/1000:g} | {r.get('dropped', '?')} |")
     (root / "report.md").write_text("\n".join(lines) + "\n")
     return passed
