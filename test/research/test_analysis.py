@@ -8,6 +8,7 @@ import tempfile
 from unittest.mock import patch
 import run_scp_fixed_feedback as runner
 import audit
+import comparison
 
 ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('analysis', ROOT / 'analyze_pacing_research.py')
@@ -255,6 +256,34 @@ class AnalysisTests(unittest.TestCase):
         self.assertFalse(analysis.packet_metrics([1] + [0] * 99, 400, 400, 100, 100)['dispersion_valid'])
         with self.assertRaises(ValueError):
             analysis.packet_metrics([0] * 99, None, None, 100, 100)
+
+    def test_comparison_exact_tick_end_and_late_ack(self):
+        origin, end = 100.0, 2117.959
+        ack = {'elapsed_ms': '2017.959'}
+        self.assertGreater(float(ack['elapsed_ms']), end - origin)
+        first = comparison.observed_tick(origin, 1000, 100000)
+        last = comparison.observed_tick(end, 1000, 2117959)
+        self.assertEqual(comparison.ack_tick(ack, 1000, last-first), 2017959)
+        with self.assertRaisesRegex(ValueError, 'beyond'):
+            comparison.ack_tick({'elapsed_ms': '2017.960'}, 1000, last-first)
+        with self.assertRaisesRegex(ValueError, 'tick'):
+            comparison.ack_tick({'elapsed_ms': '2017.9591'}, 1000, last-first)
+        with self.assertRaisesRegex(ValueError, 'tick'):
+            comparison.observed_tick(end, 1000, 2117960)
+        self.assertEqual(comparison.ack_tick({'elapsed_ms': '100.0'}, 1, 100), 100)
+
+    def test_comparison_state_range_uses_ticks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'states.jsonl'
+            rows = [dict(type='ss', stream_fd=1, tick_scale=1000, t=t, t_tick=tick)
+                    for t, tick in [(100.0, 100000), (2117.959, 2117959), (2117.960, 2117960)]]
+            path.write_text(''.join(json.dumps(row)+'\n' for row in rows), encoding='utf-8')
+            kept = list(comparison.native_states(path, 100, 2117.959, 1000))
+            self.assertEqual([row['t_tick'] for row in kept], [100000, 2117959])
+            rows[1]['t_tick'] += 1
+            path.write_text(''.join(json.dumps(row)+'\n' for row in rows), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'tick'):
+                list(comparison.native_states(path, 100, 2117.959, 1000))
 
     def test_past_samples(self):
         import numpy as np
