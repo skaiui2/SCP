@@ -1,0 +1,90 @@
+name: Reanalyze completed SCP pacing transfers
+run-name: Pacing reanalysis of run ${{ inputs.source_run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      research_ref:
+        description: Research branch with the analysis code
+        type: choice
+        required: true
+        options:
+          - research/slowstart-nextslot-q16-20261022
+          - research/ca-nextslot-q16-20261022
+      source_run_id:
+        description: Existing run whose 22 gain jobs succeeded
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MPLBACKEND: Agg
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.research_ref }}
+          fetch-depth: 0
+      - name: Verify source transfers and record analysis identity
+        id: source
+        env:
+          RESEARCH_REF: ${{ inputs.research_ref }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, urllib.request
+          ref, run_id = os.environ['RESEARCH_REF'], os.environ['SOURCE_RUN_ID']
+          phases = {'research/slowstart-nextslot-q16-20261022': 'ss', 'research/ca-nextslot-q16-20261022': 'ca'}
+          if ref not in phases or not run_id.isdecimal():
+              raise ValueError('Select an existing research branch and a numeric source run ID')
+          phase = phases[ref]
+          url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}"
+          def read(address):
+              request = urllib.request.Request(address, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=30) as source:
+                  return json.load(source)
+          run, jobs = read(url), read(url + '/jobs?per_page=100')['jobs']
+          settings = json.loads(pathlib.Path('test/research/scp_fixed_experiment.json').read_text())
+          expected = {'sweep (' + gain['id'] + ')' for gain in settings['gains']}
+          successful = {job['name'] for job in jobs if job['name'].startswith('sweep (') and job['conclusion'] == 'success'}
+          if run['head_branch'] != ref or len(expected) != 22 or successful != expected:
+              raise ValueError('Source run must match the selected branch and all 22 gain jobs must have succeeded')
+          identity = dict(source_run_id=int(run_id), source_run_sha=run['head_sha'], source_run_url=run['html_url'],
+                          analysis_sha=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                          workflow_sha=os.environ['WORKFLOW_SHA'], research_ref=ref, native_transfers_rerun=False)
+          pathlib.Path('results').mkdir(exist_ok=True)
+          pathlib.Path('results/analysis-source.json').write_text(json.dumps(identity, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'phase={phase}\npattern=scp-{phase}-gain-*\n')
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r test/research/requirements.txt
+      - run: python test/research/test_analysis.py
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ steps.source.outputs.pattern }}
+          path: results/downloads
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Analyze existing native SCP observations
+        run: python test/research/run_scp_fixed_feedback.py --merge results/downloads --out results/merged
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scp-${{ steps.source.outputs.phase }}-reanalysis-${{ inputs.source_run_id }}
+          path: |
+            results/merged/analysis/
+            results/merged/experiment.json
+            results/analysis-source.json
+            !results/merged/analysis/cwnd_every_ms.csv.gz
+          retention-days: 14
+          compression-level: 1
+          if-no-files-found: warn
