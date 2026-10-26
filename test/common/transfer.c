@@ -78,7 +78,12 @@ int transfer_step(struct transfer *t)
                 count = (size_t)min(t->total - t->sent, sizeof(buf) / MSS * MSS);
                 if (count > available) count = available / MSS * MSS;
                 if (!count) break;
-                for (i = 0; i < count; ++i) buf[i] = byte_at(t->sent + i);
+                if (!t->pending_size) {
+                    for (i = 0; i < count; ++i) t->pending[i] = byte_at(t->sent + i);
+                    t->pending_size = count;
+                }
+                count = t->pending_size;
+                memcpy(buf, t->pending, count);
             }
             result = scp_send(t->fd, buf, count);
             if (result == SCP_ERR_NOBUF) break;

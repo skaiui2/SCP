@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.12)
 project(scp_tests C)
 set(CMAKE_C_STANDARD 99)
 set(SCP_TEST_LOG_INTERVAL_MS 100 CACHE STRING "Protocol state log interval in milliseconds")
+set(SCP_TEST_TICK_SCALE 1000 CACHE STRING "Virtual clock ticks per millisecond (1 or 1000)")
+if(NOT SCP_TEST_TICK_SCALE MATCHES "^(1|1000)$")
+  message(FATAL_ERROR "Set SCP_TEST_TICK_SCALE to 1 or 1000")
+endif()
 option(SCP_TEST_TRANSFER "Build generated-data transfer test" ON)
 if(SCP_TEST_TRANSFER)
   set(SCP_DATASTRUCT
@@ -9,7 +13,14 @@ if(SCP_TEST_TRANSFER)
     ../lib/src/queue.c ../lib/src/rbtree.c)
   function(scp_test_target target)
     add_executable(${target} ${ARGN} ${SCP_DATASTRUCT})
-    target_compile_definitions(${target} PRIVATE SCP_DUMP_SS=1 SCP_DUMP_INTERVAL_MS=${SCP_TEST_LOG_INTERVAL_MS})
+    if(target STREQUAL "scp_udp")
+      set(tick_scale 1)
+    else()
+      set(tick_scale ${SCP_TEST_TICK_SCALE})
+    endif()
+    math(EXPR dump_interval "${SCP_TEST_LOG_INTERVAL_MS} * ${tick_scale}")
+    target_compile_definitions(${target} PRIVATE SCP_DUMP_SS=1
+      SCP_TICK_SCALE=${tick_scale}U SCP_DUMP_INTERVAL_MS=${dump_interval}U)
     target_include_directories(${target} PRIVATE .. ../lib/include)
     if(WIN32)
       target_include_directories(${target} PRIVATE virtual/compat)
@@ -57,6 +68,7 @@ if(SCP_TEST_TRANSFER)
   endforeach()
   file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/smoke
     ${CMAKE_CURRENT_BINARY_DIR}/results/loss
+    ${CMAKE_CURRENT_BINARY_DIR}/results/prob
     ${CMAKE_CURRENT_BINARY_DIR}/results/fixed-feedback)
   add_test(NAME transfer_smoke COMMAND scp_virtual --bytes 8388625)
   set_tests_properties(transfer_smoke PROPERTIES
@@ -67,4 +79,7 @@ if(SCP_TEST_TRANSFER)
   add_test(NAME transfer_fixed_feedback COMMAND scp_virtual --bytes 8388625 --mbps 0 --delay-ms 50)
   set_tests_properties(transfer_fixed_feedback PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/fixed-feedback LABELS virtual)
+  add_test(NAME transfer_prob COMMAND scp_virtual --bytes 8388625 --cc 0)
+  set_tests_properties(transfer_prob PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/results/prob LABELS virtual TIMEOUT 120)
 endif()

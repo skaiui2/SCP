@@ -1,0 +1,3 @@
+ca_update,full_mss_acks,min_signed_error_bytes,min_error_ack,max_signed_error_bytes,max_error_ack,max_absolute_error_bytes,last_full_observed_bytes,last_full_real_reference_bytes,last_full_error_bytes
+byte-floor,750868,-275456.2934145478,750868,0.0,1,275456.2934145478,1476947,1752403.2934145478,-275456.2934145478
+byte-remainder,750868,-1.0067031133148703,120,0.03948525618761778,746983,1.0067031133148703,1752403,1752403.2934145478,-0.2934145478066057

@@ -1,0 +1,54 @@
+{
+  "analysis_sha256": "9f4797f72af16a95687b9918987db3b59251a61e90e5f336fedc7c150a58e5b8",
+  "group_reader_sha256": "4536f49ff6f858eded9d53c0f150420b0c26c759fd6e27e69e28b02f68e38ee8",
+  "sources": [
+    {
+      "run": "C:\\Users\\el\\Documents\\Codex\\2026-10-11\\scp-github-ci-pacing-c-users\\outputs\\ca-byte-ablation-20261026\\native-remainder\\full\\runs\\native-r01",
+      "tick_scale": 1000,
+      "engine": "actual_scp_core_plus_virtual_network",
+      "config_sha256": "1d214f2109d52b112d276dba2ccb29814a00fd9a05f283ab7be7b0529f0cbea2",
+      "events_sha256": "e7c137420dd814297f9b22ced48db7646c23cb3d46e5b44edb6753c4f6694fb5",
+      "source": "C:\\Users\\el\\Documents\\Codex\\2026-10-11\\scp-github-ci-pacing-c-users\\outputs\\ca-byte-ablation-20261026\\native-remainder\\full\\runs\\native-r01\\network_events.csv.gz",
+      "binary_sha256": "16ced6259764002f079a19b9659708b8a61c0f47e92b52fb91b45666b654eee5",
+      "data_packets": 750869,
+      "acknowledged_bytes": 1073741824,
+      "complete_groups": 1230,
+      "unattributed_groups": 0,
+      "nonzero_start_rule_errors": 0,
+      "reconstructed_fields": "Per-packet tail gap/slot use observed next-slot changes and audited core arithmetic; actual send times are direct transport observations."
+    },
+    {
+      "run": "C:\\Users\\el\\Documents\\Codex\\2026-10-11\\scp-github-ci-pacing-c-users\\outputs\\ca-byte-ablation-20261026\\native-remainder\\full\\runs\\native-r02",
+      "tick_scale": 1000,
+      "engine": "actual_scp_core_plus_virtual_network",
+      "config_sha256": "2649a1293d5d1fe57e21d8d0054275ba735a5a609d855409f370bb7f760080cf",
+      "events_sha256": "e7c137420dd814297f9b22ced48db7646c23cb3d46e5b44edb6753c4f6694fb5",
+      "source": "C:\\Users\\el\\Documents\\Codex\\2026-10-11\\scp-github-ci-pacing-c-users\\outputs\\ca-byte-ablation-20261026\\native-remainder\\full\\runs\\native-r02\\network_events.csv.gz",
+      "binary_sha256": "16ced6259764002f079a19b9659708b8a61c0f47e92b52fb91b45666b654eee5",
+      "data_packets": 750869,
+      "acknowledged_bytes": 1073741824,
+      "complete_groups": 1230,
+      "unattributed_groups": 0,
+      "nonzero_start_rule_errors": 0,
+      "reconstructed_fields": "Per-packet tail gap/slot use observed next-slot changes and audited core arithmetic; actual send times are direct transport observations."
+    },
+    {
+      "run": "C:\\Users\\el\\Documents\\Codex\\2026-10-11\\scp-github-ci-pacing-c-users\\outputs\\ca-byte-ablation-20261026\\native-remainder\\full\\runs\\native-r03",
+      "tick_scale": 1000,
+      "engine": "actual_scp_core_plus_virtual_network",
+      "config_sha256": "082346e9cd775e16ef77ac5ae69e128ff5b69bcec2acedb7737ded6f3008285e",
+      "events_sha256": "e7c137420dd814297f9b22ced48db7646c23cb3d46e5b44edb6753c4f6694fb5",
+      "source": "C:\\Users\\el\\Documents\\Codex\\2026-10-11\\scp-github-ci-pacing-c-users\\outputs\\ca-byte-ablation-20261026\\native-remainder\\full\\runs\\native-r03\\network_events.csv.gz",
+      "binary_sha256": "16ced6259764002f079a19b9659708b8a61c0f47e92b52fb91b45666b654eee5",
+      "data_packets": 750869,
+      "acknowledged_bytes": 1073741824,
+      "complete_groups": 1230,
+      "unattributed_groups": 0,
+      "nonzero_start_rule_errors": 0,
+      "reconstructed_fields": "Per-packet tail gap/slot use observed next-slot changes and audited core arithmetic; actual send times are direct transport observations."
+    }
+  ],
+  "historical_floor_groups_sha256": "03717f2e708455e54fd23a56c5f5d3ea9de3a2d5b0093cc4ca1bf5d4a0c576c6",
+  "python_analysis_sha256": "a78168b782feec629a637a895999da53cc4ecfa18c9bc10792aab3b8f88c3be6",
+  "tail": "Native final584B; model final1430B excluded from complete groups and same-full-ACK comparison"
+}

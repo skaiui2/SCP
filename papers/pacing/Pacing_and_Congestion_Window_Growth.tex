@@ -33,9 +33,10 @@ $3\ln3/(2g)$. This motivates the fixed engineering choice
 $g_{\rm CA}=3\ln3/2$, replacing an earlier continuous adaptive reference.
 Clock-driven Python gain sweeps show a near-RTT span plateau and
 compression at larger gain. With the selected CA constant, late groups
-span 99.569 ms in Python and 88 ms in actual SCP under 100 ms feedback.
-Q16 gain, millisecond dispatch and integer-byte window growth remain
-explicit implementation differences. The resulting engineering policy
+span 99.569 ms in both Python and actual SCP under 100 ms feedback after
+isolating clock quantization and per-ACK byte truncation. A microsecond
+clock and retained CA division remainder remove the earlier 88 ms
+native plateau. The resulting engineering policy
 uses fixed phase-specific gains, with the packet construction and
 execution evidence presented together.
 \end{abstract}
@@ -514,20 +515,20 @@ compresses the group once this spreading plateau is passed.
 
 \section{From the Models to SCP Execution}
 \subsection{Integer scheduling in the tested core}
-The experiment executes the SCP C sender, receiver, pacing callback, and ACK processing. The virtual network transports their packets; it does not compute the window from a recurrence. The core stores reservation times in unsigned 64-bit Q32.32 milliseconds. Each congestion controller supplies a Q16 gain $K$. AIMD selects $2\ln2$ in SS and $3\ln3/2$ in CA; PROB uses the same CA value throughout. For a fixed target $g$, payload length $\ell$, measured RTT $R_{\rm ms}$, and byte window $C$, scheduling uses
+The experiment executes the SCP C sender, receiver, pacing callback, and ACK processing. The virtual network transports their packets; it does not compute the window from a recurrence. The core stores reservation times in unsigned 64-bit Q32.32 ticks. One tick is 1 ms by default; virtual builds use 1 $\mu$s through \texttt{SCP\_TICK\_SCALE=1000}. Each congestion controller supplies a Q16 gain $K$. AIMD selects $2\ln2$ in SS and $3\ln3/2$ in CA; PROB uses the same CA value throughout. For a fixed target $g$, payload length $\ell$, measured RTT $R_{\rm tick}$, and byte window $C$, scheduling uses
 \begin{equation}
 \begin{aligned}
- d_{\rm Q32}&=\left\lfloor\frac{\ell R_{\rm ms}G}{C}\right\rfloor,\\
+ d_{\rm Q32}&=\left\lfloor\frac{\ell R_{\rm tick}G}{C}\right\rfloor,\\
  K&=\operatorname{round}(2^{16}g),\quad G=\left\lfloor 2^{48}/K\right\rfloor.
 \end{aligned}
 \end{equation}
-Write $g_Q=K/2^{16}$; reciprocal rounding adds the smaller difference between $g_Q$ and $2^{32}/G$. At each output call the next slot becomes $\max(T,\mathrm{now})$. A packet receives that timestamp, then advances $T$ by its own spacing. Fractional parts and the trailing slot survive an empty queue. This follows the next-slot principle in Linux v6.12 TCP~\cite{linux}; SCP does not reproduce its initial-segment exemption, jitter compensation or qdisc/offload behavior. The send routine uses the reservation's integer part: a reservation at $1.8$ ms is eligible at $1$ ms. The virtual clock advances by 1 ms, allowing multiple sends per tick. ACK-triggered scheduling and the pacing timer share the due-send routine.
+Write $g_Q=K/2^{16}$; reciprocal rounding adds the smaller difference between $g_Q$ and $2^{32}/G$. At each output call the next slot becomes $\max(T,\mathrm{now})$. A packet receives that timestamp, then advances $T$ by its own spacing. Fractional parts and the trailing slot survive an empty queue. This follows the next-slot principle in Linux v6.12 TCP~\cite{linux}; SCP does not reproduce its initial-segment exemption, jitter compensation or qdisc/offload behavior. The send routine uses the reservation's integer tick part: on the old 1 ms clock, $1.8$ ms was eligible at $1$ ms; on a 1 $\mu$s clock, $1800.8$ $\mu$s is eligible at $1800$ $\mu$s. Both clocks advance tick by tick. The pacing timer now wakes for the queue head's due tick, rather than polling every tick; ACK-triggered scheduling shares the due-send routine.
 
-The absence of SRTT uses a 1 ms fallback. Once feedback is available, the measured RTT is 100 ms. The rebuilt independent Python model uses the same next-slot rule, retains fractional reservations, and dispatches their integer parts on a 1 $\mu$s clock. Gain is unquantized and CA is real-valued. Both clocks advance every tick, without jumping to events. Native ticks drain forward arrivals, reverse arrivals, then timers. Python drains forward arrivals, reverse ACKs and sends; each ACK may itself send due packets. These are declared differences, not interchangeable implementations. Python sends only full MSS packets, totaling 1 GiB plus 846 bytes; native SCP sends exactly 1 GiB with a short final packet. The initial single-packet trailing slot uses known $R$ in Python and the fallback in SCP; for the fixed gains $g\ge1$ it expires before the first ACK in both.
+The absence of SRTT uses a physical 1 ms fallback at either tick scale. Once feedback is available, the measured RTT is 100 ms. The rebuilt independent Python model uses the same next-slot rule and a 1 $\mu$s clock. Its default CA is real-valued and its original gain sweeps are unquantized; the controlled ablation below also implements both byte-update rules and uses the exact native Q16 effective gain. Native ticks drain forward arrivals, reverse arrivals, then timers. Python drains forward arrivals, reverse ACKs and sends; each ACK may itself send due packets. These are declared differences, not interchangeable implementations. Python sends only full MSS packets, totaling 1 GiB plus 846 bytes; native SCP sends exactly 1 GiB with a short final packet. The initial single-packet trailing slot uses known $R$ in Python and the fallback in SCP; for the fixed gains $g\ge1$ it expires before the first ACK in both.
 
 \subsection{Configuration and verification}
 \begin{table}[t]\small
-\caption{SCP virtual-network experiment configuration.}\label{tab:setup}
+\caption{Frozen 24 October SCP virtual-network configuration. The later clock and byte-update ablation is reported separately.}\label{tab:setup}
 \begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{0.24\columnwidth}>{\raggedright\arraybackslash}X@{}}\toprule
 Quantity & Configuration \\\midrule
 Data and packet size & 1 GiB generated data; MSS 1430 bytes; final payload 584 bytes \\
@@ -666,12 +667,12 @@ compression are observations, not values generated from the front formula.}
 \end{figure*}
 
 
-\subsection{New fixed-constant SCP execution}
-We then ran the actual SCP core with the new registered CA callback,
+\subsection{Historical 1 ms fixed-constant SCP execution}
+We first ran the actual SCP core with the registered CA callback,
 not a model of that callback: three transfers of exactly 1 GiB, preceded
 by an 8 MiB path check. The local precommit research worktree records its
-source diff and hashes; its compiled core, virtual network and common
-transfer files match this change. The binary SHA-256 begins
+source diff and hashes; it predates the clock and remainder changes below.
+The binary SHA-256 begins
 \texttt{af9ba7e5a274}; the complete identity is in
 \path{data/ca-native-constant.json}.
 
@@ -700,6 +701,67 @@ the constant is exercised by the real transport path, while its 88 ms
 span also shows why an engineering gain selected from a model must still
 be checked in the target implementation.
 
+\subsection{Clock and CA-update ablation}
+The next experiment separates the two implementation effects instead of
+attributing the 88 ms plateau to the gain. All controls use fixed 100 ms
+feedback, no loss or serialization, one-MSS initial cwnd, persistent
+next-slot, and $g_Q=107998/65536$. Changing only the native clock to
+1 $\mu$s raises the late median span from 88 to 92.369 ms; per-ACK byte
+truncation still differs from the real-window model.
+
+The current AIMD CA update retains the division remainder $b_k$:
+\begin{equation}
+\begin{aligned}
+ A_k&=M N_k+b_{k-1},\quad I_k=\lfloor A_k/C_{k-1}\rfloor,\\
+ b_k&=A_k-I_k C_{k-1},\quad C_k=C_{k-1}+I_k.
+\end{aligned}\label{eq:cacarry}
+\end{equation}
+The remainder starts at zero and resets on loss or timeout. An ACK may
+add zero bytes; forcing a one-byte minimum would defeat accumulation at
+large windows. SS retains its acknowledged-byte increase.
+
+Three new native 1 GiB transfers and nine Python transfers (three per
+CA rule) complete successfully. The native runs retain exactly 100 ms
+feedback, matching checksums, no retransmission and identical event
+traces. The native binary SHA-256 begins \texttt{16ced6259764}.
+An independent ACK-index checker passes all nine Python runs. Table~
+\ref{tab:caablation} and Figure~\ref{fig:caablation} use complete,
+non-terminal groups 900--1200; the native and Python byte-rule controls
+also agree in actual span and accumulated start delay throughout groups
+300--1200. Native short-tail and model rounded-up packets are excluded.
+
+\begin{table}[t]\small\centering
+\caption{CA ablation at 1 $\mu$s, late complete groups. $D_{1200}=0$ in every row.}\label{tab:caablation}
+\begin{tabular}{@{}lrr@{}}\toprule
+Execution / CA rule & Median $L$ (ms) & Median $\Omega$ (ms) \\\midrule
+Python / real & 99.569 & 99.627049 \\
+Python / byte floor & 92.369 & 92.435552 \\
+SCP / byte floor & 92.369 & 92.435552 \\
+Python / remainder & 99.569 & 99.627049 \\
+SCP / remainder & 99.569 & 99.627049 \\\bottomrule
+\end{tabular}\end{table}
+
+The actual native remainder median is 99.6270488517 ms for occupied span;
+actual span is 99.569 ms, with zero observed $D_n$ in both selected ranges.
+At matching full-MSS ACK counts, the greatest absolute byte-window error
+against the real recurrence is 1.006703 bytes (ACK 120), and the error at
+ACK 750868 is $-0.293415$ bytes. Thus a strict ``less than one byte'' claim
+is false even though $b_k<C_{k-1}$: subsequent real and integer windows
+use different denominators, so their feedback recurrences differ.
+This ablation identifies discarded CA growth, alongside coarse dispatch,
+as the cause of the earlier mismatch; it does not change the gain.
+
+\begin{figure*}[t]\centering
+\includegraphics[width=0.95\textwidth]{figures/ca-byte-remainder-comparison.pdf}
+\caption{Controlled CA comparison with effective gain 107998/65536 and
+1 $\mu$s ticks. Actual SCP and Python agree when using the same byte-update
+rule; retaining the remainder restores the real-model late span. The
+figure shows $L$; Table~\ref{tab:caablation} separately reports occupied
+span and start delay. Three repetitions
+per new configuration agree; no time or amplitude fitting is used.}\label{fig:caablation}
+\Description{Matched clock and gain isolate the effect of per-ACK byte truncation and its correction by retaining the division remainder.}
+\end{figure*}
+
 \subsection{Historical controls and the integer-window effect}
 \textbf{Policy and historical controls.} The current controllers use
 \eqref{eq:engineeringgain}; the research harness overrides gain for scans.
@@ -712,7 +774,7 @@ larger difference between the two layers.
 
 That earlier adaptive control also gives a concrete early witness: group~5 sends from 500 to 586 ms after the initial packet, for an actual span of 86 ms. Its reconstructed trailing slot gives an occupied span of 104.113873 ms; group~6 begins at 604 ms, four milliseconds beyond its nominal start. This is a native observation separate from the exact real-valued example in \eqref{eq:capolicywitness}. Writing physical group starts and trailing slots as $H_n$ and $U_n$, integer dispatch follows $H_{n+1}=\max(H_n+R,\lfloor U_n\rfloor_{\rm ms})$. Thus sub-millisecond slot overruns need not produce an extra millisecond of drift.
 
-The native CA campaign uses Table~\ref{tab:setup}'s conditions but sets both initial cwnd and ssthresh to $M$. This artificial initial state isolates CA; it is not ordinary TCP startup. The research target changes threshold initialization while reusing the shared core, virtual network, and pacing rules. For an ACK covering $N_k$ new bytes, the core uses
+The historical native CA campaign uses Table~\ref{tab:setup}'s conditions but sets both initial cwnd and ssthresh to $M$. This artificial initial state isolates CA; it is not ordinary TCP startup. The research target changes threshold initialization while reusing the shared core, virtual network, and pacing rules. For an ACK covering $N_k$ new bytes, the former core used
 \begin{equation}
  C_k=C_{k-1}+\max\!\left(1,\left\lfloor\frac{M N_k}{C_{k-1}}\right\rfloor\right),
  \qquad C_0=M.\label{eq:cabyte}
@@ -745,7 +807,7 @@ The gain-difference sawtooth in Figure~\ref{fig:ca}(b) follows the integer thres
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.90\textwidth]{figures/ca-native-constant.pdf}
-\caption{The selected fixed CA policy in the new Python and actual SCP runs. Complete non-terminal descendant groups compare actual span, retained occupied span and accumulated start delay. Python uses real windows and $3\ln3/2$; SCP uses integer-byte CA, Q16 107998 and millisecond dispatch. Late spans are 99.569 and 88 ms respectively. All three repetitions in each layer agree; no time shift or amplitude fit is applied.}\label{fig:cagroups}
+\caption{Historical fixed CA comparison before the clock and remainder corrections. Complete non-terminal descendant groups compare actual span, retained occupied span and accumulated start delay. Python uses real windows and $3\ln3/2$; SCP uses per-ACK byte truncation, Q16 107998 and millisecond dispatch. Late spans are 99.569 and 88 ms respectively. All three repetitions in each layer agree; no time shift or amplitude fit is applied.}\label{fig:cagroups}
 \Description{The fixed CA constant gives zero observed start delay in both layers while their actual group spans differ.}
 \end{figure*}
 
@@ -762,10 +824,12 @@ policy.
 gain chiefly compresses groups. The SS sample $\gc-0.05$ has multiplier
 1.950624, while the critical target has multiplier two at the selected
 boundaries. CA windows at the same full-packet ACK count are identical
-across gains; gain changes the ACK times. Integer-byte growth accounts
-for the much larger Python--SCP window deficit. Fixed-bin spans of 99 ms
-also reflect the native 1 ms grid; complete descendant groups and their
-tail slots supply the cross-generation check.
+across gains; gain changes the ACK times. The historical per-ACK byte
+truncation accounts for the much larger Python--SCP window deficit.
+Retaining the remainder and matching 1 $\mu$s clocks restores the late
+99.569 ms span in actual SCP. Historical fixed-bin spans of 99 ms also
+reflect the 1 ms grid; complete groups and tail slots supply the
+cross-generation check.
 
 \textbf{Scope.} The study starts one flow from one packet, with fixed
 feedback and separate loss-free phases. It excludes serialization,
@@ -799,10 +863,19 @@ engineering sweep is identified in Section~\ref{sec:caexperiments}.
 The common \texttt{test/models/} scripts provide the tick model, independent
 checker, native group reconstruction and plots. Actual protocol runs
 include endpoint checksum, feedback, ACK-update and reservation audits.
-The new local fixed-constant campaign is recorded in
+The historical local fixed-constant campaign is recorded in
 \path{data/ca-native-constant.csv},
 \path{data/ca-native-transfers.csv} and the corresponding JSON source
 manifest; it is distinct from the frozen Actions campaigns above.
+The 26 October ablation adds only compact
+\path{data/ca-byte-ablation-late.csv},
+\path{data/ca-byte-ablation-errors.csv},
+\path{data/ca-byte-ablation-transfers.csv} and
+\path{data/ca-byte-ablation.json}, plus one comparison figure. Raw event
+logs remain outside the repository; the research branch supplies rerun
+commands. Its native transfers use an 8 MiB application backlog to keep
+data available without exhausting the send buffer; total payload is
+still exactly 1 GiB.
 
 \section{Conclusion}
 The useful route was to start with a packet and its returning ACK, derive

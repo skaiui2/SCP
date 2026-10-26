@@ -1,0 +1,6 @@
+condition,ca_update,repeat,stage,groups,gain_q16,g_effective,tick_us,L_min_ms,L_median_ms,L_max_ms,occupied_median_ms,D_at_last_group_ms
+Actual SCP remainder,byte-remainder,1,late,301,107998,1.647918701171875,1,99.569,99.569,99.569,99.62704885169863,0.0
+Actual SCP floor,byte-floor,1,late,301,107998,1.647918701171875,1,92.09,92.369,92.429,92.4355518245995,0.0
+Python real,real,1,late,301,107998,1.647918701171875,1,99.569,99.569,99.569,99.62704882211983,0.0
+Python floor,byte-floor,1,late,301,107998,1.647918701171875,1,92.09,92.369,92.429,92.43555182461441,0.0
+Python remainder,byte-remainder,1,late,301,107998,1.647918701171875,1,99.569,99.569,99.569,99.62704885169863,0.0

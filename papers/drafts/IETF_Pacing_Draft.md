@@ -234,11 +234,11 @@ The recorded next-slot campaigns execute the actual SCP sender, receiver and ACK
 
 **English**
 
-The scheduler retains the next available time across empty queues. A batch starts at max(next_slot, now); each packet receives that timestamp before its own gap advances the slot. This takes the next-slot principle from Linux TCP [LINUX], without claiming to reproduce its jitter compensation, initial-segment exemption, offloads or qdisc behavior. Reservations use Q32.32 milliseconds, gains use Q16, and a fixed 1 ms clock checks due packets using the reservation's integer part. The network advances every tick; it does not jump between events. Retired empty-queue-reset results are not used for the current claims.
+The scheduler retains the next available time across empty queues. A batch starts at max(next_slot, now); each packet receives that timestamp before its own gap advances the slot. This takes the next-slot principle from Linux TCP [LINUX], without claiming to reproduce its jitter compensation, initial-segment exemption, offloads or qdisc behavior. Reservations use Q32.32 ticks and gains use Q16. Real transports default to 1 ms ticks; virtual builds use 1 us ticks. The pacing timer wakes for the queue head's due tick. The network advances every tick; it does not jump between events. Retired empty-queue-reset results are not used for the current claims.
 
 **中文**
 
-调度器在队列清空后仍保留下一可用时刻。每批从max(next_slot, now)开始，先给包分配时刻，再按该包gap推进slot。它参考Linux TCP的next-slot骨架 [LINUX]，不声称复刻jitter补偿、前期分段豁免、offload或qdisc。预约为Q32.32毫秒、gain为Q16，固定1 ms时钟按预约整数部分检查到期。网络逐tick前进，不跳事件时间。当前主张不引用已弃用空队列重置版本的数值。
+调度器在队列清空后仍保留下一可用时刻。每批从max(next_slot, now)开始，先给包分配时刻，再按该包gap推进slot。它参考Linux TCP的next-slot骨架 [LINUX]，不声称复刻jitter补偿、前期分段豁免、offload或qdisc。预约为Q32.32 tick、gain为Q16；真实传输默认1 ms tick，虚拟构建采用1 us tick，pacing定时器按队首到期tick唤醒。网络逐tick前进，不跳事件时间。当前主张不引用已弃用空队列重置版本的数值。
 
 ### 6.2. Slow-Start Results / 慢启动结果
 
@@ -268,11 +268,11 @@ Completion improves by about 2.10% from the critical target to gain 8, while the
 
 **English**
 
-The rebuilt independent Python sender, receiver and network advance in 1 us ticks. The sender retains fractional next-slot reservations and dispatches their integer microsecond parts; the network separately delivers DATA and ACKs after 50 ms each. It uses real-valued CA, unquantized gains and full-MSS packets. SCP instead uses integer-byte CA, Q16 gain and 1 ms dispatch. The old Python script floored each gap, erasing spacing at large windows: its gain-1 SS completion was 2521.217 ms. After retaining fractions, completion is 2682.611 ms, against native 2682 ms. A separate ACK-index evaluator checks the rebuilt model's output. Its mathematical reference is not protocol execution.
+The rebuilt independent Python sender, receiver and network advance in 1 us ticks. The sender retains fractional next-slot reservations and dispatches their integer microsecond parts; the network separately delivers DATA and ACKs after 50 ms each. Its default is real-valued CA with unquantized gains and full-MSS packets; byte-update controls can use the native Q16 effective gain. SCP uses integer-byte CA with retained division remainder, Q16 gain and, in current virtual builds, 1 us dispatch. The old Python script floored each gap, erasing spacing at large windows: its gain-1 SS completion was 2521.217 ms. After retaining fractions, completion is 2682.611 ms, against the historical 1 ms native run's 2682 ms. A separate ACK-index evaluator checks the rebuilt model's output. Its mathematical reference is not protocol execution.
 
 **中文**
 
-重建后的独立Python发送方、接收方和网络按1 us逐tick前进。发送方保留next-slot预约小数，按整数微秒派发；网络分别把DATA与ACK延迟50 ms。它使用实数CA、未量化gain和完整MSS包；SCP则使用整数字节CA、Q16 gain和1 ms派发。旧Python逐gap截断，使大窗口间隔消失，g=1的SS完成时间为2521.217 ms；保留小数后为2682.611 ms，原生为2682 ms。另一个ACK序号求值器检查新模型输出，它提供数学参考，不是协议栈执行。
+重建后的独立Python发送方、接收方和网络按1 us逐tick前进。发送方保留next-slot预约小数，按整数微秒派发；网络分别把DATA与ACK延迟50 ms。默认使用实数CA、未量化gain和完整MSS包，字节增窗消融也可固定原生Q16有效gain；SCP当前保留整数字节CA除法余数、使用Q16 gain，虚拟构建按1 us派发。旧Python逐gap截断，使大窗口间隔消失，g=1的SS完成时间为2521.217 ms；保留小数后为2682.611 ms，历史1 ms原生对照为2682 ms。另一个ACK序号求值器检查新模型输出，它提供数学参考，不是协议栈执行。
 
 **English**
 
@@ -366,11 +366,11 @@ A 22-gain, three-repeat Python clock-model sweep concentrates samples around C, 
 
 **English**
 
-Three new native SCP controls at fixed Q16 C each complete an exact 1 GiB transfer with matching checksums, 100 ms feedback for every packet, and zero retransmissions or drops. They complete in 1339.38 RTTs. In both selected ranges, native L is 88 ms; late occupied span has median 88.732585 ms, with zero accumulated start delay. The corresponding real-window Python run has late L = 99.569 ms and zero start delay. Thus the chosen constant gives different group spreading in the two implementations. Native integer-byte CA increments, millisecond dispatch and Q16 gain remain part of interpreting this result; adopting the engineering policy does not relabel the native span as 100 ms [CA-CONTROL].
+The historical three native SCP controls at fixed Q16 C use a 1 ms clock and per-ACK byte truncation. Each completes an exact 1 GiB transfer with matching checksums, 100 ms feedback, and no retransmissions or drops, in 1339.38 RTTs. Their late L is 88 ms and occupied-span median is 88.732585 ms, versus real-window Python's 99.569 ms [CA-CONTROL]. The later controlled ablation holds the effective gain at 107998/65536: 1 us native dispatch with the old update gives median L = 92.369 ms; retaining the CA division remainder gives L = 99.569 ms and occupied median = 99.6270488517 ms, matching the corresponding Python mode. Three new native 1 GiB transfers and nine Python controls pass; D at group 1200 is zero. The maximum matching-full-ACK window difference from real CA is 1.006703 bytes, not a strict bound below one byte [CA-ABLATION].
 
 **中文**
 
-固定 Q16 C 的三次新原生 SCP 对照都完成精确 1 GiB 传输，校验和一致，每包完整反馈均为 100 ms，没有重传或丢包，完成时间均为 1339.38 个 RTT。两个选区的原生 L 都为 88 ms；后段尾槽占用中位数为 88.732585 ms，累计组首延迟为零。对应实数窗口 Python 运行的后段 L 为 99.569 ms，组首延迟也为零。因此，同一个工程常数在两层实现中产生了不同的包组分散。原生整数字节 CA 增窗、毫秒派发和 Q16 系数仍是解读结果的一部分；采用该策略不意味着将原生跨度改标为 100 ms [CA-CONTROL]。
+固定Q16 C的历史三次原生对照使用1 ms时钟和逐ACK字节取整，均以1339.38 RTT完成精确1 GiB，校验一致、反馈100 ms、无丢包或重传。其后段L为88 ms、Ω中位数88.732585 ms，实数Python为99.569 ms [CA-CONTROL]。后续消融固定有效gain=107998/65536：1 us原生时钟下旧增窗的L中位数为92.369 ms；保留CA除法余数后，L为99.569 ms、Ω中位数99.6270488517 ms，与对应Python模式一致。新三次原生1 GiB和九次Python对照均通过，第1200组累计延迟为0。同完整ACK数下相对实数CA的最大窗口差为1.006703字节，不能声称严格小于1字节 [CA-ABLATION]。
 
 ## 9. Security Considerations / 安全考虑
 
@@ -411,6 +411,7 @@ No IANA action is requested.
 - **[CA-EXPERIMENT]** Uijing, S., *Next-Slot CA Measurements and Reproduction*, 2026. <https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction>. Historical rebuild: <https://github.com/skaiui2/SCP/actions/runs/40084981319>. Current source-labelled runs: <https://github.com/skaiui2/SCP/actions/workflows/pacing-research.yml?query=branch%3Aresearch%2Fca-nextslot-q16-20261022>.
 - **[CA-SWEEP]** Uijing, S., *CA Critical-Neighbourhood Python Sweep*, 2026. <https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-critical-sweep.csv>, <https://github.com/skaiui2/SCP/blob/main/papers/pacing/figures/ca-critical-sweep.pdf>.
 - **[CA-CONTROL]** Uijing, S., *Fixed-CA-Gain Native Control*, 2026. <https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-native-constant.csv>, <https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-native-transfers.csv>.
+- **[CA-ABLATION]** Uijing, S., *Clock and CA-Byte-Update Ablation*, 2026. <https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-byte-ablation-late.csv>, <https://github.com/skaiui2/SCP/blob/main/papers/pacing/data/ca-byte-ablation-errors.csv>.
 - **[LINUX]** Linux v6.12, commit `adc218676eef25575469234709c2d87185ca223a`, `net/ipv4/tcp_output.c`. <https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/net/ipv4/tcp_output.c>.
 
 ## Author's Address / 作者联系信息
