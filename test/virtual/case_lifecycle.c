@@ -164,10 +164,11 @@ int main(void)
     now = 0;
     s = scp_stream_alloc(&t, 1, 2);
     assert(s && scp_is_closed(1));
+    assert(!s->srtt && s->rto == SCP_RTO_INIT);
     assert(!scp_stream_alloc(&t, 1, 3));
     assert(hashmap_get(&scp_stream_map, (void *)1) == s);
     assert(!scp_connect(1));
-    for (now = 1; now < 13000U * SCP_TICK_SCALE; ++now) scp_timer_process();
+    for (now = 1; now < 64U * SCP_RTO_INIT; ++now) scp_timer_process();
     assert(scp_is_closed(1) && !hashmap_get(&scp_stream_map, (void *)1) && live == 0);
     s = scp_stream_alloc(&t, 1, 2); s->state = SCP_ESTABLISHED;
     assert(!scp_send(1, data, sizeof(data)));

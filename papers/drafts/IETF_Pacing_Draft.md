@@ -5,7 +5,11 @@ Skai Uijing
 Intended status / 预期类别：Informational
 English text with paragraph-aligned Chinese translation / 英文正文及逐段中文译文
 
-Working draft / 讨论草稿，2026-10-25；current next-slot study, not an adopted IETF document / 当前next-slot研究，尚非IETF采纳文件。
+Working draft / 讨论草稿，2026-10-27；current next-slot study, not an adopted IETF document / 当前next-slot研究，尚非IETF采纳文件。
+
+Current reproduction / 当前复现：The complete [SS run 40340718507](https://github.com/skaiui2/SCP/actions/runs/40340718507) (`7c7c71a`) and [CA run 40340725047](https://github.com/skaiui2/SCP/actions/runs/40340725047) use shared core baseline `ddea254`, 1 µs virtual ticks and retained CA byte credit. Each phase runs 22 fixed gains × 3 repeats plus 3 native-policy transfers of 1 GiB. Download results from Actions while retained; branch reproduction scripts allow rerunning after expiration. Historical measurements below retain their original clocks and revisions. Main's queued/lossy quality sweeps are separate from these fixed-100-ms, loss-free pacing experiments; see the [test guide](../../test/README.md).
+
+上述 SS、CA 完整运行分别对应 `7c7c71a`、`ebb5ff5`，共享核心基线为 `ddea254`，使用 1 µs 虚拟时钟和 CA 字节余数累积。每个阶段为 22 个固定 g × 3 次，再加 3 次原生策略，每次传输 1 GiB。结果在保留期内从 Actions 下载，过期后按分支复现脚本重跑。下文历史测量保留当时的时钟和版本；主分支含排队、丢包的质量测试与固定 100 ms、无丢包的 pacing 研究分开，参见[中文测试说明](../../docs/中文/测试说明.md)。
 
 ## Abstract / 摘要
 

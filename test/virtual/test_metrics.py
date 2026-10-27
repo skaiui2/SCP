@@ -23,6 +23,12 @@ with tempfile.TemporaryDirectory() as temporary:
         assert row['startup_rtts_to_80pct'] > 0
         if first is not None: assert row == first
         first = row
+    long_path = command.copy()
+    long_path[long_path.index('--delay-ms') + 1] = '100'
+    subprocess.run(long_path, cwd=root, stdout=subprocess.DEVNULL, check=True)
+    row = json.loads((root / 'summary.json').read_text())
+    assert row['checksum_ok'] and row['cleanup_ok']
+    assert row['srtt_avg_ms'] > 200 and row['timeouts'] == row['retrans_packets'] == 0
     result = subprocess.run(command + ['--timeout-ms', '1'], cwd=root, stdout=subprocess.DEVNULL)
     row = json.loads((root / 'summary.json').read_text())
     assert result.returncode == 1 and not row['success'] and not row['checksum_ok']
@@ -31,4 +37,4 @@ with tempfile.TemporaryDirectory() as temporary:
                repro_command=subprocess.list2cmdline(command + ['--timeout-ms', '1']))
     assert write_report(root, [row]) == 0
     assert 'Repro: ' + row['repro_command'] in (root / 'report.md').read_text()
-print('PASS: observed metrics, deterministic replay, failed checksum/timeout, cleanup and exact repro')
+print('PASS: observed metrics, deterministic replay, long-RTT startup, timeout, cleanup and exact repro')
