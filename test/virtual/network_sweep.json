@@ -19,12 +19,14 @@
     "scenarios": [
       {"scenario": "wan", "bytes": [67108864], "mbps": [100], "delay_ms": [25], "loss_ppm": [0, 100, 500, 1000, 3000, 5000, 10000, 20000, 30000, 50000], "seed": [1, 7, 42, 123, 2026], "queue_packets": [100]},
       {"scenario": "wifi-simplified", "bytes": [67108864], "mbps": [100], "delay_ms": [5], "loss_ppm": [0, 100, 500, 1000, 3000, 5000, 10000, 20000, 30000, 50000], "seed": [1, 7, 42, 123, 2026], "queue_packets": [0]},
-      {"scenario": "intercontinental", "bytes": [67108864], "mbps": [100, 1000], "delay_ms": [100], "loss_ppm": [0, 100, 500, 1000, 3000, 5000, 10000, 20000, 30000, 50000], "seed": [1, 7, 42, 123, 2026], "queue_packets": [0], "require_zero_rto": true}
+      {"scenario": "intercontinental", "bytes": [67108864], "mbps": [100, 1000], "delay_ms": [100], "loss_ppm": [0], "seed": [1, 7, 42, 123, 2026], "queue_packets": [0], "require_zero_rto": true},
+      {"scenario": "intercontinental", "bytes": [67108864], "mbps": [100, 1000], "delay_ms": [100], "loss_ppm": [100, 500, 1000, 3000, 5000, 10000, 20000, 30000, 50000], "seed": [1, 7, 42, 123, 2026], "queue_packets": [0]}
     ],
     "scenarios-1g": [
       {"scenario": "wan", "bytes": [1073741824], "mbps": [100], "delay_ms": [25], "loss_ppm": [0, 1000, 10000, 30000], "seed": [1, 7, 42], "queue_packets": [100]},
       {"scenario": "wifi-simplified", "bytes": [1073741824], "mbps": [100], "delay_ms": [5], "loss_ppm": [0, 1000, 10000, 30000], "seed": [1, 7, 42], "queue_packets": [0]},
-      {"scenario": "intercontinental", "bytes": [1073741824], "mbps": [100, 1000], "delay_ms": [100], "loss_ppm": [0, 1000, 10000, 30000], "seed": [1, 7, 42], "queue_packets": [0], "require_zero_rto": true}
+      {"scenario": "intercontinental", "bytes": [1073741824], "mbps": [100, 1000], "delay_ms": [100], "loss_ppm": [0], "seed": [1, 7, 42], "queue_packets": [0], "require_zero_rto": true},
+      {"scenario": "intercontinental", "bytes": [1073741824], "mbps": [100, 1000], "delay_ms": [100], "loss_ppm": [1000, 10000, 30000], "seed": [1, 7, 42], "queue_packets": [0]}
     ],
     "shallow-stress": [
       {"scenario": "shallow-stress", "bytes": [8388608], "mbps": [100], "delay_ms": [25], "loss_ppm": [0], "seed": [1, 7, 42], "queue_packets": [20]}

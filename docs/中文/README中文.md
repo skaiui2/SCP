@@ -1,6 +1,6 @@
 # SCP（Simple Stream Control Protocol）
 
-[English README](../../README.md)
+[English README](../../README.md) · [使用手册](使用手册.md) · [测试与复现](测试说明.md)
 
 SCP 是一个构建在 UDP 或其他不可靠分组传输之上的轻量级可靠字节流协议。项目定位是网络传输研究：通过可检查的 C 实现，探索可靠传输、拥塞控制、pacing 与连接行为。
 
@@ -19,20 +19,20 @@ SCP 不依赖内核 TCP 栈，自行实现序号、ACK/SACK、重传、流量控
 
 Pacing 研究见：[Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](../../Pacing_and_Congestion_Window_Growth.pdf)。研究起于作者给 SCP 加入 pacing 后观察到传输变慢，问题是：怎样选择系数，既保留窗口增长，又把同组数据包尽量铺开到一个 RTT？论文沿作者的思路，从连续窗口增长进入离散包模型，再用相邻窗口夹住逐包间隔。追踪最后一个包及整数窗口门槛处出生的额外包，分别得到 SS 的 `2 ln 2` 和 CA 的 `3 ln 3 / 2` 尺度。
 
-当前 SCP 采用固定阶段系数：AIMD 在 SS 使用 `2 ln 2`，在 CA 使用 `3 ln 3 / 2`；PROB 全程使用 CA 系数。CA 的选择由出生点跨轮积分与扫参实验共同支持：这个系数附近，中后期完整包组的首尾跨度接近一个 RTT；继续增大系数，跨度缩短。较低系数也可能通过推迟后续包组保持接近 RTT 的跨度，因此实验同时记录跨度与组首延迟。连续参考式 `1 + MSS/(2*cwnd)` 及转向固定系数的原因仍保留在研究过程里。新的三次 1 GiB 对照中，在相同的 100 ms 完整反馈条件下，Python 后段完整包组跨度为 99.569 ms，实际 SCP 为 88 ms；所选范围内两者组首累计延迟均为零。论文及[精简观察表](../../papers/pacing/data/ca-native-constant.csv)保留了这项实现差异。
+当前 SCP 采用固定阶段系数：AIMD 在 SS 使用 `2 ln 2`，在 CA 使用 `3 ln 3 / 2`；PROB 全程使用 CA 系数。CA 的选择由出生点跨轮积分与扫参实验共同支持：这个系数附近，中后期完整包组的首尾跨度接近一个 RTT；继续增大系数，跨度缩短。较低系数也可能通过推迟后续包组保持接近 RTT 的跨度，因此实验同时记录跨度与组首延迟。连续参考式 `1 + MSS/(2*cwnd)` 及转向固定系数的原因仍保留在研究过程里。最新受控对照分别隔离了时钟精度与 CA 取整：旧 1 ms SCP 的后段跨度为 88 ms；改为 1 μs 后，旧逐 ACK 丢弃余数算法为 92.369 ms；保留除法余数后，Python 与真实 SCP 均为 99.569 ms，所选后段完整包组的累计组首延迟为零。条件、来源和历史结果见[精简对照表](../../papers/pacing/data/ca-byte-ablation-late.csv)与论文。
 
 在 Overleaf 中使用时，上传 [papers/pacing/](../../papers/pacing/) 目录及其中的 `figures/`，使用 pdfLaTeX 编译 `Pacing_and_Congestion_Window_Growth.tex`。
 
 | 研究 | 复现代码与步骤 | Actions 数据 |
 |---|---|---|
-| 慢启动 | [Next-slot SS 复现指南](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) | [已通过运行 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304) |
-| 拥塞避免 | [Next-slot CA 复现指南](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [已通过重跑 40084981319](https://github.com/skaiui2/SCP/actions/runs/40084981319) |
+| 慢启动 | [Next-slot SS 复现指南](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) | [已通过完整运行 40340718507](https://github.com/skaiui2/SCP/actions/runs/40340718507) |
+| 拥塞避免 | [Next-slot CA 复现指南](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [已通过完整运行 40340725047](https://github.com/skaiui2/SCP/actions/runs/40340725047) |
 
-大日志从 Actions 附件下载；附件过期后按指南重跑。各研究分支只保留自己的小型复现材料，论文由主分支统一维护。表中已完成运行是此前的 next-slot 实验：固定 gain 扫描仍可比较，CA 控制器策略项使用的是早期动态公式；每批结果按源码版本与 gain 策略标注。上述 next-slot 分支替代旧空队列重置实验。
+各研究分支保留自己的复现脚本和精简表，main 维护公共论文和工程测试。表中完整运行使用 1 μs 时钟与 CA 字节余数累计，SS 提交为 `7c7c71a`，CA 为 `ebb5ff5`，共同核心基线为 `ddea254`。每个分支运行 22 个 gain × 3 次，再加 3 次原生策略对照，每次 1 GiB；准确条件以运行 manifest 为准。旧 1 ms 和逐 ACK 截断数据继续作为论文中的历史对照，不代表当前实现。大数据只留在 Actions，不放入 Git 或 Release 附件；过期后按分支指南重跑。
 
 研究流程固定为 idea → 数学算法模型 → 可审核的 Python 模拟 → 实际 SCP 核心验证。当前调度参考 Linux 的 next-slot 思路：每批从 `max(next_slot, now)` 开始，先给包分配时刻，再按该包间隔推进持久的下一可用时刻。两层的时钟、队列和数值差异见[模型与执行约定](../../test/README.md#model-and-execution-contract)。
 
-[重建后的 Python 模型](../../test/models/pacing.py)已保留预约小数，旧逐 gap 截断的错误与修正留在讨论草稿；输出由[独立 ACK 序号求值器](../../test/models/check.py)核对。SCP 的 CA 仍按整数字节增窗，逐 ACK 丢掉小数余量；较快的流先跨过整数增量门槛，产生窗口差值图的锯齿。同 ACK 数与同时间应分别比较，完整包组跨度、保留尾槽与组首漂移也应分别阅读。100 ms 固定箱里的 99 ms 跨度不能证明完美 pacing。
+[重建后的 Python 模型](../../test/models/pacing.py)已保留预约小数，旧逐 gap 截断的错误与修正留在讨论草稿；输出由[独立 ACK 序号求值器](../../test/models/check.py)核对。模型的 CA 模式分别支持实数窗口、历史逐 ACK 字节截断和当前字节余数累计。AIMD 现在保留除法余数，不再逐次丢弃。1 GiB 对照中，同完整 MSS ACK 序号的整数窗口与实数递推最大差为 1.006703 字节，不能宣称始终严格小于一字节。同 ACK 数与同时间应分别比较，完整包组跨度、保留尾槽与组首漂移也应分别阅读。100 ms 固定箱里的 99 ms 跨度不能证明完美 pacing。
 
 [研究讨论草稿](../../papers/drafts/Pacing_Research_Discussion_Draft.md)和[中英双语 IETF 方向草稿](../../papers/drafts/IETF_Pacing_Draft.md)保存两篇正式论文背后的问题、初步模型、纠正与实现决策。早期动态 CA 公式也作为这段研究过程的一部分保留。
 
@@ -111,9 +111,9 @@ pacing 不替代拥塞窗口：
 1. `cwnd` 和对端窗口决定允许进入网络的数据量；
 2. 发送端根据当前 RTT 和拥塞窗口计算逐包间隔；
 3. 每批从 `max(next_slot, now)` 开始，先分配时间，再按该包间隔推进下一可用时刻；队列清空后仍保留尾间隔；
-4. ACK 触发的 output 与 1 ms pacing 定时器，发送预约时间整数毫秒部分已经到期的数据包。
+4. ACK 触发的 output 和 pacing 定时器释放预约时间整数 tick 部分已到期的包；定时器按队首到期时刻唤醒，不再每 tick 轮询。
 
-当计算间隔小于 1 ms，或者用户态进程唤醒较晚时，同一个 tick 可以释放多个包。pacing 集成测试测量的是真实 transport `send` 回调时刻，不是数据经过 qdisc 后的物理链路离开时刻。
+`SCP_TICK_SCALE` 在真实场景默认每毫秒 1 tick；虚拟网络构建默认每毫秒 1000 tick，即 1 μs。物理超时常数随刻度换算。当计算间隔短于一个 tick，或者进程唤醒较晚时，同一 tick 可以释放多个包。pacing 集成测试测量的是真实 transport `send` 回调时刻，不是数据经过 qdisc 后的物理链路离开时刻。
 
 各控制器通过各自注册的回调提供 gain。AIMD 在 SS 使用 `2 ln 2` 对应的 Q16 值 `90852`，在 CA 使用 `3 ln 3 / 2` 对应的 Q16 值 `107998`；PROB 全程使用 `107998`。CA 的实际系数为 `107998 / 65536 = 1.647918701171875`。预约小数持续累积，实际执行按预约时间的整数部分检查到期。
 
@@ -135,30 +135,31 @@ ctest --test-dir test/build --output-on-failure
 python3 test/run.py test/build/scp_udp --out test/results/udp-1g
 ```
 
-独立传输默认测试 1 GiB。依赖安装、文件传输、网络扫描和公平性测试见 [测试说明](../../test/README.md)。
+独立传输默认测试 1 GiB。依赖安装、文件传输、网络扫描和公平性测试见 [测试说明](测试说明.md)。
 
 ### 当前测试体系
 
-- **功能与完整性检查：**CTest 注册了 15 项检查，覆盖连接生命周期、控制包丢失、分配失败、关闭、生成数据与文件传输、PROB/AIMD 运行、pacing 观测和双流冒烟检查。
-- **共用传输逻辑：**真实 UDP 与虚拟网络使用同一套传输实现。生成数据逐字节校验并核对流校验和；文件传输额外核对长度与 SHA-256。双方都必须完成关闭。
-- **Linux 与虚拟传输：**GitHub Actions 运行 CTest、1 GiB 虚拟传输及 Linux localhost UDP 上的 1 GiB 文件传输。localhost 未施加 WAN 带宽或延迟限制；Linux 网络命名空间提供另一套受控网络环境。
-- **网络场景扫描：**默认 CI 执行 150 组虚拟测试：三种 100 Mbps 场景，基础 RTT 分别为 10、50、200 ms，十档 0% 至 5% 的独立随机丢包、五个种子，每组 64 MiB。手动选择 `scenarios-1g` 可运行 36 组 1 GiB 测试。这些是配置出的仿真条件；简化 Wi-Fi 场景不模拟竞争与链路层重试。
-- **可检查的结果：**每种参数、每条连接分别保存协议栈状态日志与原分析器生成的曲线。报告保留失败项和成功运行的有效吞吐统计。图表与汇总下载 `transfer-1g-curves`、`network-report`；原始证据单独保留在 `transfer-1g-logs`、`network-shard-*`，有效期为 14 天。过期后可按[测试说明](../../test/README.md)重跑。
+- **功能与完整性检查：**CTest 共 17 项，其中 11 项虚拟测试、6 项真实 UDP 检查，覆盖生命周期、控制包丢失、分配失败、序号顺序、关闭、校验、两种控制器、pacing 和确定性重放。CI 另以 AddressSanitizer 和泄漏检测运行虚拟测试。
+- **共用传输逻辑：**两个后端执行实际 SCP 核心和 `test/common/transfer.c`。生成数据逐字节核对并计算 FNV-1a；真实文件测试额外核对长度与 SHA-256。虚拟传输全程检查序号，并核对核心资源清理。
+- **场景矩阵：**默认 `scenarios` 包含 200 次 64 MiB 传输，覆盖简化 Wi-Fi、WAN、跨洲链路、0%–5% 丢包及五个种子。WAN 使用 100 包队列；跨洲覆盖 100/1000 Mbps。`quick` 为 21 次，`scenarios-1g` 为 48 次；可选 `shallow-stress` 为三次 8 MiB、20 包浅缓冲测试。
+- **质量门禁与指标：**完整性、序号、清理失败与吞吐、ACK 加权 SRTT、缓冲膨胀比、累计 DATA RTO、重传及启动 RTT 分别报告。无丢包跨洲测试额外要求零 RTO；有损测试考察超时后的恢复，不把每次必要 RTO 都判为协议失败。
+- **轻量图像诊断：**每条连接最多保留 256 个核心状态样本，附单例图、配置和汇总 JSON。聚合 PNG 展示 Goodput 随丢包率变化、种子包络和缓冲膨胀；失败项保持可见。成功扫参不保存原始文本日志；失败输出精确 `Repro:` 命令并保留短诊断尾部。
+- **CI 产物：**`network-report` 提供聚合图表，`network-shard-*` 保存精简单例；`transfer-1g-curves` 对应独立的虚拟与 Linux localhost UDP 1 GiB 传输，原始传输日志仅失败时上传。Actions Summary 提供图片包入口，附件保留 14 天；过期后按[中文测试指南](测试说明.md)复现。
 
 这些测试为实际覆盖的配置提供证据，不证明协议在所有网络条件下正确，也不能把仿真结果当成真实链路测量。
 
 ### 测试架构与环境
 
-测试框架把传输负载与分组投递分开。两个后端都运行实际 SCP 核心，并复用 `test/common/transfer.c` 的数据生成、接收校验、校验和交换与关闭流程。虚拟后端使用带种子的分组调度器和模拟时钟；UDP 后端使用 socket 与真实时间。Python 运行器协调执行、保留诊断结果，并调用原绘图脚本分析协议栈自己的 JSON 日志。[测试设计与环境说明](../../test/README.md#test-design-and-environments)介绍各层职责与通过标准。
+测试框架把传输负载与分组投递分开。两个后端都运行实际 SCP 核心，并复用 `test/common/transfer.c` 的数据生成、接收校验、校验和交换与关闭流程。虚拟后端使用带种子的分组调度器和模拟时钟；UDP 后端使用 socket 与真实时间。Python 运行器协调执行并保留诊断结果。独立运行沿用原日志分析器；批量扫描把核心状态精简为 CSV 和曲线，不保存全文日志。[测试设计与环境说明](../../test/README.md#test-design-and-environments)介绍各层职责与通过标准。
 
 | 环境 | 检查的内容 |
 |---|---|
-| 虚拟网络 | 可重复的速率、传播延迟、随机丢包和协议事件，无需等待真实时间 |
+| 虚拟网络 | 可重复的速率、传播延迟、随机丢包、可选尾丢弃队列和协议事件，无需等待真实时间 |
 | Localhost UDP | 真实 socket、Linux/Windows 进程调度、双端运行与文件 I/O |
 | Linux 网络命名空间 + netem | 受控客户端—路由器—服务器路径上的真实 Linux UDP/IP 与 qdisc 行为 |
 | 实际中国到美国链路 | 真实跨洲路径的使用经历，与配置出的虚拟场景分别记录 |
 
-此前 netem 实验采用 `scp-c ↔ scp-r ↔ scp-s`，在路由器两个出口分别配置 netem qdisc，每个方向独立施加速率、单向延迟、随机丢包和有限包队列。下文历史结果使用每方向 5 Mbit/s、单向 50 ms 延迟（空载 RTT 约 100 ms）、1000 包队列、100 MiB 传输与 300 秒公平性测量。这是在真实 Linux 网络上施加模拟链路条件，不能复现互联网路径的所有特征。当前 CI 的 localhost 传输没有应用这套 netem 拓扑，虚拟模型也没有有限队列，各环境结果应分别报告。
+此前 netem 实验采用 `scp-c ↔ scp-r ↔ scp-s`，在路由器两个出口分别配置 netem qdisc，每个方向独立施加速率、单向延迟、随机丢包和有限包队列。下文历史结果使用每方向 5 Mbit/s、单向 50 ms 延迟（空载 RTT 约 100 ms）、1000 包队列、100 MiB 传输与 300 秒公平性测量。这是在真实 Linux 网络上施加模拟链路条件，不能复现互联网路径的所有特征。当前 CI 的 localhost 传输没有应用这套 netem 拓扑，虚拟网络现在支持可选 drop-tail 队列，并使用独立的确定性时钟；各环境结果仍应分别报告。
 
 Linux 网络命名空间测试，先建立拓扑，再在两个终端中分别启动 B、A：
 
@@ -214,7 +215,7 @@ sudo python3 test/run.py test/build/scp_udp --netns --file testA.bin --timeout 3
 python3 test/run.py test/build/scp_virtual --backend virtual --out test/results/virtual-1g
 ```
 
-文件测试需要先建立网络拓扑，结果包含 B 写出的 `received.bin`、双方日志、曲线及文件 SHA-256 核对。绘图需要 matplotlib，完整命令见 [测试说明](../../test/README.md)。
+文件测试需要先建立网络拓扑，结果包含 B 写出的 `received.bin`、双方日志、曲线及文件 SHA-256 核对。绘图需要 matplotlib，完整命令见 [测试说明](测试说明.md)。
 
 ## 研究用途与使用经历
 

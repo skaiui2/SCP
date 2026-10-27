@@ -478,7 +478,7 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .dst_fd   = dst_fd,
             .srtt = 0,
             .rttvar = 0,
-            .rto = SCP_RTO_MIN,
+            .rto = SCP_RTO_INIT,
             .rto_recovery = 0,
             .sb_hiwat = SCP_RECV_LIMIT,
             .rcv_wnd  = RECV_WIN_INIT,

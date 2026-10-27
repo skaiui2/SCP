@@ -37,6 +37,7 @@ struct scp_timer {
 #define SCP_DUMP_HDR  0
 
 #define RETRANS_COUNT_MAX 1000
+#define SCP_RTO_INIT (1000U * (SCP_TICK_SCALE))
 #define SCP_RTO_MIN (200U * (SCP_TICK_SCALE))
 #define SCP_RTO_MAX (2000U * (SCP_TICK_SCALE))
 #define RETRANS_RECO_MAX 1

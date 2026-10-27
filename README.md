@@ -1,6 +1,6 @@
 # SCP (Simple Stream Control Protocol)
 
-[中文说明](./docs/中文/README中文.md)
+[中文说明](./docs/中文/README中文.md) · [User guide](docs/English/UserGuide.md) · [Tests and reproduction](test/README.md)
 
 SCP is a compact, stream-oriented reliable transport protocol implemented over UDP or another unreliable packet transport. The project focuses on network transport research: exploring reliable delivery, congestion control, pacing, and connection behavior with an inspectable C implementation.
 
@@ -25,10 +25,10 @@ For Overleaf, upload [papers/pacing/](./papers/pacing/), including `figures/`, a
 
 | Research | Reproduction code and steps | Actions data |
 |---|---|---|
-| Slow start | [Next-slot SS guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) | [Successful run 39697564304](https://github.com/skaiui2/SCP/actions/runs/39697564304) |
-| Congestion avoidance | [Next-slot CA guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [Successful rebuild run 40084981319](https://github.com/skaiui2/SCP/actions/runs/40084981319) |
+| Slow start | [Next-slot SS guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) | [Verified full run 40340718507](https://github.com/skaiui2/SCP/actions/runs/40340718507) |
+| Congestion avoidance | [Next-slot CA guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [Verified full run 40340725047](https://github.com/skaiui2/SCP/actions/runs/40340725047) |
 
-Each research branch keeps only its own compact plotting tables and reproduction scripts. Download large logs from Actions artifacts; if they have expired, follow the rerun steps. This branch maintains the common paper. The linked completed runs record the earlier next-slot campaigns: their fixed-gain scans remain useful, while CA controller-policy entries used the earlier adaptive formula. Results identify their source revision and gain policy. The next-slot branches above replace the retired empty-queue-reset campaigns.
+Each research branch keeps its own reproduction scripts and compact tables; main maintains the common paper and engineering tests. The verified runs above execute the actual SCP core at 1 μs resolution with retained CA byte credit: SS commit `7c7c71a`, CA commit `ebb5ff5`, shared core baseline `ddea254`. Each ran 22 gains × 3 plus three native-policy controls, with 1 GiB per transfer. Their manifests identify the exact configuration. Earlier 1 ms and byte-truncation results remain historical comparisons in the paper, not descriptions of current behavior. Large data stays in Actions artifacts, not Git or Release attachments; rerun from the branch instructions if artifacts expire.
 
 Research proceeds from an idea to a mathematical algorithm model, a reviewed Python simulation, and actual SCP execution. The current scheduler follows Linux's next-slot approach: retain the next available time, start a batch at `max(next_slot, now)`, assign a packet's time, then advance the slot by that packet's interval. See the [model and execution contract](test/README.md#model-and-execution-contract) for the clock, queue and numeric differences between the two implementations.
 
@@ -139,26 +139,27 @@ The default standalone transfer is 1 GiB. See [test instructions](test/README.md
 
 ### Current test system
 
-- **Functional and integrity checks:** CTest registers 15 checks covering connection lifecycle, control-packet loss, allocation failure, closure, generated-data and file transfers, PROB/AIMD operation, pacing observations, and two-flow smoke checks.
-- **Shared transfer logic:** real UDP and virtual-network runs use the same transfer implementation. Generated data is checked byte by byte and by stream checksum; file runs additionally compare file lengths and SHA-256 hashes. Both endpoints must complete closure.
-- **Linux and virtual transfers:** GitHub Actions runs CTest, a 1 GiB virtual transfer, and a 1 GiB file transfer over Linux localhost UDP. The localhost run has no imposed WAN bandwidth or delay; Linux namespaces provide a separate controlled-network setup.
-- **Network scenarios:** the default CI sweep runs 150 virtual cases: three 100 Mbps scenarios with base RTTs of 10, 50, and 200 ms, ten independent packet-loss rates from 0% to 5%, five seeds, and 64 MiB per run. Manual `scenarios-1g` runs 36 cases at 1 GiB. These are configured simulations; the simplified Wi-Fi case does not model contention or link-layer retries.
-- **Inspectable results:** each parameter combination and connection retains its own protocol-state logs and plots using the original analyzer. Reports include failures and successful-run goodput statistics. Download `transfer-1g-curves` and `network-report` for figures and summaries; `transfer-1g-logs` and `network-shard-*` retain raw evidence separately for 14 days. See [test instructions](test/README.md) to rerun after expiration.
+- **Functional and integrity checks:** CTest registers 17 checks: 11 virtual and six real UDP checks. They cover lifecycle, control-packet loss, allocation failures, sequence ordering, closure, checksums, both controllers, pacing and deterministic replay. CI also runs virtual checks under AddressSanitizer with leak detection.
+- **Shared transfer logic:** both backends run the actual SCP core and `test/common/transfer.c`. Generated bytes are checked individually and with FNV-1a; real file tests additionally verify file length and SHA-256. Virtual transfers monitor sequences and core resource cleanup throughout the run.
+- **Network scenarios:** the default `scenarios` sweep has 200 runs of 64 MiB over Wi-Fi-like, WAN and intercontinental links, loss rates from 0% to 5%, and five seeds. WAN has a 100-packet queue; intercontinental tests both 100 and 1000 Mbps. `quick` has 21 runs, `scenarios-1g` has 48, and optional `shallow-stress` has three 8 MiB runs with a 20-packet queue.
+- **Quality gates and metrics:** report checksum, sequence and cleanup failures separately from throughput, ACK-weighted SRTT, bufferbloat, cumulative DATA RTOs, retransmissions and startup RTTs. Zero-RTO is an additional gate for loss-free intercontinental tests; lossy tests measure RTO recovery rather than treating every necessary timeout as a protocol failure.
+- **Compact visual diagnosis:** sweeps retain at most 256 core-state samples per connection, case plots, configurations and summary JSON. Aggregate PNGs show Goodput vs Loss, seed envelopes and bufferbloat; failed gates remain visible. Successful sweeps save no raw text logs. Failed cases print an exact `Repro:` command and retain a short diagnostic tail.
+- **CI artifacts:** `network-report` provides aggregate figures and tables; `network-shard-*` contains compact case results. `transfer-1g-curves` covers the separate virtual and Linux localhost UDP 1 GiB transfers; raw transfer logs are uploaded only on failure. The Actions Summary links the figure bundle. Artifacts expire after 14 days; follow the [test guide](test/README.md) to reproduce them.
 
 These tests provide evidence for the configurations exercised; they do not establish correctness for every network or turn simulation results into real-path measurements.
 
 ### Test architecture and environments
 
-The harness separates the transfer workload from packet delivery. Both backends exercise the actual SCP core and reuse `test/common/transfer.c` for data generation, receive validation, checksum exchange, and closure. The virtual backend uses a seeded packet scheduler and simulated clock; the UDP backend uses sockets and real elapsed time. Python runners coordinate execution, retain diagnostics, and invoke the original plotting scripts on the core's JSON logs. The [test design and environment notes](test/README.md#test-design-and-environments) describe the layers and pass criteria.
+The harness separates the transfer workload from packet delivery. Both backends exercise the actual SCP core and reuse `test/common/transfer.c` for data generation, receive validation, checksum exchange, and closure. The virtual backend uses a seeded packet scheduler and simulated clock; the UDP backend uses sockets and real elapsed time. Python runners coordinate execution and retain diagnostics. Standalone runs use the original log analyzer; bulk sweeps reduce core-state samples into compact CSVs and plots without saving full text logs. The [test design and environment notes](test/README.md#test-design-and-environments) describe the layers and pass criteria.
 
 | Environment | What it exercises |
 |---|---|
-| Virtual network | Repeatable rate, propagation delay, random loss, and protocol events without waiting for real elapsed time |
+| Virtual network | Repeatable rate, propagation delay, random loss, optional drop-tail queues, and protocol events without waiting for real elapsed time |
 | Localhost UDP | Real sockets, Linux/Windows process scheduling, paired endpoints, and file I/O |
 | Linux namespaces + netem | Real Linux UDP/IP and qdisc behavior on a controlled client–router–server path |
 | Actual China-to-US path | Deployment experience on a real intercontinental route; separate from configured simulation scenarios |
 
-Earlier netem experiments used `scp-c ↔ scp-r ↔ scp-s`, with a netem qdisc on each router egress. Each direction had its own rate, one-way delay, random loss, and finite packet queue. The historical results below used 5 Mbit/s per direction, 50 ms one-way delay (about 100 ms unloaded RTT), a 1000-packet queue, 100 MiB transfers, and 300-second fairness measurements. This exercises actual Linux networking under emulated impairments; it does not reproduce every feature of an Internet path. The current CI localhost transfer does not apply this netem topology, and the virtual model has no finite queue. Results from these environments should be reported separately.
+Earlier netem experiments used `scp-c ↔ scp-r ↔ scp-s`, with a netem qdisc on each router egress. Each direction had its own rate, one-way delay, random loss, and finite packet queue. The historical results below used 5 Mbit/s per direction, 50 ms one-way delay (about 100 ms unloaded RTT), a 1000-packet queue, 100 MiB transfers, and 300-second fairness measurements. This exercises actual Linux networking under emulated impairments; it does not reproduce every feature of an Internet path. The current CI localhost transfer does not apply this netem topology, while the virtual model now has an optional drop-tail queue and its own deterministic clock. Results from these environments should be reported separately.
 
 For Linux namespaces, create the topology, then start B and A in separate terminals:
 

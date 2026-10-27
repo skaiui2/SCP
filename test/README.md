@@ -1,5 +1,9 @@
 # SCP tests
 
+[中文测试说明](../docs/中文/测试说明.md) · [Project overview](../README.md) · [API guide](../docs/English/UserGuide.md)
+
+Main's tests guard integrity, recovery and adaptation across network conditions. Start with CTest for correctness, then `quick` for compact diagnostic curves. Phase-specific pacing experiments remain on their research branches; their fixed feedback conditions are distinct from the queued, lossy engineering scenarios here.
+
 ## Build
 
 ```sh
@@ -223,11 +227,11 @@ per-stream state curves under `run/`. `--mbps`, `--delay-ms`, `--loss-ppm` and
 `--seed` configure this run. Executing the C binary directly writes summary JSON into
 its working directory; automatic plotting is provided by `test/run.py`.
 
-Options: `--bytes`, `--mbps`, `--delay-ms`, `--loss-ppm`, `--seed`, `--timeout-ms`.
-Each takes an integer. Defaults: 1 GiB, AIMD, 100 Mbps per direction, 10 ms one-way
+Binary options include `--bytes`, `--mbps`, `--delay-ms`, `--loss-ppm`, `--seed`, `--timeout-ms`, `--queue-packets`, `--send-backlog-bytes`, and `--cc` (AIMD=1, PROB=0).
+Numeric options take integers; delays and timeouts remain physical milliseconds at either tick scale. Defaults: 1 GiB, AIMD, 100 Mbps per direction, 10 ms one-way
 propagation, no loss. FIFO serialization precedes propagation. Random loss applies
 to both control and DATA packets after serialization; retransmissions use the core.
-There is no finite queue, duplication or deliberate reordering model.
+`--queue-packets N` enables per-direction drop-tail capacity; zero means unlimited. There is no duplication or deliberate reordering model. `run.py` does not forward this queue option; use the binary directly or the configured sweep for finite queues.
 
 Clock and queue ordering follow the [model and execution contract](#model-and-execution-contract).
 State curves use the core JSON logs.
@@ -339,10 +343,17 @@ python3 test/virtual/sweep.py test/build/scp_virtual --profile scenarios-1g --ou
 The optional `shallow-stress` profile uses 8 MiB, three seeds, 100 Mbps, 50 ms RTT,
 20 queue slots and zero random loss. It tests drop-tail recovery and completion.
 Wi-Fi emphasizes loss retention and seed spread; WAN emphasizes bufferbloat and the
-retransmission/drop ratio; intercontinental adds a strict zero-DATA-RTO gate and
-startup measurement. Current baseline: serialization makes the first 200 ms path
-feedback later than the 200 ms initial RTO. The new gate reports this even when
-integrity and closure pass; tests do not alter core timers to hide it.
+retransmission/drop ratio; intercontinental adds startup measurement and a strict
+zero-DATA-RTO gate for the loss-free cases. Lossy cases still record every RTO,
+but necessary timeout recovery is not itself a failure; integrity, closure and
+resource checks remain mandatory for all cases.
+
+The initial RTO is 1000 ms until RTT feedback is available. Previously it was
+200 ms, so a 200 ms propagation path plus serialization caused premature startup
+retransmissions. The regression test checks a loss-free long path with measured
+SRTT above 200 ms and requires zero DATA RTO and retransmissions. The later RTT
+estimator still clamps RTO to 200–2000 ms, and pacing's no-SRTT fallback remains
+1 ms. These are separate timing rules.
 
 `report.md` includes individual
 failures and successful-run median/min/max goodput relative to the zero-loss
