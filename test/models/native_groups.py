@@ -72,7 +72,7 @@ def groups(run):
                         following = cursor + gap
                         if not gap or following > observed_slot:
                             raise ValueError('Cannot reconstruct reservation end')
-                        if not assigned_packets:
+                        if not ack_count:
                             generation = 0
                         elif active_parent is not None and active_parent['generation'] >= 0:
                             generation = active_parent['generation'] + 1

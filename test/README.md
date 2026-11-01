@@ -4,6 +4,14 @@
 
 Main's tests guard integrity, recovery and adaptation across network conditions. Start with CTest for correctness, then `quick` for compact diagnostic curves. Phase-specific pacing experiments remain on their research branches; their fixed feedback conditions are distinct from the queued, lossy engineering scenarios here.
 
+## Full research traces in Windows jPlot
+
+`scptrace.py` turns the existing audited SS/CA research logs into complete interactive XPlot files. The research workflows publish separate `scp-ss-xpl-*` and `scp-ca-xpl-*` artifacts, so Windows users can download only XPL, unzip it, and open `a2b_tsg.xpl` or `a2b_window.xpl` with their existing `jplot.cmd`. Each repetition keeps its own directory. The exporter reads files offline and uses only Python's standard library.
+
+The time-sequence graph includes every forward DATA send and returning DATA ACK at the sender, retained reservation markers, group boundaries, and separate control markers. Its blue DATA, green ACK, gray reservation and red group annotations use seconds relative to the first DATA; controls can have negative times. Every group keeps its head/tail markers; every 100th generation and the terminal group also receive a text label. Window curves show every original sender state sample (normally 1 ms): blue cwnd, green flight and red ssthresh. Both graphs cover the full trace. Main supplies the shared exporter and its tests; the research branches supply the audited packet logs.
+
+To export an already downloaded run, use `python test/scptrace.py path/to/runs/critical-r01`. To check the exporter, run `python test/test_scptrace.py`. Existing PNG plotting remains available through `plot.py`.
+
 ## Build
 
 ```sh
