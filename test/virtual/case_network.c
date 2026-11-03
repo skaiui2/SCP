@@ -1,5 +1,5 @@
 #include <assert.h>
-#include "../../scp.c"
+#include "../../sscp.c"
 #include "vnet.h"
 #include "../common/transfer.h"
 
@@ -11,24 +11,24 @@ static struct transfer transfer_a, transfer_b;
 
 static void observe_network(unsigned direction, int event, const void *buf, size_t len, uint32_t now)
 {
-    const struct scp_hdr *hdr = buf;
+    const struct sscp_hdr *hdr = buf;
     (void)direction;
     if (event == VNET_INPUT_RETURNED) ++inputs;
     if (event != VNET_ARRIVAL) return;
     assert(len == 1000 && ((const unsigned char *)buf)[sizeof(*hdr)] == 0x5a);
     ++arrivals;
     delivered |= UINT64_C(1) << ntohl(hdr->seq);
-    if (now < 11U * SCP_TICK_SCALE) assert(now == 3U * SCP_TICK_SCALE);
+    if (now < 11U * SSCP_TICK_SCALE) assert(now == 3U * SSCP_TICK_SCALE);
 }
 
 static void raw_packet(unsigned direction, unsigned seq)
 {
     struct vnet_endpoint ep = {direction};
     unsigned char wire[1000];
-    struct scp_hdr hdr = {0};
+    struct sscp_hdr hdr = {0};
     memset(wire, 0x5a, sizeof(wire));
     hdr.fd = 15;
-    hdr.flags = SCP_FLAG_ACK;
+    hdr.flags = SSCP_FLAG_ACK;
     hdr.seq = htonl(seq);
     hdr.len = htons(sizeof(wire) - sizeof(hdr));
     memcpy(wire, &hdr, sizeof(hdr));
@@ -43,13 +43,13 @@ static uint64_t network_batch(uint32_t rate, uint32_t loss, uint32_t seed)
     vnet_observe(observe_network);
     arrivals = inputs = 0; delivered = 0;
     for (i = 0; i < 64; ++i) raw_packet(i % 2, i);
-    for (i = 1; i <= 300U * SCP_TICK_SCALE; ++i) {
-        assert(!vnet_step() && scp_now_time() == i);
-        if (!rate && i < 3U * SCP_TICK_SCALE) assert(!arrivals);
-        if (!rate && i == 3U * SCP_TICK_SCALE) assert(arrivals + vnet_dropped == 64);
-        if (rate && i < 11U * SCP_TICK_SCALE) assert(!arrivals);
-        if (rate && i == 11U * SCP_TICK_SCALE) assert(arrivals == 2);
-        if (rate && i == 19U * SCP_TICK_SCALE) assert(arrivals == 4);
+    for (i = 1; i <= 300U * SSCP_TICK_SCALE; ++i) {
+        assert(!vnet_step() && sscp_now_time() == i);
+        if (!rate && i < 3U * SSCP_TICK_SCALE) assert(!arrivals);
+        if (!rate && i == 3U * SSCP_TICK_SCALE) assert(arrivals + vnet_dropped == 64);
+        if (rate && i < 11U * SSCP_TICK_SCALE) assert(!arrivals);
+        if (rate && i == 11U * SSCP_TICK_SCALE) assert(arrivals == 2);
+        if (rate && i == 19U * SSCP_TICK_SCALE) assert(arrivals == 4);
     }
     assert(vnet_packets == 64 && arrivals + vnet_dropped == 64 && inputs == arrivals);
     if (!loss) assert(delivered == UINT64_MAX);
@@ -66,26 +66,26 @@ static void after_delivery(void *arg)
 
 static void observe_transfer(unsigned direction, int event, const void *buf, size_t len, uint32_t now)
 {
-    const struct scp_hdr *hdr = buf;
+    const struct sscp_hdr *hdr = buf;
     unsigned i;
     uint32_t bytes = ntohs(hdr->len);
-    if (!direction && event == VNET_SEND && hdr->flags == SCP_FLAG_DATA) {
+    if (!direction && event == VNET_SEND && hdr->flags == SSCP_FLAG_DATA) {
         assert(sent_count < 33 && len == sizeof(*hdr) + bytes);
         assert(bytes == (sent_count == 32 ? 17 : MSS));
         sequence[sent_count] = ntohl(hdr->seq);
         sent_at[sent_count] = now;
         size[sent_count++] = bytes;
     }
-    if (direction != 1 || event != VNET_INPUT_RETURNED || hdr->flags != SCP_FLAG_ACK) return;
+    if (direction != 1 || event != VNET_INPUT_RETURNED || hdr->flags != SSCP_FLAG_ACK) return;
     for (i = 0; i < sent_count; ++i) {
         if (ntohl(hdr->ack) != sequence[i] + size[i]) continue;
-        assert(!confirmed[i] && now - sent_at[i] == 100U * SCP_TICK_SCALE);
+        assert(!confirmed[i] && now - sent_at[i] == 100U * SSCP_TICK_SCALE);
         assert(ntohl(hdr->time_val) == sent_at[i]);
         confirmed[i] = 1;
         ++ack_count;
-        assert(!scp_is_closed(transfer_a.fd));
+        assert(!sscp_is_closed(transfer_a.fd));
         assert(transfer_a.stream->cwnd == MSS + (i < 32 ? (i + 1) * MSS : 32 * MSS + 17));
-        assert(transfer_a.stream->srtt == 100U * SCP_TICK_SCALE);
+        assert(transfer_a.stream->srtt == 100U * SSCP_TICK_SCALE);
         break;
     }
 }
@@ -93,19 +93,19 @@ static void observe_transfer(unsigned direction, int event, const void *buf, siz
 static void native_transfer(uint32_t backlog, int observe)
 {
     struct vnet_endpoint ea = {0}, eb = {1};
-    struct scp_transport_class ta = {.send = vnet_send, .user = &ea};
-    struct scp_transport_class tb = {.send = vnet_send, .user = &eb};
+    struct sscp_transport_class ta = {.send = vnet_send, .user = &ea};
+    struct sscp_transport_class tb = {.send = vnet_send, .user = &eb};
     uint64_t total = 32 * MSS + 17;
     int ok = 0;
     vnet_init(50, 0, 0, 7);
     if (observe) vnet_observe(observe_transfer);
     sent_count = ack_count = 0;
     memset(confirmed, 0, sizeof(confirmed));
-    assert(!transfer_init(&transfer_b, &tb, 2, 1, 0, total, SCP_CC_AIMD));
-    assert(!transfer_init(&transfer_a, &ta, 1, 2, 1, total, SCP_CC_AIMD));
+    assert(!transfer_init(&transfer_b, &tb, 2, 1, 0, total, SSCP_CC_AIMD));
+    assert(!transfer_init(&transfer_a, &ta, 1, 2, 1, total, SSCP_CC_AIMD));
     transfer_a.send_backlog_bytes = backlog;
     vnet_attach(&transfer_a, &transfer_b);
-    while (scp_now_time() < 10000U * SCP_TICK_SCALE) {
+    while (sscp_now_time() < 10000U * SSCP_TICK_SCALE) {
         assert(!vnet_step() && !transfer_step(&transfer_a) && !transfer_step(&transfer_b));
         if (!transfer_a.done) assert(transfer_a.stream->snd_seq_q - transfer_a.stream->snd_una <= backlog);
         if (transfer_a.done && transfer_b.done) { ok = 1; break; }
@@ -113,7 +113,7 @@ static void native_transfer(uint32_t backlog, int observe)
     assert(ok && transfer_a.sent == total && transfer_b.received == total && transfer_a.hash == transfer_b.hash);
     assert(!vnet_dropped && (observe ? sent_count == 33 && ack_count == 33 : !sent_count));
     transfer_cleanup(&transfer_a); transfer_cleanup(&transfer_b);
-    assert(!scp_timer_tree.count && list_empty(&scp_stream_queue));
+    assert(!sscp_timer_tree.count && list_empty(&sscp_stream_queue));
     vnet_free();
 }
 
@@ -122,20 +122,20 @@ int main(void)
     uint64_t pattern;
     unsigned fired = 0;
     unsigned i;
-    struct scp_timer timer = {0};
-    assert(!scp_init(16));
+    struct sscp_timer timer = {0};
+    assert(!sscp_init(16));
     vnet_init(100, 1, 0, 7);
     vnet_queue_limit(2);
     raw_packet(0, 0);
     raw_packet(0, 1);
     raw_packet(0, 2);
     assert(vnet_dropped == 1 && vnet_queue_dropped == 1 && vnet_pending == 2);
-    for (i = 0; i < 8U * SCP_TICK_SCALE; ++i) assert(!vnet_step());
+    for (i = 0; i < 8U * SSCP_TICK_SCALE; ++i) assert(!vnet_step());
     raw_packet(0, 3);
     assert(vnet_dropped == 1 && vnet_pending == 3);
     raw_packet(1, 4);
     assert(vnet_dropped == 1 && vnet_pending == 4);
-    for (i = 0; i < 150U * SCP_TICK_SCALE; ++i) assert(!vnet_step());
+    for (i = 0; i < 150U * SSCP_TICK_SCALE; ++i) assert(!vnet_step());
     assert(!vnet_pending);
     vnet_free();
     network_batch(0, 0, 7);
@@ -148,8 +148,8 @@ int main(void)
     vnet_observe(observe_network);
     arrivals = inputs = 0; delivered = 0;
     raw_packet(0, 0);
-    scp_timer_create(&timer, after_delivery, &fired, 3U * SCP_TICK_SCALE);
-    for (i = 1; i < 3U * SCP_TICK_SCALE; ++i)
+    sscp_timer_create(&timer, after_delivery, &fired, 3U * SSCP_TICK_SCALE);
+    for (i = 1; i < 3U * SSCP_TICK_SCALE; ++i)
         assert(!vnet_step() && !fired);
     assert(!vnet_step() && fired == 1);
     vnet_free();

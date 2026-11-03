@@ -1,10 +1,10 @@
-#ifndef SCP_TEST_TRANSFER_H
-#define SCP_TEST_TRANSFER_H
-#include "scp.h"
+#ifndef SSCP_TEST_TRANSFER_H
+#define SSCP_TEST_TRANSFER_H
+#include "sscp.h"
 #include <stdio.h>
 #define TRANSFER_SEND_BACKLOG_BYTES (1U << 20)
 struct transfer {
-    struct scp_stream *stream;
+    struct sscp_stream *stream;
     uint64_t total, sent, received, hash, peer_hash;
     int fd, sender, started, established, checksum_sent, close_requested, done, failed;
     unsigned char reply[16];
@@ -15,7 +15,7 @@ struct transfer {
     unsigned char pending[65536];
     size_t pending_size;
 };
-int transfer_init(struct transfer *t, struct scp_transport_class *transport,
+int transfer_init(struct transfer *t, struct sscp_transport_class *transport,
                   int local_fd, int remote_fd, int sender, uint64_t bytes, int cc);
 int transfer_input(struct transfer *t, void *buf, size_t len);
 int transfer_step(struct transfer *t);

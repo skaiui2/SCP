@@ -1,5 +1,5 @@
-#ifndef SCP_H
-#define SCP_H
+#ifndef SSCP_H
+#define SSCP_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -10,40 +10,40 @@
 #include "in_cksum.h"
 #include "rbtree.h"
 
-typedef void (*scp_timer_cb_t)(void *arg);
-typedef void *scp_timer_handle_t;
+typedef void (*sscp_timer_cb_t)(void *arg);
+typedef void *sscp_timer_handle_t;
 
-struct scp_timer {
+struct sscp_timer {
     struct rb_node node;
     uint32_t expire;
     uint32_t timeout;
-    scp_timer_cb_t cb;
+    sscp_timer_cb_t cb;
     void *arg;
     uint8_t active; //If node in tree, set it.
 };
 
 //Set by yourself.
-#define SCP_DEBUG 0
-#ifndef SCP_TICK_SCALE
-#define SCP_TICK_SCALE 1U
+#define SSCP_DEBUG 0
+#ifndef SSCP_TICK_SCALE
+#define SSCP_TICK_SCALE 1U
 #endif
-#ifndef SCP_DUMP_SS
-#define SCP_DUMP_SS 0
+#ifndef SSCP_DUMP_SS
+#define SSCP_DUMP_SS 0
 #endif
-#ifndef SCP_DUMP_INTERVAL_MS
-#define SCP_DUMP_INTERVAL_MS (100U * (SCP_TICK_SCALE))
+#ifndef SSCP_DUMP_INTERVAL_MS
+#define SSCP_DUMP_INTERVAL_MS (100U * (SSCP_TICK_SCALE))
 #endif
-#define SCP_RUN_DEBUG 0
-#define SCP_DUMP_HDR  0
+#define SSCP_RUN_DEBUG 0
+#define SSCP_DUMP_HDR  0
 
 #define RETRANS_COUNT_MAX 1000
-#define SCP_RTO_INIT (1000U * (SCP_TICK_SCALE))
-#define SCP_RTO_MIN (200U * (SCP_TICK_SCALE))
-#define SCP_RTO_MAX (2000U * (SCP_TICK_SCALE))
+#define SSCP_RTO_INIT (1000U * (SSCP_TICK_SCALE))
+#define SSCP_RTO_MIN (200U * (SSCP_TICK_SCALE))
+#define SSCP_RTO_MAX (2000U * (SSCP_TICK_SCALE))
 #define RETRANS_RECO_MAX 1
 #define RETRANS_GAP_MAX  4
-#ifndef SCP_RECV_LIMIT
-#define SCP_RECV_LIMIT (1 << 24)
+#ifndef SSCP_RECV_LIMIT
+#define SSCP_RECV_LIMIT (1 << 24)
 #endif
 #ifndef SEND_WIN_INIT
 #define SEND_WIN_INIT (1 << 24)
@@ -55,26 +55,26 @@ struct scp_timer {
 #define CWND_WIN_MAX  (1 << 20)
 #endif
 #define MTU 1460
-#define PERSIST_INTERVAL (200U * (SCP_TICK_SCALE))
-#define SCP_PACING_SHIFT 32U
-#define SCP_GAIN_ONE_Q16 (1U << 16)
-#define SCP_GAIN_SS_Q16 90852U     /* round(2 * ln(2) * 2^16). */
-#define SCP_GAIN_CA_Q16 107998U    /* round((3 * ln(3) / 2) * 2^16). */
+#define PERSIST_INTERVAL (200U * (SSCP_TICK_SCALE))
+#define SSCP_PACING_SHIFT 32U
+#define SSCP_GAIN_ONE_Q16 (1U << 16)
+#define SSCP_GAIN_SS_Q16 90852U     /* round(2 * ln(2) * 2^16). */
+#define SSCP_GAIN_CA_Q16 107998U    /* round((3 * ln(3) / 2) * 2^16). */
 #define MAX_IDLE_FAIL  3
-#define IDLE_TIMEOUT (100000U * (SCP_TICK_SCALE))
-#define MSS (MTU - sizeof(struct scp_hdr))
+#define IDLE_TIMEOUT (100000U * (SSCP_TICK_SCALE))
+#define MSS (MTU - sizeof(struct sscp_hdr))
 #define P_WND  32
 #define SEND_MEM_MAX  (1 << 30)
 #define RECV_MEM_MAX  (1 << 30)
 
-struct scp_transport_class {
+struct sscp_transport_class {
     int (*send)(void *user, const void *buf, size_t len);
     int (*recv)(void *user, void *buf, size_t maxlen);
     int (*close)(void *user);
     void *user;
 };
 
-struct scp_buf {
+struct sscp_buf {
     union {
         struct list_node list;
         struct rb_node rb;
@@ -87,7 +87,7 @@ struct scp_buf {
     uint32_t payload_off;
 };
 
-struct scp_hdr {
+struct sscp_hdr {
     uint32_t seq;
     uint32_t ack;
     uint32_t sack; //first hollow
@@ -99,50 +99,50 @@ struct scp_hdr {
     uint32_t time_val;
 } __attribute__((packed));
 
-#define SCP_FLAG_DATA  0x01
-#define SCP_FLAG_ACK   0x02
-#define SCP_FLAG_RST   0x04
-#define SCP_FLAG_CONNECT  0x08
-#define SCP_FLAG_PING  0x10
-#define SCP_FLAG_RESEND 0x20
-#define SCP_FLAG_CONNECT_ACK 0x40
-#define SCP_FLAG_FIN         0x80
+#define SSCP_FLAG_DATA  0x01
+#define SSCP_FLAG_ACK   0x02
+#define SSCP_FLAG_RST   0x04
+#define SSCP_FLAG_CONNECT  0x08
+#define SSCP_FLAG_PING  0x10
+#define SSCP_FLAG_RESEND 0x20
+#define SSCP_FLAG_CONNECT_ACK 0x40
+#define SSCP_FLAG_FIN         0x80
 
-#define SCP_DIR_INPUT 1
-#define SCP_DIR_SEND 0
+#define SSCP_DIR_INPUT 1
+#define SSCP_DIR_SEND 0
 
-#define SCP_ERR_GENERIC   -1
-#define SCP_ERR_NOBUF     -2
-#define SCP_ERR_NOMEM     -3
+#define SSCP_ERR_GENERIC   -1
+#define SSCP_ERR_NOBUF     -2
+#define SSCP_ERR_NOMEM     -3
 
 enum {
-    SCP_CLOSED,
-    SCP_SYN_SENT,
-    SCP_SYN_RECV,
-    SCP_ESTABLISHED,
-    SCP_FIN_WAIT,
-    SCP_LAST_ACK,
+    SSCP_CLOSED,
+    SSCP_SYN_SENT,
+    SSCP_SYN_RECV,
+    SSCP_ESTABLISHED,
+    SSCP_FIN_WAIT,
+    SSCP_LAST_ACK,
 };
 
-enum scp_cc_phase {
-    SCP_CC_PHASE_INC = 0,
-    SCP_CC_PHASE_DEC = 1
+enum sscp_cc_phase {
+    SSCP_CC_PHASE_INC = 0,
+    SSCP_CC_PHASE_DEC = 1
 };
 
-enum scp_cc_id {
-    SCP_CC_PROB = 0,
-    SCP_CC_AIMD = 1
+enum sscp_cc_id {
+    SSCP_CC_PROB = 0,
+    SSCP_CC_AIMD = 1
 };
 
-struct scp_stream {
+struct sscp_stream {
     struct list_node node;              // linked into global stream list
-    struct scp_transport_class *st_class; // transport callbacks (send/recv)
+    struct sscp_transport_class *st_class; // transport callbacks (send/recv)
 
-    struct scp_timer t_retrans;         // retransmission timer
-    struct scp_timer t_persist;         // persist / keepalive timer
-    struct scp_timer t_hs;              // handshake retry timer
-    struct scp_timer t_fin;             // FIN retry timer
-    struct scp_timer t_pacing;          // pacing timer
+    struct sscp_timer t_retrans;         // retransmission timer
+    struct sscp_timer t_persist;         // persist / keepalive timer
+    struct sscp_timer t_hs;              // handshake retry timer
+    struct sscp_timer t_fin;             // FIN retry timer
+    struct sscp_timer t_pacing;          // pacing timer
 
     uint32_t dst_fd;                    // remote endpoint id
     uint32_t src_fd;                    // local endpoint id
@@ -173,8 +173,8 @@ struct scp_stream {
 
     struct list_node snd_q;             // send queue (in-order)
     uint32_t snd_q_count;
-    struct scp_buf *pacing_next;        // next scheduled packet to send
-    struct scp_buf *schedule_next;      // next packet not handed to pacing
+    struct sscp_buf *pacing_next;        // next scheduled packet to send
+    struct sscp_buf *schedule_next;      // next packet not handed to pacing
     uint64_t pacing_next_time;
 
     struct rb_root rcv_buf_q;           // out-of-order receive tree
@@ -220,12 +220,12 @@ struct scp_stream {
     int32_t prob_gamma_q16;
     int32_t prob_beta_q16;
 
-    void (*cc_init)(struct scp_stream *ss);
-    void (*cc_on_ack)(struct scp_stream *ss, uint32_t acked);
-    uint32_t (*cc_on_rtt)(struct scp_stream *ss);
-    uint32_t (*cc_pacing_gain)(struct scp_stream *ss);
-    void (*cc_on_loss)(struct scp_stream *ss);
-    void (*cc_on_timeout)(struct scp_stream *ss);
+    void (*cc_init)(struct sscp_stream *ss);
+    void (*cc_on_ack)(struct sscp_stream *ss, uint32_t acked);
+    uint32_t (*cc_on_rtt)(struct sscp_stream *ss);
+    uint32_t (*cc_pacing_gain)(struct sscp_stream *ss);
+    void (*cc_on_loss)(struct sscp_stream *ss);
+    void (*cc_on_timeout)(struct sscp_stream *ss);
 };
 
 /*
@@ -244,21 +244,21 @@ struct scp_stream {
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define imin(a, b) ((int)(a) < (int)(b) ? (int)(a) : (int)(b))
 
-int scp_init(size_t max_streams);
-struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int src_fd, int dst_fd);
-int scp_stream_free(struct scp_stream *ss);
+int sscp_init(size_t max_streams);
+struct sscp_stream *sscp_stream_alloc(struct sscp_transport_class *st_class, int src_fd, int dst_fd);
+int sscp_stream_free(struct sscp_stream *ss);
 
-int scp_connect(int fd);
-int scp_input(void *ctx, void *buf, size_t len);
-int scp_send(int fd, void *buf, size_t len);
-int scp_recv(int fd, void *buf, size_t len);
-void scp_close(int fd);
-int scp_is_closed(int fd);
-int scp_set_cc(int fd, enum scp_cc_id cc_id);
-int scp_prob_configure(struct scp_stream *ss,
+int sscp_connect(int fd);
+int sscp_input(void *ctx, void *buf, size_t len);
+int sscp_send(int fd, void *buf, size_t len);
+int sscp_recv(int fd, void *buf, size_t len);
+void sscp_close(int fd);
+int sscp_is_closed(int fd);
+int sscp_set_cc(int fd, enum sscp_cc_id cc_id);
+int sscp_prob_configure(struct sscp_stream *ss,
                               uint32_t rtt_span_ms,
                               uint32_t loss_q16);
 
-void scp_timer_process(void);
+void sscp_timer_process(void);
 
 #endif

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NS_C="scp-c"
-NS_R="scp-r"
-NS_S="scp-s"
+NS_C="sscp-c"
+NS_R="sscp-r"
+NS_S="sscp-s"
 
 C_IF="veth-c"
 R_C_IF="veth-r0"
@@ -122,7 +122,7 @@ setup() {
 
     cat <<EOF
 
-SCP namespace topology is ready:
+SSCP namespace topology is ready:
 
   ${NS_C} (${C_ADDR}) <---> ${NS_R} <---> ${NS_S} (${S_ADDR})
 

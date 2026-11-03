@@ -6,7 +6,7 @@
 #include <ctype.h>
 int main(int argc, char **argv)
 {
-    int sender, cc = SCP_CC_AIMD, flows = 1;
+    int sender, cc = SSCP_CC_AIMD, flows = 1;
     uint64_t bytes = UINT64_C(1073741824);
     uint32_t seconds = 0;
     uint64_t amount = 0;
@@ -26,11 +26,11 @@ int main(int argc, char **argv)
     }
     if (!strcmp(mode, "prob-prob") || !strcmp(mode, "prob-aimd")) {
         if (file_path) goto usage;
-        flows = 2; cc = SCP_CC_PROB;
+        flows = 2; cc = SSCP_CC_PROB;
         if (argc > 3 && amount > 86400) goto usage;
         seconds = argc > 3 ? (uint32_t)amount : 300;
     } else {
-        if (!strcmp(mode, "prob")) cc = SCP_CC_PROB;
+        if (!strcmp(mode, "prob")) cc = SSCP_CC_PROB;
         else if (strcmp(mode, "aimd") && strcmp(mode, "pacing")) goto usage;
         if (argc > 3) bytes = amount;
         if (!bytes) goto usage;

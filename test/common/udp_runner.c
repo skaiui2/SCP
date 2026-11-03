@@ -28,18 +28,18 @@ struct udp_link {
     uint64_t packets, wire_bytes, gap_sum;
     uint32_t first, last, min_gap, max_gap, tick_packets, max_tick;
 };
-extern uint32_t scp_now_time(void);
+extern uint32_t sscp_now_time(void);
 static int udp_send(void *user, const void *buf, size_t len)
 {
     struct udp_link *link = user;
-    const struct scp_hdr *hdr = buf;
+    const struct sscp_hdr *hdr = buf;
     int n;
     uint32_t now, gap;
     if (!link->peer_ready) return -1;
     n = (int)sendto(link->socket, (const char *)buf, (int)len, 0,
                    (struct sockaddr *)&link->peer, sizeof(link->peer));
-    if (n != (int)len || len < sizeof(*hdr) || !(hdr->flags & SCP_FLAG_DATA)) return n;
-    now = scp_now_time();
+    if (n != (int)len || len < sizeof(*hdr) || !(hdr->flags & SSCP_FLAG_DATA)) return n;
+    now = sscp_now_time();
     if (!link->packets) {
         link->first = now; link->min_gap = UINT32_MAX; link->tick_packets = 1;
     } else {
@@ -106,18 +106,18 @@ static int fairness_step(struct transfer *app, uint64_t *count, int feed)
 {
     unsigned char buf[65536];
     int n;
-    if (app->started && scp_is_closed(app->fd)) return 0;
-    if (app->stream->state != SCP_ESTABLISHED) return 0;
+    if (app->started && sscp_is_closed(app->fd)) return 0;
+    if (app->stream->state != SSCP_ESTABLISHED) return 0;
     app->established = 1;
     if (app->sender) {
         if (!feed || app->stream->snd_seq_q - app->stream->snd_una >= 4194304) return 0;
         memset(buf, app->fd, sizeof(buf));
-        n = scp_send(app->fd, buf, sizeof(buf));
-        if (n == SCP_ERR_NOBUF) return 0;
+        n = sscp_send(app->fd, buf, sizeof(buf));
+        if (n == SSCP_ERR_NOBUF) return 0;
         if (n) return -1;
         *count += sizeof(buf);
     } else {
-        while ((n = scp_recv(app->fd, buf, sizeof(buf))) > 0) *count += (uint32_t)n;
+        while ((n = sscp_recv(app->fd, buf, sizeof(buf))) > 0) *count += (uint32_t)n;
         if (n < 0) return -1;
     }
     return 0;
@@ -127,7 +127,7 @@ int transfer_udp_run(int sender, const char *peer_ip, uint64_t bytes,
 {
     struct udp_link links[2] = {0};
     struct transfer apps[2] = {0};
-    struct scp_transport_class transports[2];
+    struct sscp_transport_class transports[2];
     uint64_t counts[2] = {0};
     uint32_t start, last_report, measurement = 0, round = 0, elapsed_ms = 0;
     int result = 1, initialized = 0, measuring = 0, stopping = 0, stop_sent = 0, i;
@@ -136,43 +136,43 @@ int transfer_udp_run(int sender, const char *peer_ip, uint64_t bytes,
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2,2), &wsa)) return 1;
 #endif
-    start = scp_now_time();
+    start = sscp_now_time();
     for (i = 0; i < 2; ++i) links[i].socket = UDP_INVALID;
-    if (scp_init(16)) goto cleanup;
+    if (sscp_init(16)) goto cleanup;
     for (i = 0; i < flows; ++i) {
         if (udp_open(&links[i], sender, i, peer_ip)) goto cleanup;
         memset(&transports[i], 0, sizeof(transports[i]));
         transports[i].send = udp_send; transports[i].user = &links[i];
         ++initialized;
         if (transfer_init(&apps[i], &transports[i], i + 1, i + 1, sender, bytes,
-                          mixed && i == 1 ? SCP_CC_AIMD : cc)) goto cleanup;
+                          mixed && i == 1 ? SSCP_CC_AIMD : cc)) goto cleanup;
         if (file_path) {
             apps[i].file = fopen(file_path, sender ? "rb" : "wb");
             if (!apps[i].file) { perror(file_path); goto cleanup; }
         }
-        if (seconds && (mixed && i == 1 ? SCP_CC_AIMD : cc) == SCP_CC_PROB &&
-            scp_prob_configure(apps[i].stream, 100, 8000)) goto cleanup;
+        if (seconds && (mixed && i == 1 ? SSCP_CC_AIMD : cc) == SSCP_CC_PROB &&
+            sscp_prob_configure(apps[i].stream, 100, 8000)) goto cleanup;
     }
-    start = last_report = scp_now_time();
-    while (scp_now_time() - start < (seconds ? (seconds + 120) * 1000 : 36000000)) {
+    start = last_report = sscp_now_time();
+    while (sscp_now_time() - start < (seconds ? (seconds + 120) * 1000 : 36000000)) {
         uint32_t now;
         int done = 0;
-        scp_timer_process();
+        sscp_timer_process();
         for (i = 0; i < flows; ++i) {
             int index = (i + round) % flows;
             if (udp_input(&links[index], &apps[index])) goto cleanup;
         }
-        now = scp_now_time();
+        now = sscp_now_time();
         if (seconds) {
             int closed = 0;
             for (i = 0; i < flows; ++i)
-                closed += apps[i].started && scp_is_closed(apps[i].fd);
+                closed += apps[i].started && sscp_is_closed(apps[i].fd);
             if (closed) {
                 if (!stopping) goto cleanup;
                 if (closed == flows) { result = 0; break; }
             }
-            if (!measuring && !closed && apps[0].stream->state == SCP_ESTABLISHED &&
-                apps[1].stream->state == SCP_ESTABLISHED) {
+            if (!measuring && !closed && apps[0].stream->state == SSCP_ESTABLISHED &&
+                apps[1].stream->state == SSCP_ESTABLISHED) {
                 if (!measurement) measurement = now;
                 if (sender && now - measurement >= 1000) { measurement = now; measuring = 1; }
             }
@@ -185,20 +185,20 @@ int transfer_udp_run(int sender, const char *peer_ip, uint64_t bytes,
             }
             if (!stopping && measuring) {
                 unsigned char stop;
-                int n = sender ? scp_recv(apps[0].fd, &stop, 1) : 0;
+                int n = sender ? sscp_recv(apps[0].fd, &stop, 1) : 0;
                 if (n < 0) goto cleanup;
                 if ((sender && n == 1) || (!sender && now - measurement >= seconds * 1000)) {
                     elapsed_ms = now - measurement;
                     memcpy(measured, counts, sizeof(measured));
                     stopping = 1;
-                    if (sender) for (i = 0; i < flows; ++i) scp_close(apps[i].fd);
+                    if (sender) for (i = 0; i < flows; ++i) sscp_close(apps[i].fd);
                 }
             }
             if (!sender && stopping && !stop_sent) {
                 unsigned char stop = 1;
-                int n = scp_send(apps[0].fd, &stop, 1);
+                int n = sscp_send(apps[0].fd, &stop, 1);
                 if (n == 0) stop_sent = 1;
-                else if (n != SCP_ERR_NOBUF) goto cleanup;
+                else if (n != SSCP_ERR_NOBUF) goto cleanup;
             }
         } else {
             if (transfer_step(&apps[0])) goto cleanup;
@@ -207,10 +207,10 @@ int transfer_udp_run(int sender, const char *peer_ip, uint64_t bytes,
         }
         if (now - last_report >= 1000) {
             if (seconds)
-                printf("[%c][SCP] fairness bytes1=%" PRIu64 " bytes2=%" PRIu64 "\n",
+                printf("[%c][SSCP] fairness bytes1=%" PRIu64 " bytes2=%" PRIu64 "\n",
                        sender ? 'A' : 'B', counts[0], counts[1]);
             else
-                printf("[%c][SCP] progress sent=%" PRIu64 " received=%" PRIu64 " cwnd=%u flight=%u\n",
+                printf("[%c][SSCP] progress sent=%" PRIu64 " received=%" PRIu64 " cwnd=%u flight=%u\n",
                        sender ? 'A' : 'B', apps[0].sent, apps[0].received,
                        apps[0].cwnd, apps[0].flight);
             last_report = now;

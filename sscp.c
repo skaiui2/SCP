@@ -1,29 +1,29 @@
-#include "scp.h"
+#include "sscp.h"
 #include <stdlib.h>
 #include <arpa/inet.h>
 #include <string.h>
 #include <stdio.h>
 
-static void scp_send_window_probe(struct scp_stream *ss);
-static void scp_retransmit(struct scp_stream *ss);
-static int scp_output(struct scp_stream *ss);
-static void scp_finish_close(struct scp_stream *ss);
-static void scp_pacing_timer_cb(void *arg);
-static void scp_pacing_send_due(struct scp_stream *ss);
-static int scp_install_cc(struct scp_stream *ss,
-                          enum scp_cc_id cc_id);
-void scp_output_data(struct scp_stream *ss, struct scp_buf *sb);
-void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh);
+static void sscp_send_window_probe(struct sscp_stream *ss);
+static void sscp_retransmit(struct sscp_stream *ss);
+static int sscp_output(struct sscp_stream *ss);
+static void sscp_finish_close(struct sscp_stream *ss);
+static void sscp_pacing_timer_cb(void *arg);
+static void sscp_pacing_send_due(struct sscp_stream *ss);
+static int sscp_install_cc(struct sscp_stream *ss,
+                          enum sscp_cc_id cc_id);
+void sscp_output_data(struct sscp_stream *ss, struct sscp_buf *sb);
+void sscp_output_ack(struct sscp_stream *ss, struct sscp_hdr *data_sh);
 
-extern uint32_t scp_now_time(void);
+extern uint32_t sscp_now_time(void);
 
-static struct rb_root scp_timer_tree;
-static struct hashmap scp_stream_map;
-static struct list_node scp_stream_queue;
-static int scp_receive_compare(struct rb_node *a, struct rb_node *b)
+static struct rb_root sscp_timer_tree;
+static struct hashmap sscp_stream_map;
+static struct list_node sscp_stream_queue;
+static int sscp_receive_compare(struct rb_node *a, struct rb_node *b)
 {
-    struct scp_buf *pa = container_of(a, struct scp_buf, rb);
-    struct scp_buf *pb = container_of(b, struct scp_buf, rb);
+    struct sscp_buf *pa = container_of(a, struct sscp_buf, rb);
+    struct sscp_buf *pb = container_of(b, struct sscp_buf, rb);
     if (SEQ_LT(pa->seq, pb->seq))
         return -1;
     if (SEQ_GT(pa->seq, pb->seq))
@@ -31,10 +31,10 @@ static int scp_receive_compare(struct rb_node *a, struct rb_node *b)
     return 0;
 }
 
-static int scp_timer_compare(struct rb_node *a, struct rb_node *b)
+static int sscp_timer_compare(struct rb_node *a, struct rb_node *b)
 {
-    struct scp_timer *ta = container_of(a, struct scp_timer, node);
-    struct scp_timer *tb = container_of(b, struct scp_timer, node);
+    struct sscp_timer *ta = container_of(a, struct sscp_timer, node);
+    struct sscp_timer *tb = container_of(b, struct sscp_timer, node);
     if (SEQ_LT(ta->expire, tb->expire))
         return -1;
     if (SEQ_GT(ta->expire, tb->expire))
@@ -42,19 +42,19 @@ static int scp_timer_compare(struct rb_node *a, struct rb_node *b)
     return 0;
 }
 
-#if SCP_DUMP_SS
-static uint32_t scp_dump_time;
+#if SSCP_DUMP_SS
+static uint32_t sscp_dump_time;
 #endif
 
-#if SCP_RUN_DEBUG
-    #define SCP_PRINT(...) printf(__VA_ARGS__)
+#if SSCP_RUN_DEBUG
+    #define SSCP_PRINT(...) printf(__VA_ARGS__)
 #else
-    #define SCP_PRINT(...) ((void)0)
+    #define SSCP_PRINT(...) ((void)0)
 #endif
 
-static void scp_debug_hex(const char *tag, const void *buf, size_t len)
+static void sscp_debug_hex(const char *tag, const void *buf, size_t len)
 {
-#if SCP_DEBUG
+#if SSCP_DEBUG
     const uint8_t *p = buf;
 
     printf("---- %s (%zu bytes) ----\n", tag, len);
@@ -72,25 +72,25 @@ static void scp_debug_hex(const char *tag, const void *buf, size_t len)
 }
 
 static int a = 0;
-static void scp_debug_dump_tx(const char *reason,
+static void sscp_debug_dump_tx(const char *reason,
                               const void *buf, size_t len)
 {
-#if SCP_DEBUG
-    printf("\n[SCP TX] %s, a:%d\n", reason, a++);
-    scp_debug_hex("TX Packet", buf, len);
+#if SSCP_DEBUG
+    printf("\n[SSCP TX] %s, a:%d\n", reason, a++);
+    sscp_debug_hex("TX Packet", buf, len);
 #endif
 }
 
 static int b = 0;
-static void scp_debug_dump_rx(const void *buf, size_t len)
+static void sscp_debug_dump_rx(const void *buf, size_t len)
 {
-#if SCP_DEBUG
-    printf("\n[SCP RX] %d\n", b++);
-    scp_debug_hex("RX Packet", buf, len);
+#if SSCP_DEBUG
+    printf("\n[SSCP RX] %d\n", b++);
+    sscp_debug_hex("RX Packet", buf, len);
 #endif
 }
 
-static void scp_dump_ss_fields(struct scp_stream *ss)
+static void sscp_dump_ss_fields(struct sscp_stream *ss)
 {
     uint32_t flight = ss->snd_nxt - ss->snd_una;
     uint32_t end = ss->schedule_next ? ss->schedule_next->seq : ss->snd_seq_q;
@@ -176,20 +176,20 @@ static void scp_dump_ss_fields(struct scp_stream *ss)
     );
 }
 
-static void scp_dump_ss_state(struct scp_stream *ss)
+static void sscp_dump_ss_state(struct sscp_stream *ss)
 {
-#if SCP_DUMP_SS
-    printf("{\"t\":%u,\"type\":\"ss\",", scp_now_time());
-    scp_dump_ss_fields(ss);
+#if SSCP_DUMP_SS
+    printf("{\"t\":%u,\"type\":\"ss\",", sscp_now_time());
+    sscp_dump_ss_fields(ss);
     printf("}\n");
 #endif
 }
 
-static void scp_dump_hdr(struct scp_stream *ss,
+static void sscp_dump_hdr(struct sscp_stream *ss,
                          const char *dir,
-                         const struct scp_hdr *h)
+                         const struct sscp_hdr *h)
 {
-#if SCP_DUMP_HDR
+#if SSCP_DUMP_HDR
     uint32_t seq  = ntohl(h->seq);
     uint32_t ack  = ntohl(h->ack);
     uint32_t sack = ntohl(h->sack);
@@ -205,7 +205,7 @@ static void scp_dump_hdr(struct scp_stream *ss,
            "\"len\":%u,"
            "\"wnd\":%u,"
            "\"flags\":%u,",
-           scp_now_time(),
+           sscp_now_time(),
            dir,
            seq,
            ack,
@@ -215,24 +215,24 @@ static void scp_dump_hdr(struct scp_stream *ss,
            h->flags
     );
 
-    scp_dump_ss_fields(ss);
+    sscp_dump_ss_fields(ss);
 
     printf("}\n");
 #endif
 }
 
 //write by yourself
-void *scp_malloc(size_t want_size)
+void *sscp_malloc(size_t want_size)
 {
     return malloc(want_size);
 }
 
-void scp_free(void *ptr)
+void sscp_free(void *ptr)
 {
     free(ptr);
 }
 
-void scp_timer_node_init(struct scp_timer *t)
+void sscp_timer_node_init(struct sscp_timer *t)
 {
     if (!t) return;
 
@@ -244,10 +244,10 @@ void scp_timer_node_init(struct scp_timer *t)
     t->active = 0;        
 }
 
-static inline void scp_timer_add(struct scp_timer *t)
+static inline void sscp_timer_add(struct sscp_timer *t)
 {
-    t->expire = scp_now_time() + t->timeout;
-    rb_insert_node(&scp_timer_tree, &t->node);
+    t->expire = sscp_now_time() + t->timeout;
+    rb_insert_node(&sscp_timer_tree, &t->node);
     t->active = 1;
 }
 
@@ -255,22 +255,22 @@ static inline void scp_timer_add(struct scp_timer *t)
  * We must make sure the node in tree.
  * So we use t->active flags.
  */
-static inline void scp_timer_remove(struct scp_timer *t)
+static inline void sscp_timer_remove(struct sscp_timer *t)
 {
     if (!t->active) return;
 
-    rb_remove_node(&scp_timer_tree, &t->node);
+    rb_remove_node(&sscp_timer_tree, &t->node);
     t->active = 0;
 }
 
-scp_timer_handle_t scp_timer_create(struct scp_timer *t,
-                                    scp_timer_cb_t cb,
+sscp_timer_handle_t sscp_timer_create(struct sscp_timer *t,
+                                    sscp_timer_cb_t cb,
                                     void *arg,
                                     uint32_t timeout)
 {
     if (!t) return NULL;
 
-    if (t->active) scp_timer_remove(t); 
+    if (t->active) sscp_timer_remove(t); 
 
     rb_node_init(&t->node);
     t->timeout = timeout;
@@ -278,48 +278,48 @@ scp_timer_handle_t scp_timer_create(struct scp_timer *t,
     t->arg = arg;
     t->active = 0;
 
-    scp_timer_add(t);
+    sscp_timer_add(t);
     return t;
 }
 
 /*
  *malloc or free is not good,We just init it in struct stream.
 */
-void scp_timer_delete(scp_timer_handle_t h)
+void sscp_timer_delete(sscp_timer_handle_t h)
 {
     if (!h) return;
-    scp_timer_remove(h);
+    sscp_timer_remove(h);
 }
 
 /*
  * We use uint32_t, if clock update, that is bad.
  * So we use SEG_GT.
  */
-void scp_timer_process(void)
+void sscp_timer_process(void)
 {
     struct rb_node *n;
 
     for (;;) {
-        n = scp_timer_tree.first_node;
+        n = sscp_timer_tree.first_node;
         if (!n) break;
     
-        struct scp_timer *t =
-            container_of(n, struct scp_timer, node);
+        struct sscp_timer *t =
+            container_of(n, struct sscp_timer, node);
 
-        if (SEQ_GT(t->expire, scp_now_time())) break;
+        if (SEQ_GT(t->expire, sscp_now_time())) break;
 
-        rb_remove_node(&scp_timer_tree, &t->node);
+        rb_remove_node(&sscp_timer_tree, &t->node);
         t->active = 0;
 
         t->cb(t->arg);
     }
-#if SCP_DUMP_SS
-    uint32_t now = scp_now_time();
-    if (now - scp_dump_time >= SCP_DUMP_INTERVAL_MS) {
+#if SSCP_DUMP_SS
+    uint32_t now = sscp_now_time();
+    if (now - sscp_dump_time >= SSCP_DUMP_INTERVAL_MS) {
         struct list_node *node;
-        scp_dump_time = now;
-        for (node = scp_stream_queue.next; node != &scp_stream_queue; node = node->next)
-            scp_dump_ss_state(container_of(node, struct scp_stream, node));
+        sscp_dump_time = now;
+        for (node = sscp_stream_queue.next; node != &sscp_stream_queue; node = node->next)
+            sscp_dump_ss_state(container_of(node, struct sscp_stream, node));
     }
 #endif
 }
@@ -329,10 +329,10 @@ void scp_timer_process(void)
  *If retrans too many, we close.
  *The timer is period.
 */
-static void scp_timer_retrans_cb(void *arg)
+static void sscp_timer_retrans_cb(void *arg)
 {
-    struct scp_stream *ss = arg;
-    if (!ss || ss->state == SCP_CLOSED) return;
+    struct sscp_stream *ss = arg;
+    if (!ss || ss->state == SSCP_CLOSED) return;
 
     if (ss->cc_on_timeout)
         ss->cc_on_timeout(ss);
@@ -341,25 +341,25 @@ static void scp_timer_retrans_cb(void *arg)
     ss->fr_active = 0;
     ss->recover_seq = 0;
 
-    scp_retransmit(ss);
+    sscp_retransmit(ss);
 
     ss->timeout_count++;
 
     if (ss->timeout_count > RETRANS_COUNT_MAX) {
-        SCP_PRINT("RETRANS FAIL!\r\n");
+        SSCP_PRINT("RETRANS FAIL!\r\n");
 
-        ss->state = SCP_CLOSED;
-        scp_stream_free(ss);
+        ss->state = SSCP_CLOSED;
+        sscp_stream_free(ss);
         return;
     }
 
     uint32_t next_rto = ss->rto * 2; 
-    if (next_rto > SCP_RTO_MAX) 
-        next_rto = SCP_RTO_MAX; 
+    if (next_rto > SSCP_RTO_MAX) 
+        next_rto = SSCP_RTO_MAX; 
     ss->rto = next_rto;
 
-    scp_timer_create(&ss->t_retrans,
-                scp_timer_retrans_cb,
+    sscp_timer_create(&ss->t_retrans,
+                sscp_timer_retrans_cb,
                 ss,                      
                 ss->rto 
                 );
@@ -370,13 +370,13 @@ static void scp_timer_retrans_cb(void *arg)
  *In zero windows, we perisit remote.
  *If don't connect in a time, it is keeplive timer.
 */
-static void scp_timer_persist_cb(void *arg)
+static void sscp_timer_persist_cb(void *arg)
 {
-    struct scp_stream *ss = arg;
-    if (!ss || ss->state == SCP_CLOSED)
+    struct sscp_stream *ss = arg;
+    if (!ss || ss->state == SSCP_CLOSED)
         return;
 
-    uint32_t now = scp_now_time();
+    uint32_t now = sscp_now_time();
     int need_probe = 0;
 
     uint32_t idle = now - ss->last_active;
@@ -386,9 +386,9 @@ static void scp_timer_persist_cb(void *arg)
         ss->idle_failures++;
 
         if (ss->idle_failures > MAX_IDLE_FAIL) {
-            ss->state = SCP_CLOSED;
-            SCP_PRINT("IDLE FAIL!\r\n");
-            scp_stream_free(ss);
+            ss->state = SSCP_CLOSED;
+            SSCP_PRINT("IDLE FAIL!\r\n");
+            sscp_stream_free(ss);
             return;
         }
     }
@@ -399,11 +399,11 @@ static void scp_timer_persist_cb(void *arg)
     }
 
     if (need_probe) {
-        scp_send_window_probe(ss);
+        sscp_send_window_probe(ss);
     }
 
-    scp_timer_create(&ss->t_persist,
-        scp_timer_persist_cb,
+    sscp_timer_create(&ss->t_persist,
+        sscp_timer_persist_cb,
         ss,
         PERSIST_INTERVAL
     );
@@ -422,70 +422,70 @@ static uint32_t random32(void)
  *If our data is non orider, must rcv_buf_q first and rcv_data_q is not neibor
  *So (rcv_data_q last, rcv_buf_q first) is we need.
  */
-static inline uint32_t scp_calc_sack(struct scp_stream *ss)
+static inline uint32_t sscp_calc_sack(struct sscp_stream *ss)
 {
     if (ss->rcv_buf_q.rb_node == NULL)
         return ss->rcv_nxt;
 
     struct rb_node *n = rb_first(&ss->rcv_buf_q);
-    struct scp_buf *first = container_of(n, struct scp_buf, rb);
+    struct sscp_buf *first = container_of(n, struct sscp_buf, rb);
     return first->seq;
 }
 
 /*
  * Just alloc, you can replace memory alloc.
 */
-static struct scp_buf *scp_buf_alloc(uint32_t len)
+static struct sscp_buf *sscp_buf_alloc(uint32_t len)
 {
-    struct scp_buf *sb = scp_malloc(len);
+    struct sscp_buf *sb = sscp_malloc(len);
     if (!sb) return NULL;
 
     memset(sb, 0, len);
-    sb->data = (uint8_t *)sb + sizeof(struct scp_buf);
+    sb->data = (uint8_t *)sb + sizeof(struct sscp_buf);
 
     return sb;
 }
 
-static void scp_buf_free(struct scp_stream *ss, struct scp_buf *b)
+static void sscp_buf_free(struct sscp_stream *ss, struct sscp_buf *b)
 {
     uint16_t total;
 
     if (!b) return;
-    total = sizeof(struct scp_buf) + b->len;
-    if (b->dir == SCP_DIR_INPUT) {
+    total = sizeof(struct sscp_buf) + b->len;
+    if (b->dir == SSCP_DIR_INPUT) {
         ss->rcv_wmem -= total;
-    } else if (b->dir == SCP_DIR_SEND) {
+    } else if (b->dir == SSCP_DIR_SEND) {
         ss->snd_wmem -= total;
     }
-    scp_free(b);
+    sscp_free(b);
 }
 
 /*
 * Init it, if have many stream, we link it.
 */
-struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int src_fd, int dst_fd)
+struct sscp_stream *sscp_stream_alloc(struct sscp_transport_class *st_class, int src_fd, int dst_fd)
 {
-    if (hashmap_get(&scp_stream_map, (void *)(uintptr_t)src_fd))
+    if (hashmap_get(&sscp_stream_map, (void *)(uintptr_t)src_fd))
         return NULL;
 
-    struct scp_stream *ss = scp_malloc(sizeof(struct scp_stream));
+    struct sscp_stream *ss = sscp_malloc(sizeof(struct sscp_stream));
     if (!ss) {
         return NULL;
     }
 
-    *ss = (struct scp_stream) {
+    *ss = (struct sscp_stream) {
             .src_fd   = src_fd,
             .dst_fd   = dst_fd,
             .srtt = 0,
             .rttvar = 0,
-            .rto = SCP_RTO_INIT,
+            .rto = SSCP_RTO_INIT,
             .rto_recovery = 0,
-            .sb_hiwat = SCP_RECV_LIMIT,
+            .sb_hiwat = SSCP_RECV_LIMIT,
             .rcv_wnd  = RECV_WIN_INIT,
             .snd_wnd  = SEND_WIN_INIT,
             .st_class = st_class,
-            .pacing_next_time = (uint64_t)scp_now_time() << SCP_PACING_SHIFT,
-            .state = SCP_CLOSED,
+            .pacing_next_time = (uint64_t)sscp_now_time() << SSCP_PACING_SHIFT,
+            .state = SSCP_CLOSED,
             .iss = 0,
             .rcv_nxt = 0,
             .snd_seq_q = 0,
@@ -502,64 +502,64 @@ struct scp_stream *scp_stream_alloc(struct scp_transport_class *st_class, int sr
             .loss_cnt = 0,
             .p_ema = 0,
             .cong_q = 0,
-            .cc_phase = SCP_CC_PHASE_INC
+            .cc_phase = SSCP_CC_PHASE_INC
     };
 
-    scp_timer_node_init(&ss->t_retrans);
-    scp_timer_node_init(&ss->t_persist);
-    scp_timer_node_init(&ss->t_hs);
-    scp_timer_node_init(&ss->t_fin);
-    scp_timer_node_init(&ss->t_pacing);
+    sscp_timer_node_init(&ss->t_retrans);
+    sscp_timer_node_init(&ss->t_persist);
+    sscp_timer_node_init(&ss->t_hs);
+    sscp_timer_node_init(&ss->t_fin);
+    sscp_timer_node_init(&ss->t_pacing);
 
     list_node_init(&ss->node);
     list_node_init(&ss->snd_q);
-    rb_root_init(&ss->rcv_buf_q, scp_receive_compare);
+    rb_root_init(&ss->rcv_buf_q, sscp_receive_compare);
     list_node_init(&ss->rcv_data_q);
 
-    if (scp_install_cc(ss, SCP_CC_PROB) != 0) {
-        scp_free(ss);
+    if (sscp_install_cc(ss, SSCP_CC_PROB) != 0) {
+        sscp_free(ss);
         return NULL;
     }
 
-    queue_enqueue(&scp_stream_queue, &ss->node);
-    hashmap_put(&scp_stream_map, (void *)(uintptr_t)(ss->src_fd), ss);
-    scp_dump_ss_state(ss);
+    queue_enqueue(&sscp_stream_queue, &ss->node);
+    hashmap_put(&sscp_stream_map, (void *)(uintptr_t)(ss->src_fd), ss);
+    sscp_dump_ss_state(ss);
 
     return ss;
 }
 
-int scp_stream_free(struct scp_stream *ss)
+int sscp_stream_free(struct sscp_stream *ss)
 {
     if (!ss) return -1;
-    scp_dump_ss_state(ss);
+    sscp_dump_ss_state(ss);
 
-    scp_timer_remove(&ss->t_retrans);
-    scp_timer_remove(&ss->t_persist);
-    scp_timer_remove(&ss->t_hs);
-    scp_timer_remove(&ss->t_fin);
-    scp_timer_remove(&ss->t_pacing);
+    sscp_timer_remove(&ss->t_retrans);
+    sscp_timer_remove(&ss->t_persist);
+    sscp_timer_remove(&ss->t_hs);
+    sscp_timer_remove(&ss->t_fin);
+    sscp_timer_remove(&ss->t_pacing);
 
     while (!list_empty(&ss->snd_q)) {
-        struct scp_buf *sb = container_of(ss->snd_q.next, struct scp_buf, list);
+        struct sscp_buf *sb = container_of(ss->snd_q.next, struct sscp_buf, list);
         list_remove(&sb->list);
-        scp_buf_free(ss, sb);
+        sscp_buf_free(ss, sb);
     }
     while (!list_empty(&ss->rcv_data_q)) {
-        struct scp_buf *sb = container_of(ss->rcv_data_q.next, struct scp_buf, list);
+        struct sscp_buf *sb = container_of(ss->rcv_data_q.next, struct sscp_buf, list);
         list_remove(&sb->list);
-        scp_buf_free(ss, sb);
+        sscp_buf_free(ss, sb);
     }
     while (ss->rcv_buf_q.rb_node) {
         struct rb_node *node = rb_first(&ss->rcv_buf_q);
-        struct scp_buf *sb = container_of(node, struct scp_buf, rb);
+        struct sscp_buf *sb = container_of(node, struct sscp_buf, rb);
         rb_remove_node(&ss->rcv_buf_q, node);
-        scp_buf_free(ss, sb);
+        sscp_buf_free(ss, sb);
     }
 
     list_remove(&ss->node);
-    hashmap_remove(&scp_stream_map, (void *)(uintptr_t)(ss->src_fd));
+    hashmap_remove(&sscp_stream_map, (void *)(uintptr_t)(ss->src_fd));
 
-    scp_free(ss);
+    sscp_free(ss);
     return 0;
 }
 
@@ -568,21 +568,21 @@ int scp_stream_free(struct scp_stream *ss)
  * list init and hashmap, list link stream.
  * hashmap put fd.
 */
-int scp_init(size_t max_streams)
+int sscp_init(size_t max_streams)
 {
-#if SCP_DUMP_SS
-    scp_dump_time = 0;
+#if SSCP_DUMP_SS
+    sscp_dump_time = 0;
 #endif
-    rb_root_init(&scp_timer_tree, scp_timer_compare);
-    list_node_init(&scp_stream_queue);
-    hashmap_init(&scp_stream_map, max_streams, HASHMAP_KEY_INT);
+    rb_root_init(&sscp_timer_tree, sscp_timer_compare);
+    list_node_init(&sscp_stream_queue);
+    hashmap_init(&sscp_stream_map, max_streams, HASHMAP_KEY_INT);
     return 0;
 }
 
 /*
 * sb_hiwat is limit, and can't overout.
 */
-static inline void scp_update_rcv_wnd(struct scp_stream *s)
+static inline void sscp_update_rcv_wnd(struct sscp_stream *s)
 {
     if (s->sb_cc >= s->sb_hiwat)
         s->rcv_wnd = 0;
@@ -594,21 +594,21 @@ static inline void scp_update_rcv_wnd(struct scp_stream *s)
  * When no respond, we need to get information from remote.
  * So ping it, get wnd or other.
  */
-static void scp_send_window_probe(struct scp_stream *ss)
+static void sscp_send_window_probe(struct sscp_stream *ss)
 {
-    struct scp_hdr hdr = {
+    struct sscp_hdr hdr = {
             .seq   = htonl(ss->snd_nxt),
             .ack   = htonl(ss->rcv_nxt),
-            .sack  = htonl(scp_calc_sack(ss)),
+            .sack  = htonl(sscp_calc_sack(ss)),
             .wnd   = htonl(ss->rcv_wnd),
             .len   = 0,
             .cksum = 0,
-            .flags = SCP_FLAG_PING,
+            .flags = SSCP_FLAG_PING,
             .fd    = ss->dst_fd,
     };
 
     hdr.cksum = in_checksum(&hdr, sizeof(hdr));
-    scp_dump_hdr(ss, "WINDOWS_PING", &hdr);
+    sscp_dump_hdr(ss, "WINDOWS_PING", &hdr);
     ss->st_class->send(ss->st_class->user, &hdr, sizeof(hdr));
 }
 
@@ -617,7 +617,7 @@ static void scp_send_window_probe(struct scp_stream *ss)
  * Resend all bytes in [gap_start, gap_end) from snd_q.
  * rely on cwnd path for congestion control.
  */
-void scp_retransmit_gap(struct scp_stream *ss,
+void sscp_retransmit_gap(struct sscp_stream *ss,
                         uint32_t gap_start,
                         uint32_t gap_end)
 {
@@ -625,8 +625,8 @@ void scp_retransmit_gap(struct scp_stream *ss,
     int sent_frags = 0;
 
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
-        struct scp_buf *sb = container_of(n, struct scp_buf, list);
-        uint32_t total = sb->len - sizeof(struct scp_hdr);
+        struct sscp_buf *sb = container_of(n, struct sscp_buf, list);
+        uint32_t total = sb->len - sizeof(struct sscp_hdr);
 
         uint32_t seg_start = sb->seq;
         uint32_t seg_end   = sb->seq + total;
@@ -640,7 +640,7 @@ void scp_retransmit_gap(struct scp_stream *ss,
             return;
 
         ss->loss_cnt++;
-        scp_output_data(ss, sb); 
+        sscp_output_data(ss, sb); 
         sent_frags++;
 
         if (sent_frags >= RETRANS_GAP_MAX)
@@ -654,7 +654,7 @@ void scp_retransmit_gap(struct scp_stream *ss,
  * Only retransmit the first unacked segment (snd_una).
  * This avoids queue explosion and RTO storms.
  */
-static void scp_retransmit(struct scp_stream *ss)
+static void sscp_retransmit(struct sscp_stream *ss)
 {
     uint32_t max_frags = 1 << ss->rto_recovery;
 
@@ -665,8 +665,8 @@ static void scp_retransmit(struct scp_stream *ss)
 
     struct list_node *n;
     for (n = ss->snd_q.next; n != &ss->snd_q; n = n->next) {
-        struct scp_buf *sb = container_of(n, struct scp_buf, list);
-        uint32_t total = sb->len - sizeof(struct scp_hdr);
+        struct sscp_buf *sb = container_of(n, struct sscp_buf, list);
+        uint32_t total = sb->len - sizeof(struct sscp_hdr);
 
         uint32_t seg_start = sb->seq;
         uint32_t seg_end   = sb->seq + total;
@@ -675,7 +675,7 @@ static void scp_retransmit(struct scp_stream *ss)
             continue;
 
         ss->loss_cnt++;
-        scp_output_data(ss, sb);
+        sscp_output_data(ss, sb);
         sent++;
 
         if (sent >= max_frags)
@@ -686,81 +686,81 @@ static void scp_retransmit(struct scp_stream *ss)
 /*
 * Just for swap iss.
 */
-static void scp_output_connect(struct scp_stream *ss)
+static void sscp_output_connect(struct sscp_stream *ss)
 {
-    struct scp_hdr hdr = {
+    struct sscp_hdr hdr = {
         .seq = htonl(ss->iss),
         .ack = 0,
-        .sack = htonl(scp_calc_sack(ss)),
+        .sack = htonl(sscp_calc_sack(ss)),
         .wnd = htonl(ss->rcv_wnd),
         .len = 0,
-        .flags = SCP_FLAG_CONNECT,
+        .flags = SSCP_FLAG_CONNECT,
         .fd = ss->dst_fd,
     };
     hdr.cksum = in_checksum(&hdr, sizeof(hdr));
-    scp_debug_dump_tx("CONNECT", &hdr, sizeof(hdr));
-    scp_dump_hdr(ss, "CONNECT", &hdr);
+    sscp_debug_dump_tx("CONNECT", &hdr, sizeof(hdr));
+    sscp_dump_hdr(ss, "CONNECT", &hdr);
     ss->st_class->send(ss->st_class->user, &hdr, sizeof(hdr));
 }
 
 /*
 * Swap iss.
 */
-static void scp_output_connect_ack(struct scp_stream *ss)
+static void sscp_output_connect_ack(struct sscp_stream *ss)
 {
-    struct scp_hdr hdr = {
+    struct sscp_hdr hdr = {
         .seq = htonl(ss->snd_nxt),
         .ack = htonl(ss->rcv_nxt),
-        .sack = htonl(scp_calc_sack(ss)),
+        .sack = htonl(sscp_calc_sack(ss)),
         .wnd = htonl(ss->rcv_wnd),
         .len = 0,
-        .flags = SCP_FLAG_CONNECT_ACK,
+        .flags = SSCP_FLAG_CONNECT_ACK,
         .fd = ss->dst_fd,
     };
     hdr.cksum = 0;
     hdr.cksum = in_checksum(&hdr, sizeof(hdr));
-    scp_debug_dump_tx("CONNECT_ACK", &hdr, sizeof(hdr));
-    scp_dump_hdr(ss, "CONNECT_ACK", &hdr);
+    sscp_debug_dump_tx("CONNECT_ACK", &hdr, sizeof(hdr));
+    sscp_dump_hdr(ss, "CONNECT_ACK", &hdr);
     ss->st_class->send(ss->st_class->user, &hdr, sizeof(hdr));
 }
 
-static void scp_output_fin_first(struct scp_stream *ss)
+static void sscp_output_fin_first(struct sscp_stream *ss)
 {
-    struct scp_hdr hdr = {0};
+    struct sscp_hdr hdr = {0};
 
     hdr.seq  = htonl(ss->snd_nxt);
     hdr.ack  = htonl(ss->rcv_nxt);
-    hdr.sack = htonl(scp_calc_sack(ss));
+    hdr.sack = htonl(sscp_calc_sack(ss));
     hdr.wnd  = htonl(ss->rcv_wnd);
     hdr.len  = 0;
-    hdr.flags = SCP_FLAG_FIN | SCP_FLAG_ACK;
+    hdr.flags = SSCP_FLAG_FIN | SSCP_FLAG_ACK;
     hdr.fd   = ss->dst_fd;
     hdr.cksum = 0;
     hdr.cksum = in_checksum(&hdr, sizeof(hdr));
 
-    scp_debug_dump_tx("FIN_ACK", &hdr, sizeof(hdr));
-    scp_dump_hdr(ss, "FIN_ACK", &hdr);
+    sscp_debug_dump_tx("FIN_ACK", &hdr, sizeof(hdr));
+    sscp_dump_hdr(ss, "FIN_ACK", &hdr);
     ss->st_class->send(ss->st_class->user, &hdr, sizeof(hdr));
 
     ss->snd_nxt++;   
 }
 
-static void scp_output_fin_retrans(struct scp_stream *ss)
+static void sscp_output_fin_retrans(struct sscp_stream *ss)
 {
-    struct scp_hdr hdr = {0};
+    struct sscp_hdr hdr = {0};
 
     hdr.seq  = htonl(ss->snd_nxt - 1);  
     hdr.ack  = htonl(ss->rcv_nxt);
-    hdr.sack = htonl(scp_calc_sack(ss));
+    hdr.sack = htonl(sscp_calc_sack(ss));
     hdr.wnd  = htonl(ss->rcv_wnd);
     hdr.len  = 0;
-    hdr.flags = SCP_FLAG_FIN | SCP_FLAG_ACK;
+    hdr.flags = SSCP_FLAG_FIN | SSCP_FLAG_ACK;
     hdr.fd   = ss->dst_fd;
     hdr.cksum = 0;
     hdr.cksum = in_checksum(&hdr, sizeof(hdr));
 
-    scp_debug_dump_tx("FIN_RETRANS", &hdr, sizeof(hdr));
-    scp_dump_hdr(ss, "FIN_RETRANS", &hdr);
+    sscp_debug_dump_tx("FIN_RETRANS", &hdr, sizeof(hdr));
+    sscp_dump_hdr(ss, "FIN_RETRANS", &hdr);
     ss->st_class->send(ss->st_class->user, &hdr, sizeof(hdr));
 }
 
@@ -768,26 +768,26 @@ static void scp_output_fin_retrans(struct scp_stream *ss)
 /*
 *For handshake timeout, we need to retrans it.
 */
-static void scp_handle_handshake_timeout(void *arg)
+static void sscp_handle_handshake_timeout(void *arg)
 {
-    struct scp_stream *ss = arg;
+    struct sscp_stream *ss = arg;
     if (!ss) return;
 
-    if (ss->state != SCP_SYN_SENT && ss->state != SCP_SYN_RECV) {
-        scp_timer_delete(&ss->t_hs);  
+    if (ss->state != SSCP_SYN_SENT && ss->state != SSCP_SYN_RECV) {
+        sscp_timer_delete(&ss->t_hs);  
         return;
     }
 
     if (ss->retry++ < 5) {
 
-        if (ss->state == SCP_SYN_SENT)
-            scp_output_connect(ss);
+        if (ss->state == SSCP_SYN_SENT)
+            sscp_output_connect(ss);
         else
-            scp_output_connect_ack(ss);
+            sscp_output_connect_ack(ss);
 
-        scp_timer_delete(&ss->t_hs);
-        scp_timer_create(&ss->t_hs,
-            scp_handle_handshake_timeout,
+        sscp_timer_delete(&ss->t_hs);
+        sscp_timer_create(&ss->t_hs,
+            sscp_handle_handshake_timeout,
             ss,
             ss->rto << ss->retry
         );
@@ -795,28 +795,28 @@ static void scp_handle_handshake_timeout(void *arg)
         return;
     }
 
-    ss->state = SCP_CLOSED;
+    ss->state = SSCP_CLOSED;
 
-    scp_timer_delete(&ss->t_hs);
-    scp_stream_free(ss);
+    sscp_timer_delete(&ss->t_hs);
+    sscp_stream_free(ss);
 }
 
-static void scp_handle_fin_timeout(void *arg)
+static void sscp_handle_fin_timeout(void *arg)
 {
-    struct scp_stream *ss = arg;
+    struct sscp_stream *ss = arg;
     if (!ss) return;
 
-    if (ss->state != SCP_FIN_WAIT && ss->state != SCP_LAST_ACK) {
-        scp_timer_delete(&ss->t_fin);
+    if (ss->state != SSCP_FIN_WAIT && ss->state != SSCP_LAST_ACK) {
+        sscp_timer_delete(&ss->t_fin);
         return;
     }
 
     if (ss->retry++ < 5) {
-        scp_output_fin_retrans(ss);
+        sscp_output_fin_retrans(ss);
 
-        scp_timer_delete(&ss->t_fin);
-        scp_timer_create(&ss->t_fin,
-            scp_handle_fin_timeout,
+        sscp_timer_delete(&ss->t_fin);
+        sscp_timer_create(&ss->t_fin,
+            sscp_handle_fin_timeout,
             ss,
             ss->rto << ss->retry
         );
@@ -824,45 +824,45 @@ static void scp_handle_fin_timeout(void *arg)
         return;
     }
 
-    ss->state = SCP_CLOSED;
+    ss->state = SSCP_CLOSED;
 
-    scp_timer_delete(&ss->t_fin);
-    scp_stream_free(ss);
+    sscp_timer_delete(&ss->t_fin);
+    sscp_stream_free(ss);
 }
 
-static void scp_handle_close_drain_timeout(void *arg)
+static void sscp_handle_close_drain_timeout(void *arg)
 {
-    struct scp_stream *ss = arg;
-    ss->state = SCP_CLOSED;
-    scp_stream_free(ss);
+    struct sscp_stream *ss = arg;
+    ss->state = SSCP_CLOSED;
+    sscp_stream_free(ss);
 }
 
-static void scp_finish_close(struct scp_stream *ss)
+static void sscp_finish_close(struct sscp_stream *ss)
 {
-    if (!ss->close_pending || ss->state != SCP_ESTABLISHED ||
+    if (!ss->close_pending || ss->state != SSCP_ESTABLISHED ||
         !list_empty(&ss->snd_q) || ss->snd_una != ss->snd_seq_q)
         return;
 
-    ss->state = ss->peer_fin ? SCP_LAST_ACK : SCP_FIN_WAIT;
+    ss->state = ss->peer_fin ? SSCP_LAST_ACK : SSCP_FIN_WAIT;
     ss->retry = 0;
-    scp_timer_delete(&ss->t_pacing);
-    scp_timer_delete(&ss->t_retrans);
-    scp_timer_create(&ss->t_fin, scp_handle_fin_timeout, ss, ss->rto);
-    scp_output_fin_first(ss);
+    sscp_timer_delete(&ss->t_pacing);
+    sscp_timer_delete(&ss->t_retrans);
+    sscp_timer_create(&ss->t_fin, sscp_handle_fin_timeout, ss, ss->rto);
+    sscp_output_fin_first(ss);
 }
 
 /*
 * Now we are segment, don't need to trim or others.
 */
-static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
+static void sscp_process_data(struct sscp_stream *s, struct sscp_buf *sb)
 {
-    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
+    struct sscp_hdr *sh = (struct sscp_hdr *)sb->data;
     uint32_t seq         = ntohl(sh->seq);
     uint32_t payload_len = ntohs(sh->len);
 
     // zero-length segment, nothing to deliver
     if (payload_len == 0) {
-        scp_buf_free(s, sb);
+        sscp_buf_free(s, sb);
         return;
     }
 
@@ -873,13 +873,13 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
     {
         struct rb_node *n = rb_first(&s->rcv_buf_q);
         while (n) {
-            struct scp_buf *b = container_of(n, struct scp_buf, rb);
+            struct sscp_buf *b = container_of(n, struct sscp_buf, rb);
             struct rb_node *next = rb_next(n);
 
-            uint32_t b_end = b->seq + (b->len - sizeof(struct scp_hdr));
+            uint32_t b_end = b->seq + (b->len - sizeof(struct sscp_hdr));
             if (SEQ_LEQ(b_end, s->rcv_nxt)) {
                 rb_remove_node(&s->rcv_buf_q, &b->rb);
-                scp_buf_free(s, b);
+                sscp_buf_free(s, b);
                 n = next;
                 continue;
             }
@@ -889,8 +889,8 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
 
     // fully duplicate segment (already consumed)
     if (SEQ_LEQ(end, s->rcv_nxt)) {
-        scp_output_ack(s, sh);
-        scp_buf_free(s, sb);
+        sscp_output_ack(s, sh);
+        sscp_buf_free(s, sb);
         return;
     }
 
@@ -899,7 +899,7 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
         s->rcv_nxt += payload_len;
         queue_enqueue(&s->rcv_data_q, &sb->list);
         s->sb_cc += payload_len;
-        scp_update_rcv_wnd(s);
+        sscp_update_rcv_wnd(s);
 
         // consume any buffered contiguous out-of-order segments
         for (;;) {
@@ -907,9 +907,9 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
             if (!n)
                 break;
 
-            struct scp_buf *b = container_of(n, struct scp_buf, rb);
+            struct sscp_buf *b = container_of(n, struct sscp_buf, rb);
             uint32_t b_seq  = b->seq;
-            uint32_t b_plen = b->len - sizeof(struct scp_hdr);
+            uint32_t b_plen = b->len - sizeof(struct sscp_hdr);
 
             if (!SEQ_EQ(b_seq, s->rcv_nxt))
                 break;
@@ -918,10 +918,10 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
             queue_enqueue(&s->rcv_data_q, &b->list);
             s->rcv_nxt += b_plen;
             s->sb_cc += b_plen;
-            scp_update_rcv_wnd(s);
+            sscp_update_rcv_wnd(s);
         }
 
-        scp_output_ack(s, sh);
+        sscp_output_ack(s, sh);
         return;
     }
 
@@ -937,14 +937,14 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
 
         // duplicate out-of-order segment
         if (prev) {
-            struct scp_buf *pb = container_of(prev, struct scp_buf, rb);
+            struct sscp_buf *pb = container_of(prev, struct sscp_buf, rb);
             uint32_t p_seq = pb->seq;
-            uint32_t p_end = p_seq + (pb->len - sizeof(struct scp_hdr));
+            uint32_t p_end = p_seq + (pb->len - sizeof(struct sscp_hdr));
 
             // full coverage: drop
             if (SEQ_GT(p_end, seq) && SEQ_GEQ(p_end, end)) {
-                scp_output_ack(s, sh);
-                scp_buf_free(s, sb);
+                sscp_output_ack(s, sh);
+                sscp_buf_free(s, sb);
                 return;
             }
         }
@@ -953,26 +953,26 @@ static void scp_process_data(struct scp_stream *s, struct scp_buf *sb)
     // new out-of-order segment
     rb_node_init(&sb->rb);
     rb_insert_node(&s->rcv_buf_q, &sb->rb);
-    scp_output_ack(s, sh);
+    sscp_output_ack(s, sh);
 }
 
 /*
 *When get ack, remote has acked, must free buf.
 */
-void scp_snd_buf_free(struct scp_stream *ss, uint32_t ack)
+void sscp_snd_buf_free(struct sscp_stream *ss, uint32_t ack)
 {
     struct list_node *cur = ss->snd_q.next;
 
     while (cur != &ss->snd_q) {
-        struct scp_buf *sb = container_of(cur, struct scp_buf, list);
+        struct sscp_buf *sb = container_of(cur, struct sscp_buf, list);
         struct list_node *next = cur->next;
 
-        uint32_t payload_len = sb->len - sizeof(struct scp_hdr);
+        uint32_t payload_len = sb->len - sizeof(struct sscp_hdr);
         uint32_t end_seq     = sb->seq + payload_len;
 
         if (SEQ_LEQ(end_seq, ack)) {
             list_remove(cur);
-            scp_buf_free(ss, sb);
+            sscp_buf_free(ss, sb);
             ss->snd_q_count--;
             cur = next;
             continue;
@@ -982,7 +982,7 @@ void scp_snd_buf_free(struct scp_stream *ss, uint32_t ack)
     }
 }
 
-static inline void scp_update_loss(struct scp_stream *ss)
+static inline void sscp_update_loss(struct sscp_stream *ss)
 {
     if (ss->sent_cnt < P_WND)
         return;
@@ -1014,15 +1014,15 @@ static inline void scp_update_loss(struct scp_stream *ss)
  * All intermediate calculations use signed 32‑bit integers to avoid
  * wrap‑around when (abs_delta - rttvar) becomes negative.
  */
-static void scp_update_rtt(struct scp_stream *s)
+static void sscp_update_rtt(struct sscp_stream *s)
 {
     uint32_t rtt_sample = s->cc_on_rtt(s); 
     if (s->srtt == 0) {
         s->srtt   = rtt_sample;
         s->rttvar = rtt_sample >> 1;
         s->rto    = s->srtt + (s->rttvar << 2);
-        if (s->rto < SCP_RTO_MIN) s->rto = SCP_RTO_MIN;
-        if (s->rto > SCP_RTO_MAX) s->rto = SCP_RTO_MAX;
+        if (s->rto < SSCP_RTO_MIN) s->rto = SSCP_RTO_MIN;
+        if (s->rto > SSCP_RTO_MAX) s->rto = SSCP_RTO_MAX;
         return;
     }
 
@@ -1040,12 +1040,12 @@ static void scp_update_rtt(struct scp_stream *s)
     s->rttvar = (uint32_t)rttvar_i;
 
     uint32_t rto = s->srtt + (s->rttvar << 2);
-    if (rto < SCP_RTO_MIN) rto = SCP_RTO_MIN;
-    if (rto > SCP_RTO_MAX) rto = SCP_RTO_MAX;
+    if (rto < SSCP_RTO_MIN) rto = SSCP_RTO_MIN;
+    if (rto > SSCP_RTO_MAX) rto = SSCP_RTO_MAX;
     s->rto = rto;
 }
 
-static inline void scp_update_rtt_base(struct scp_stream *ss)
+static inline void sscp_update_rtt_base(struct sscp_stream *ss)
 {
     uint32_t rtt = ss->rtt_sample;
     if (rtt == 0)
@@ -1061,7 +1061,7 @@ static inline void scp_update_rtt_base(struct scp_stream *ss)
     }
 }
 
-static inline void scp_enter_recovery(struct scp_stream *ss)
+static inline void sscp_enter_recovery(struct sscp_stream *ss)
 {
     if (ss->fr_active)
         return;
@@ -1073,7 +1073,7 @@ static inline void scp_enter_recovery(struct scp_stream *ss)
         ss->cc_on_loss(ss);
 }
 
-static inline int scp_sack_gap_valid(struct scp_stream *ss,
+static inline int sscp_sack_gap_valid(struct sscp_stream *ss,
                                      uint32_t ack,
                                      uint32_t sack)
 {
@@ -1094,7 +1094,7 @@ static inline int scp_sack_gap_valid(struct scp_stream *ss,
  * The ACK also reflects the peer’s congestion state.
  * Handle ACK: update RTT, free bufferr, run SB.
  */
-static void scp_process_ack(struct scp_stream *ss,
+static void sscp_process_ack(struct sscp_stream *ss,
                             uint32_t ack,
                             uint32_t wnd,
                             uint32_t sack)
@@ -1109,7 +1109,7 @@ static void scp_process_ack(struct scp_stream *ss,
         uint32_t acked;
         acked = ack - old_una;
 
-        scp_update_loss(ss);    
+        sscp_update_loss(ss);    
 
         if (ss->fr_active &&
             SEQ_GEQ(ack, ss->recover_seq)) {
@@ -1126,30 +1126,30 @@ static void scp_process_ack(struct scp_stream *ss,
     ss->snd_una = ack;
     ss->snd_wnd = wnd;
 
-    if (ss->rto == SCP_RTO_MAX) {
+    if (ss->rto == SSCP_RTO_MAX) {
         ss->rto_recovery++;
     }
 
-    scp_snd_buf_free(ss, ack);
+    sscp_snd_buf_free(ss, ack);
 
-    if (scp_sack_gap_valid(ss, ack, sack)) {
+    if (sscp_sack_gap_valid(ss, ack, sack)) {
         int new_gap =
             !ss->last_gap_rexmit_valid ||
             SEQ_GT(ack, ss->last_gap_rexmit_ack);
 
         if (new_gap) {
-            scp_enter_recovery(ss);
+            sscp_enter_recovery(ss);
 
-            scp_retransmit_gap(ss, ack, sack);
+            sscp_retransmit_gap(ss, ack, sack);
 
             ss->last_gap_rexmit_ack = ack;
             ss->last_gap_rexmit_valid = 1;
 
-            scp_timer_delete(&ss->t_retrans);
+            sscp_timer_delete(&ss->t_retrans);
 
             if (ss->snd_una != ss->snd_nxt) {
-                scp_timer_create(&ss->t_retrans,
-                                 scp_timer_retrans_cb,
+                sscp_timer_create(&ss->t_retrans,
+                                 sscp_timer_retrans_cb,
                                  ss,
                                  ss->rto);
             }
@@ -1161,10 +1161,10 @@ static void scp_process_ack(struct scp_stream *ss,
         ss->timeout_count = 0;
         ss->dup_acks = 0;
 
-        scp_timer_delete(&ss->t_retrans);
+        sscp_timer_delete(&ss->t_retrans);
         if (ss->snd_una != ss->snd_nxt) {
-            scp_timer_create(&ss->t_retrans,
-                             scp_timer_retrans_cb,
+            sscp_timer_create(&ss->t_retrans,
+                             sscp_timer_retrans_cb,
                              ss,
                              ss->rto);
         }
@@ -1177,23 +1177,23 @@ static void scp_process_ack(struct scp_stream *ss,
         ss->dup_acks++;
 
         if (ss->dup_acks >= 3) {
-            scp_enter_recovery(ss);
+            sscp_enter_recovery(ss);
 
-            if (scp_sack_gap_valid(ss, ack, sack)) {
-                scp_retransmit_gap(ss, ack, sack);
+            if (sscp_sack_gap_valid(ss, ack, sack)) {
+                sscp_retransmit_gap(ss, ack, sack);
 
                 ss->last_gap_rexmit_ack = ack;
                 ss->last_gap_rexmit_valid = 1;
             }else {
-                scp_retransmit(ss);
+                sscp_retransmit(ss);
             }
 
             ss->dup_acks = 0;
-            scp_timer_delete(&ss->t_retrans);
+            sscp_timer_delete(&ss->t_retrans);
 
             if (ss->snd_una != ss->snd_nxt) {
-                scp_timer_create(&ss->t_retrans,
-                                 scp_timer_retrans_cb,
+                sscp_timer_create(&ss->t_retrans,
+                                 sscp_timer_retrans_cb,
                                  ss,
                                  ss->rto);
             }
@@ -1202,36 +1202,36 @@ static void scp_process_ack(struct scp_stream *ss,
 
 out:
     if (!list_empty(&ss->snd_q)) {
-        scp_output(ss);
+        sscp_output(ss);
     }
-    scp_finish_close(ss);
+    sscp_finish_close(ss);
 }
 
 /*
  *If we send data or ping, return ack.
  */
-void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh)
+void sscp_output_ack(struct sscp_stream *ss, struct sscp_hdr *data_sh)
 {
-    struct scp_hdr sh;
+    struct sscp_hdr sh;
     memset(&sh, 0, sizeof(sh));
 
     sh.seq = htonl(ss->snd_nxt);
     sh.ack = htonl(ss->rcv_nxt);
-    sh.sack = htonl(scp_calc_sack(ss));
+    sh.sack = htonl(sscp_calc_sack(ss));
     sh.wnd   = htonl(ss->rcv_wnd);
     sh.len   = 0;
-    sh.flags = SCP_FLAG_ACK;
+    sh.flags = SSCP_FLAG_ACK;
     sh.fd    = ss->dst_fd;
     if (data_sh && data_sh->time_val) {
         sh.time_val = data_sh->time_val;
     }
 
     sh.cksum = 0;
-    sh.cksum = in_checksum(&sh, sizeof(struct scp_hdr));
+    sh.cksum = in_checksum(&sh, sizeof(struct sscp_hdr));
 
-    scp_debug_dump_tx("ACK", &sh, sizeof(struct scp_hdr));
-    scp_dump_hdr(ss, "ACK", &sh);
-    ss->st_class->send(ss->st_class->user, &sh, sizeof(struct scp_hdr));
+    sscp_debug_dump_tx("ACK", &sh, sizeof(struct sscp_hdr));
+    sscp_dump_hdr(ss, "ACK", &sh);
+    ss->st_class->send(ss->st_class->user, &sh, sizeof(struct sscp_hdr));
 }
 
 /* Build a transmit-ready packet for this fragment.
@@ -1239,32 +1239,32 @@ void scp_output_ack(struct scp_stream *ss, struct scp_hdr *data_sh)
  * Fragments may start at any offset, so we must assemble [hdr][payload].
  * sb->data is persistent state and must not be modified in-place.
  */
-void scp_output_data(struct scp_stream *ss, struct scp_buf *sb)
+void sscp_output_data(struct sscp_stream *ss, struct sscp_buf *sb)
 {
-    struct scp_hdr *hdr = (struct scp_hdr *)sb->data;
+    struct sscp_hdr *hdr = (struct sscp_hdr *)sb->data;
 
     hdr->seq   = htonl(sb->seq);
     hdr->ack   = htonl(ss->rcv_nxt);
-    hdr->sack  = htonl(scp_calc_sack(ss));
+    hdr->sack  = htonl(sscp_calc_sack(ss));
     hdr->wnd   = htonl(ss->rcv_wnd);
-    hdr->len   = htons((uint16_t)sb->len - sizeof(struct scp_hdr));
-    hdr->flags = SCP_FLAG_DATA;
+    hdr->len   = htons((uint16_t)sb->len - sizeof(struct sscp_hdr));
+    hdr->flags = SSCP_FLAG_DATA;
     hdr->fd    = ss->dst_fd;
-    hdr->time_val  = htonl(scp_now_time());
+    hdr->time_val  = htonl(sscp_now_time());
 
     hdr->cksum = 0;
     hdr->cksum = in_checksum(sb->data, sb->len);
 
-    scp_debug_dump_tx("DATA", sb->data, sb->len);
-    scp_dump_hdr(ss, "DATA", hdr);
+    sscp_debug_dump_tx("DATA", sb->data, sb->len);
+    sscp_dump_hdr(ss, "DATA", hdr);
     ss->st_class->send(ss->st_class->user, sb->data, sb->len);
 
     ss->packet_count++;
-    ss->packet_bytes += sb->len - sizeof(struct scp_hdr);
+    ss->packet_bytes += sb->len - sizeof(struct sscp_hdr);
     ss->sent_cnt++;
 }
 
-static uint64_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
+static uint64_t sscp_pacing_time(struct sscp_stream *ss, uint32_t frag_len)
 {
     uint32_t rtt;
     uint32_t gain_q16;
@@ -1272,11 +1272,11 @@ static uint64_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
     uint64_t reciprocal_q32;
 
     if (!ss->srtt)
-        return (uint64_t)SCP_TICK_SCALE << SCP_PACING_SHIFT;
+        return (uint64_t)SSCP_TICK_SCALE << SSCP_PACING_SHIFT;
 
     rtt = ss->srtt;
     gain_q16 = ss->cc_pacing_gain(ss);
-    reciprocal_q32 = (uint64_t)SCP_GAIN_ONE_Q16 << SCP_PACING_SHIFT;
+    reciprocal_q32 = (uint64_t)SSCP_GAIN_ONE_Q16 << SSCP_PACING_SHIFT;
     reciprocal_q32 /= gain_q16;
 
     pacing_time = ((uint64_t)frag_len * rtt * reciprocal_q32) / ss->cwnd;
@@ -1288,21 +1288,21 @@ static uint64_t scp_pacing_time(struct scp_stream *ss, uint32_t frag_len)
  * The packet preceding `schedule_next` is the last pacing scheduling packet, 
  * while `pacing_next` is the first pacing scheduling packet to be sent.
  */
-static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
+static void sscp_output_to_pacing(struct sscp_stream *ss, uint32_t available)
 {
     uint32_t now;
 
-    now = scp_now_time();
-    if (SEQ_LT((uint32_t)(ss->pacing_next_time >> SCP_PACING_SHIFT), now))
-        ss->pacing_next_time = (uint64_t)now << SCP_PACING_SHIFT;
+    now = sscp_now_time();
+    if (SEQ_LT((uint32_t)(ss->pacing_next_time >> SSCP_PACING_SHIFT), now))
+        ss->pacing_next_time = (uint64_t)now << SSCP_PACING_SHIFT;
     while (ss->schedule_next) {
-        struct scp_buf *sb;
+        struct sscp_buf *sb;
         struct list_node *next;
         uint32_t frag_len;
 
         sb = ss->schedule_next;
         next = sb->list.next;
-        frag_len = sb->len - sizeof(struct scp_hdr);
+        frag_len = sb->len - sizeof(struct sscp_hdr);
 
         if (frag_len > available)
             break;
@@ -1313,41 +1313,41 @@ static void scp_output_to_pacing(struct scp_stream *ss, uint32_t available)
         }
 
         sb->sent_time = ss->pacing_next_time;
-        ss->pacing_next_time += scp_pacing_time(ss, frag_len);
+        ss->pacing_next_time += sscp_pacing_time(ss, frag_len);
 
         if (next == &ss->snd_q) {
             ss->schedule_next = NULL;
         } else {
-            ss->schedule_next = container_of(next, struct scp_buf, list);
+            ss->schedule_next = container_of(next, struct sscp_buf, list);
         }
 
         available -= frag_len;
     }
 }
 
-static void scp_pacing_arm_timer(struct scp_stream *ss)
+static void sscp_pacing_arm_timer(struct sscp_stream *ss)
 {
     uint32_t now, due, timeout;
 
     if (!ss->pacing_next) {
-        scp_timer_delete(&ss->t_pacing);
+        sscp_timer_delete(&ss->t_pacing);
         return;
     }
 
-    now = scp_now_time();
-    due = (uint32_t)(ss->pacing_next->sent_time >> SCP_PACING_SHIFT);
+    now = sscp_now_time();
+    due = (uint32_t)(ss->pacing_next->sent_time >> SSCP_PACING_SHIFT);
     timeout = SEQ_GT(due, now) ? (due - now) : 1U;
 
     if (ss->t_pacing.active && ss->t_pacing.expire == now + timeout)
         return;
 
-    scp_timer_create(&ss->t_pacing,
-                     scp_pacing_timer_cb,
+    sscp_timer_create(&ss->t_pacing,
+                     sscp_pacing_timer_cb,
                      ss,
                      timeout);
 }
 
-static int scp_output(struct scp_stream *ss)
+static int sscp_output(struct sscp_stream *ss)
 {
     uint32_t flight;
     uint32_t win;
@@ -1361,33 +1361,33 @@ static int scp_output(struct scp_stream *ss)
     if (win == 0 || flight >= win)
         return 0;
 
-    scp_output_to_pacing(ss, win - flight);
-    scp_pacing_send_due(ss);
+    sscp_output_to_pacing(ss, win - flight);
+    sscp_pacing_send_due(ss);
 
-    scp_pacing_arm_timer(ss);
+    sscp_pacing_arm_timer(ss);
 
     return 0;
 }
 
-static void scp_pacing_send_due(struct scp_stream *ss)
+static void sscp_pacing_send_due(struct sscp_stream *ss)
 {
     uint32_t now;
     uint8_t sent_any = 0;
 
-    if (!ss || ss->state != SCP_ESTABLISHED)
+    if (!ss || ss->state != SSCP_ESTABLISHED)
         return;
 
-    now = scp_now_time();
+    now = sscp_now_time();
 
     while (ss->pacing_next &&
-           SEQ_LEQ((uint32_t)(ss->pacing_next->sent_time >> SCP_PACING_SHIFT), now)) {
-        struct scp_buf *sb = ss->pacing_next;
+           SEQ_LEQ((uint32_t)(ss->pacing_next->sent_time >> SSCP_PACING_SHIFT), now)) {
+        struct sscp_buf *sb = ss->pacing_next;
         struct list_node *next = sb->list.next;
         uint32_t frag_len =
-            sb->len - sizeof(struct scp_hdr);
+            sb->len - sizeof(struct sscp_hdr);
         uint32_t end_seq = sb->seq + frag_len;
 
-        scp_output_data(ss, sb);
+        sscp_output_data(ss, sb);
 
         if (SEQ_GT(end_seq, ss->snd_nxt))
             ss->snd_nxt = end_seq;
@@ -1395,9 +1395,9 @@ static void scp_pacing_send_due(struct scp_stream *ss)
         if (next == &ss->snd_q) {
             ss->pacing_next = NULL;
         } else {
-            struct scp_buf *next_buf =
+            struct sscp_buf *next_buf =
                 container_of(next,
-                             struct scp_buf,
+                             struct sscp_buf,
                              list);
 
             if (next_buf == ss->schedule_next)
@@ -1412,35 +1412,35 @@ static void scp_pacing_send_due(struct scp_stream *ss)
     if (sent_any &&
         !ss->t_retrans.active &&
         ss->snd_una != ss->snd_nxt) {
-        scp_timer_create(&ss->t_retrans,
-                         scp_timer_retrans_cb,
+        sscp_timer_create(&ss->t_retrans,
+                         sscp_timer_retrans_cb,
                          ss,
                          ss->rto);
     }
 }
 
-static void scp_pacing_timer_cb(void *arg)
+static void sscp_pacing_timer_cb(void *arg)
 {
-    struct scp_stream *ss = arg;
+    struct sscp_stream *ss = arg;
 
-    if (!ss || ss->state != SCP_ESTABLISHED)
+    if (!ss || ss->state != SSCP_ESTABLISHED)
         return;
-    scp_pacing_send_due(ss);
+    sscp_pacing_send_due(ss);
 
     if (ss->pacing_next) {
-        scp_pacing_arm_timer(ss);
+        sscp_pacing_arm_timer(ss);
     } else {
-        scp_output(ss);
+        sscp_output(ss);
     }
 }
 
 /*
 * swap iss. start timer.
 */
-int scp_connect(int fd)
+int sscp_connect(int fd)
 {
-    struct scp_stream *ss = hashmap_get(&scp_stream_map, (void *)(uintptr_t)fd);
-    if (!ss || ss->state != SCP_CLOSED)
+    struct sscp_stream *ss = hashmap_get(&sscp_stream_map, (void *)(uintptr_t)fd);
+    if (!ss || ss->state != SSCP_CLOSED)
         return -1;
 
     ss->iss      = random32();
@@ -1448,14 +1448,14 @@ int scp_connect(int fd)
     ss->snd_una  = ss->iss;
     ss->snd_nxt = ss->iss;
 
-    ss->state = SCP_SYN_SENT;
+    ss->state = SSCP_SYN_SENT;
     ss->retry = 0;
 
-    scp_output_connect(ss);
+    sscp_output_connect(ss);
 
-    scp_timer_delete(&ss->t_hs);
-    scp_timer_create(&ss->t_hs,
-        scp_handle_handshake_timeout, 
+    sscp_timer_delete(&ss->t_hs);
+    sscp_timer_create(&ss->t_hs,
+        sscp_handle_handshake_timeout, 
         ss,                         
         ss->rto                      
     );
@@ -1466,55 +1466,55 @@ int scp_connect(int fd)
 /*Copy or not copy, this is a question.
 * Just enqueue.
 */
-int scp_send(int fd, void *buf, size_t len)
+int sscp_send(int fd, void *buf, size_t len)
 {
-    struct scp_stream *ss = hashmap_get(&scp_stream_map, (void *)(uintptr_t)fd);
+    struct sscp_stream *ss = hashmap_get(&sscp_stream_map, (void *)(uintptr_t)fd);
     if (!ss) return -1;
-    if (ss->state != SCP_ESTABLISHED || ss->close_pending) return -1;
+    if (ss->state != SSCP_ESTABLISHED || ss->close_pending) return -1;
     if (!len) return 0;
     if (!buf) return -1;
 
     uint32_t flight = ss->snd_nxt - ss->snd_una;
     uint32_t win = ss->snd_wnd;
-    if (flight >= win) return SCP_ERR_NOBUF;
+    if (flight >= win) return SSCP_ERR_NOBUF;
 
     struct list_node pending;
     size_t off = 0;
     size_t count = len / MSS + (len % MSS != 0);
-    size_t overhead = sizeof(struct scp_buf) + sizeof(struct scp_hdr);
+    size_t overhead = sizeof(struct sscp_buf) + sizeof(struct sscp_hdr);
     size_t required;
     if (len > SEND_MEM_MAX || count > (SEND_MEM_MAX - len) / overhead)
-        return SCP_ERR_NOBUF;
+        return SSCP_ERR_NOBUF;
     required = len + count * overhead;
     if (required > SEND_MEM_MAX - ss->snd_wmem)
-        return SCP_ERR_NOBUF;
+        return SSCP_ERR_NOBUF;
     list_node_init(&pending);
     while (off < len) {
         uint32_t frag = (len - off > MSS) ? MSS : (uint32_t)(len - off);
-        uint32_t total = sizeof(struct scp_buf) + sizeof(struct scp_hdr) + frag;
+        uint32_t total = sizeof(struct sscp_buf) + sizeof(struct sscp_hdr) + frag;
 
-        struct scp_buf *sb = scp_buf_alloc(total);
+        struct sscp_buf *sb = sscp_buf_alloc(total);
         if (!sb) {
             while (!list_empty(&pending)) {
-                struct scp_buf *p = container_of(pending.next, struct scp_buf, list);
+                struct sscp_buf *p = container_of(pending.next, struct sscp_buf, list);
                 list_remove(&p->list);
-                scp_free(p);
+                sscp_free(p);
             }
-            return SCP_ERR_NOMEM;
+            return SSCP_ERR_NOMEM;
         }
 
-        sb->len  = sizeof(struct scp_hdr) + frag;
+        sb->len  = sizeof(struct sscp_hdr) + frag;
         sb->seq  = ss->snd_seq_q + (uint32_t)off;
-        sb->dir = SCP_DIR_SEND;
+        sb->dir = SSCP_DIR_SEND;
 
-        uint8_t *pure = sb->data + sizeof(struct scp_hdr);
+        uint8_t *pure = sb->data + sizeof(struct sscp_hdr);
         memcpy(pure, (uint8_t *)buf + off, frag);
         queue_enqueue(&pending, &sb->list);
 
         off += frag;
     }
     while (!list_empty(&pending)) {
-        struct scp_buf *sb = container_of(pending.next, struct scp_buf, list);
+        struct sscp_buf *sb = container_of(pending.next, struct sscp_buf, list);
         list_remove(&sb->list);
         queue_enqueue(&ss->snd_q, &sb->list);
         ss->snd_q_count++;
@@ -1526,22 +1526,22 @@ int scp_send(int fd, void *buf, size_t len)
     ss->snd_seq_q += (uint32_t)len;
     ss->snd_wmem += (uint32_t)required;
 
-    scp_output(ss);
+    sscp_output(ss);
     return 0;
 }
 
 /*
 *To swap iss, respond syn+ack.
 */
-static void scp_listen_like_process(struct scp_stream *ss,
-                              struct scp_buf *sb,
+static void sscp_listen_like_process(struct sscp_stream *ss,
+                              struct sscp_buf *sb,
                               uint32_t ack,
                               uint32_t wnd)
 {
-    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
-    if (sh->flags & SCP_FLAG_CONNECT) {
+    struct sscp_hdr *sh = (struct sscp_hdr *)sb->data;
+    if (sh->flags & SSCP_FLAG_CONNECT) {
 
-        ss->state = SCP_SYN_RECV;
+        ss->state = SSCP_SYN_RECV;
 
         ss->irs     = ntohl(sh->seq);
         ss->rcv_nxt = ss->irs;
@@ -1551,79 +1551,79 @@ static void scp_listen_like_process(struct scp_stream *ss,
         ss->snd_una  = ss->iss;
         ss->snd_nxt = ss->iss;
 
-        scp_output_connect_ack(ss);
+        sscp_output_connect_ack(ss);
 
         ss->retry = 0;
 
-        scp_timer_delete(&ss->t_hs);
-        scp_timer_create(&ss->t_hs,
-            scp_handle_handshake_timeout,  
+        sscp_timer_delete(&ss->t_hs);
+        sscp_timer_create(&ss->t_hs,
+            sscp_handle_handshake_timeout,  
             ss,                           
             ss->rto                        
         );
     }
 
-    scp_buf_free(ss, sb);
+    sscp_buf_free(ss, sb);
 }
 
 /*
 * handshake has done, delete t_hs.  
 * start persist for zeor wnd and keeplive.
 */
-static void scp_syn_sent_process(struct scp_stream *ss,
-                                 struct scp_buf *sb,
+static void sscp_syn_sent_process(struct sscp_stream *ss,
+                                 struct sscp_buf *sb,
                                  uint32_t ack,
                                  uint32_t wnd)
 {
-    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
-    if (sh->flags & SCP_FLAG_CONNECT_ACK) {
+    struct sscp_hdr *sh = (struct sscp_hdr *)sb->data;
+    if (sh->flags & SSCP_FLAG_CONNECT_ACK) {
 
         ss->irs = ntohl(sh->seq);
         ss->rcv_nxt = ss->irs;
 
-        scp_output_ack(ss, NULL);
+        sscp_output_ack(ss, NULL);
 
-        ss->state = SCP_ESTABLISHED;
+        ss->state = SSCP_ESTABLISHED;
 
-        scp_timer_delete(&ss->t_hs);
+        sscp_timer_delete(&ss->t_hs);
 
-        scp_timer_create(&ss->t_persist,
-                scp_timer_persist_cb,
+        sscp_timer_create(&ss->t_persist,
+                sscp_timer_persist_cb,
                 ss,
                 PERSIST_INTERVAL
             );
     }
 
-    scp_buf_free(ss, sb);
+    sscp_buf_free(ss, sb);
 }
 
-static void scp_syn_recv_process(struct scp_stream *ss,
-                                 struct scp_buf *sb,
+static void sscp_syn_recv_process(struct sscp_stream *ss,
+                                 struct sscp_buf *sb,
                                  uint32_t ack,
                                  uint32_t wnd)
 {
-    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
-    if (sh->flags & SCP_FLAG_ACK) {
-        ss->state = SCP_ESTABLISHED;
+    struct sscp_hdr *sh = (struct sscp_hdr *)sb->data;
+    if (sh->flags & SSCP_FLAG_ACK) {
+        ss->state = SSCP_ESTABLISHED;
 
-        scp_timer_delete(&ss->t_hs);
+        sscp_timer_delete(&ss->t_hs);
 
-        scp_timer_create(&ss->t_persist,
-                scp_timer_persist_cb,
+        sscp_timer_create(&ss->t_persist,
+                sscp_timer_persist_cb,
                 ss,
                 PERSIST_INTERVAL
             );
 
-        if (sh->flags & SCP_FLAG_DATA) {
-            scp_process_data(ss, sb);
+        if (sh->flags & SSCP_FLAG_DATA) {
+            sscp_process_data(ss, sb);
             return;
         }
 
-        scp_buf_free(ss, sb);
+        sscp_buf_free(ss, sb);
         return;
     }
 
-    scp_buf_free(ss, sb);
+    sscp_buf_free(ss, sb);
 }
 
 /* Process ACK/PING first to update send state immediately.
@@ -1631,21 +1631,21 @@ static void scp_syn_recv_process(struct scp_stream *ss,
  * DATA is delivered or buffered according to rcv_nxt.
  * Any unhandled packet is freed after state‑specific processing.
  */
-static void scp_est_process(struct scp_stream *ss,
-                            struct scp_buf *sb,
+static void sscp_est_process(struct sscp_stream *ss,
+                            struct sscp_buf *sb,
                             uint32_t ack,
                             uint32_t wnd,
                             uint32_t sack)
 {
-    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
-    if (sh->flags == SCP_FLAG_CONNECT_ACK) {
+    struct sscp_hdr *sh = (struct sscp_hdr *)sb->data;
+    if (sh->flags == SSCP_FLAG_CONNECT_ACK) {
         if (ntohl(sh->seq) == ss->irs)
-            scp_output_ack(ss, NULL);
+            sscp_output_ack(ss, NULL);
 
-        scp_buf_free(ss, sb);
+        sscp_buf_free(ss, sb);
         return;
     }
-    if (sh->flags & SCP_FLAG_ACK) {
+    if (sh->flags & SSCP_FLAG_ACK) {
         /*
          * Only a pure ACK carries an echoed DATA timestamp.
          *
@@ -1654,141 +1654,141 @@ static void scp_est_process(struct scp_stream *ss,
          * uninitialized value as a send timestamp and could make the
          * unsigned subtraction wrap to a value near UINT32_MAX.
          */
-        if (sh->flags == SCP_FLAG_ACK) {
+        if (sh->flags == SSCP_FLAG_ACK) {
             uint32_t time_val = ntohl(sh->time_val);
 
             if (time_val) {
-                uint32_t sample = scp_now_time() - time_val;
+                uint32_t sample = sscp_now_time() - time_val;
 
                 if (!sample)
                     sample = 1;
 
                 ss->rtt_sample = sample;
-                scp_update_rtt_base(ss);
-                scp_update_rtt(ss);
+                sscp_update_rtt_base(ss);
+                sscp_update_rtt(ss);
             }
         }
 
-        scp_process_ack(ss, ack, wnd, sack);
+        sscp_process_ack(ss, ack, wnd, sack);
     }
 
-    if (sh->flags & SCP_FLAG_DATA) {
-        scp_process_data(ss, sb);
+    if (sh->flags & SSCP_FLAG_DATA) {
+        sscp_process_data(ss, sb);
         return;
     }
 
-    if (sh->flags & SCP_FLAG_PING) {
-        scp_output_ack(ss, NULL);
+    if (sh->flags & SSCP_FLAG_PING) {
+        sscp_output_ack(ss, NULL);
     }
 
-    if (sh->flags & SCP_FLAG_FIN) {
+    if (sh->flags & SSCP_FLAG_FIN) {
         uint32_t seq = ntohl(sh->seq);
 
         if (SEQ_LT(seq, ss->rcv_nxt)) {
-            scp_output_ack(ss, NULL);
-            scp_buf_free(ss, sb);
+            sscp_output_ack(ss, NULL);
+            sscp_buf_free(ss, sb);
             return;
         }
 
         ss->rcv_nxt = seq + 1;
-        scp_output_ack(ss, NULL);
+        sscp_output_ack(ss, NULL);
 
         ss->peer_fin = 1;
-        scp_close(ss->src_fd);
-        scp_buf_free(ss, sb);
+        sscp_close(ss->src_fd);
+        sscp_buf_free(ss, sb);
         return;
     }
 
-    scp_buf_free(ss, sb);
+    sscp_buf_free(ss, sb);
 }
 
-static void scp_fin_wait_process(struct scp_stream *ss,
-                                 struct scp_buf *sb,
+static void sscp_fin_wait_process(struct sscp_stream *ss,
+                                 struct sscp_buf *sb,
                                  uint32_t ack,
                                  uint32_t wnd,
                                  uint32_t sack)
 {
-    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
-    if (sh->flags & SCP_FLAG_ACK) {
-        scp_process_ack(ss, ack, wnd, sack);
+    struct sscp_hdr *sh = (struct sscp_hdr *)sb->data;
+    if (sh->flags & SSCP_FLAG_ACK) {
+        sscp_process_ack(ss, ack, wnd, sack);
     }
 
-    if (sh->flags & SCP_FLAG_PING) {
-        scp_output_ack(ss, NULL);
+    if (sh->flags & SSCP_FLAG_PING) {
+        sscp_output_ack(ss, NULL);
     }
 
-    if (sh->flags & SCP_FLAG_DATA) {
-        scp_process_data(ss, sb);
+    if (sh->flags & SSCP_FLAG_DATA) {
+        sscp_process_data(ss, sb);
         return;
     }
 
-    if (sh->flags & SCP_FLAG_FIN) {
+    if (sh->flags & SSCP_FLAG_FIN) {
         uint32_t seq = ntohl(sh->seq);
         if (SEQ_GEQ(seq, ss->rcv_nxt)) {
             ss->rcv_nxt = seq + 1;
         }
 
-        scp_output_ack(ss, NULL);
+        sscp_output_ack(ss, NULL);
 
-        scp_timer_delete(&ss->t_fin);
+        sscp_timer_delete(&ss->t_fin);
 
-        ss->state = SCP_CLOSED;
-        scp_buf_free(ss, sb);
-        scp_stream_free(ss);
+        ss->state = SSCP_CLOSED;
+        sscp_buf_free(ss, sb);
+        sscp_stream_free(ss);
         return;
     }
 
-    scp_buf_free(ss, sb);
+    sscp_buf_free(ss, sb);
 }
 
-static void scp_last_ack_process(struct scp_stream *ss,
-                                 struct scp_buf *sb,
+static void sscp_last_ack_process(struct sscp_stream *ss,
+                                 struct sscp_buf *sb,
                                  uint32_t ack,
                                  uint32_t wnd,
                                  uint32_t sack)
 {
-    struct scp_hdr *sh = (struct scp_hdr *)sb->data;
-    if (sh->flags & SCP_FLAG_PING) {
-        scp_output_ack(ss, NULL);
+    struct sscp_hdr *sh = (struct sscp_hdr *)sb->data;
+    if (sh->flags & SSCP_FLAG_PING) {
+        sscp_output_ack(ss, NULL);
     }
 
-    if (sh->flags & SCP_FLAG_FIN) {
-        scp_output_ack(ss, NULL);
-        scp_buf_free(ss, sb);
+    if (sh->flags & SSCP_FLAG_FIN) {
+        sscp_output_ack(ss, NULL);
+        sscp_buf_free(ss, sb);
         return;
     }
 
-    if (sh->flags & SCP_FLAG_ACK) {
-        scp_timer_delete(&ss->t_fin);
+    if (sh->flags & SSCP_FLAG_ACK) {
+        sscp_timer_delete(&ss->t_fin);
 
-        ss->state = SCP_CLOSED;
-        scp_buf_free(ss, sb);
-        scp_stream_free(ss);
+        ss->state = SSCP_CLOSED;
+        sscp_buf_free(ss, sb);
+        sscp_stream_free(ss);
         return;
     }
 
-    scp_buf_free(ss, sb);
+    sscp_buf_free(ss, sb);
 }
 
 /*
 *Copy or not copy, this is a question.
 *We need record all data, then update keeplive
 */
-int scp_input(void *ctx, void *buf, size_t len)
+int sscp_input(void *ctx, void *buf, size_t len)
 {
-    struct scp_buf *sb;
-    struct scp_hdr *sh;
-    struct scp_stream *ss;
+    struct sscp_buf *sb;
+    struct sscp_hdr *sh;
+    struct sscp_stream *ss;
     uint32_t total;
 
-    if (!buf || len < sizeof(struct scp_hdr) || len > MTU)
-        return SCP_ERR_GENERIC;
+    if (!buf || len < sizeof(struct sscp_hdr) || len > MTU)
+        return SSCP_ERR_GENERIC;
 
-    scp_debug_dump_rx(buf, len);
+    sscp_debug_dump_rx(buf, len);
 
-    sh = (struct scp_hdr *)buf;
-    if (ntohs(sh->len) != len - sizeof(struct scp_hdr))
-        return SCP_ERR_GENERIC;
+    sh = (struct sscp_hdr *)buf;
+    if (ntohs(sh->len) != len - sizeof(struct sscp_hdr))
+        return SSCP_ERR_GENERIC;
 
     uint16_t calc = in_checksum(buf, len);
     if (calc != 0) return -1;
@@ -1797,45 +1797,45 @@ int scp_input(void *ctx, void *buf, size_t len)
     uint32_t wnd = ntohl(sh->wnd);
     uint32_t sack = ntohl(sh->sack);
 
-    ss = hashmap_get(&scp_stream_map, (void *)(uintptr_t)sh->fd);
+    ss = hashmap_get(&sscp_stream_map, (void *)(uintptr_t)sh->fd);
     if (!ss) return -1;
 
-    total = sizeof(struct scp_buf) + len;
+    total = sizeof(struct sscp_buf) + len;
     if (ss->rcv_wmem + total > RECV_MEM_MAX)
-        return SCP_ERR_NOBUF;
+        return SSCP_ERR_NOBUF;
 
-    sb = scp_buf_alloc(total);
-    if (!sb) return SCP_ERR_NOMEM;
+    sb = sscp_buf_alloc(total);
+    if (!sb) return SSCP_ERR_NOMEM;
 
     ss->rcv_wmem += total;
-    ss->last_active = scp_now_time();
+    ss->last_active = sscp_now_time();
     ss->idle_failures = 0;
 
     memcpy(sb->data, buf, len);
     sb->len = len;
-    sb->dir = SCP_DIR_INPUT;
+    sb->dir = SSCP_DIR_INPUT;
 
     switch (ss->state) {
-    case SCP_CLOSED:
-        scp_listen_like_process(ss, sb, ack, wnd);
+    case SSCP_CLOSED:
+        sscp_listen_like_process(ss, sb, ack, wnd);
         break;
-    case SCP_SYN_SENT:
-        scp_syn_sent_process(ss, sb, ack, wnd);
+    case SSCP_SYN_SENT:
+        sscp_syn_sent_process(ss, sb, ack, wnd);
         break;
-    case SCP_SYN_RECV:
-        scp_syn_recv_process(ss, sb, ack, wnd);
+    case SSCP_SYN_RECV:
+        sscp_syn_recv_process(ss, sb, ack, wnd);
         break;
-    case SCP_ESTABLISHED:
-        scp_est_process(ss, sb, ack, wnd, sack);
+    case SSCP_ESTABLISHED:
+        sscp_est_process(ss, sb, ack, wnd, sack);
         break;
-    case SCP_FIN_WAIT:
-        scp_fin_wait_process(ss, sb, ack, wnd, sack);
+    case SSCP_FIN_WAIT:
+        sscp_fin_wait_process(ss, sb, ack, wnd, sack);
         break;
-    case SCP_LAST_ACK:
-        scp_last_ack_process(ss, sb, ack, wnd, sack);
+    case SSCP_LAST_ACK:
+        sscp_last_ack_process(ss, sb, ack, wnd, sack);
         break;
     default:
-        scp_buf_free(ss, sb);
+        sscp_buf_free(ss, sb);
         break;
     }
 
@@ -1845,35 +1845,35 @@ int scp_input(void *ctx, void *buf, size_t len)
 /*
 * We need to close all in all state.
 */
-void scp_close(int fd)
+void sscp_close(int fd)
 {
-    struct scp_stream *ss = hashmap_get(&scp_stream_map, (void *)(uintptr_t)fd);
+    struct sscp_stream *ss = hashmap_get(&sscp_stream_map, (void *)(uintptr_t)fd);
     if (!ss) return;
 
     switch (ss->state) {
 
-    case SCP_ESTABLISHED:
+    case SSCP_ESTABLISHED:
         if (!ss->close_pending) {
             ss->close_pending = 1;
-            scp_timer_create(&ss->t_fin, scp_handle_close_drain_timeout,
+            sscp_timer_create(&ss->t_fin, sscp_handle_close_drain_timeout,
                              ss, IDLE_TIMEOUT);
         }
-        scp_finish_close(ss);
+        sscp_finish_close(ss);
         break;
 
-    case SCP_SYN_SENT:
-    case SCP_SYN_RECV:
-        ss->state = SCP_CLOSED;
-        scp_stream_free(ss);
+    case SSCP_SYN_SENT:
+    case SSCP_SYN_RECV:
+        ss->state = SSCP_CLOSED;
+        sscp_stream_free(ss);
         break;
 
-    case SCP_FIN_WAIT:
-    case SCP_LAST_ACK:
+    case SSCP_FIN_WAIT:
+    case SSCP_LAST_ACK:
         break;
 
-    case SCP_CLOSED:
+    case SSCP_CLOSED:
     default:
-        scp_stream_free(ss);
+        sscp_stream_free(ss);
         break;
     }
 }
@@ -1882,9 +1882,9 @@ void scp_close(int fd)
 *Get data from rcv_data_q, update sb_cc and wnd.
 *If we are zeor wnd, must update.
 */
-int scp_recv(int fd, void *buf, size_t len)
+int sscp_recv(int fd, void *buf, size_t len)
 {
-    struct scp_stream *s = hashmap_get(&scp_stream_map, (void *)(uintptr_t)fd);
+    struct sscp_stream *s = hashmap_get(&sscp_stream_map, (void *)(uintptr_t)fd);
     if (!s) return -1;
 
     uint8_t *dst = buf;
@@ -1893,20 +1893,20 @@ int scp_recv(int fd, void *buf, size_t len)
     while (copied < len && !list_empty(&s->rcv_data_q)) {
 
         struct list_node *n = s->rcv_data_q.next;
-        struct scp_buf *sb = container_of(n, struct scp_buf, list);
+        struct sscp_buf *sb = container_of(n, struct sscp_buf, list);
 
-        uint32_t total_payload = sb->len - sizeof(struct scp_hdr);
+        uint32_t total_payload = sb->len - sizeof(struct sscp_hdr);
         uint32_t payload_len   = total_payload - sb->payload_off;
 
         uint32_t take = (uint32_t)min(len - copied, payload_len);
-        uint8_t *payload = sb->data + sizeof(struct scp_hdr) + sb->payload_off;
+        uint8_t *payload = sb->data + sizeof(struct sscp_hdr) + sb->payload_off;
 
         memcpy(dst + copied, payload, take);
         copied += take;
 
         if (take == payload_len) {
             list_remove(n);
-            scp_buf_free(s, sb);
+            sscp_buf_free(s, sb);
         } else {
             sb->payload_off += take;
         }
@@ -1919,22 +1919,22 @@ int scp_recv(int fd, void *buf, size_t len)
     }
 
     uint32_t old_wnd = s->rcv_wnd;
-    scp_update_rcv_wnd(s);
+    sscp_update_rcv_wnd(s);
 
     if (old_wnd == 0 && s->rcv_wnd > 0) {
-        scp_output_ack(s, NULL);
+        sscp_output_ack(s, NULL);
     }
 
     return copied;
 }
 
-int scp_is_closed(int fd)
+int sscp_is_closed(int fd)
 {
-    struct scp_stream *ss =
-        hashmap_get(&scp_stream_map,
+    struct sscp_stream *ss =
+        hashmap_get(&sscp_stream_map,
                     (void *)(uintptr_t)fd);
 
-    return ss == NULL || ss->state == SCP_CLOSED;
+    return ss == NULL || ss->state == SSCP_CLOSED;
 }
 
 
@@ -1949,8 +1949,8 @@ int scp_is_closed(int fd)
  *
  * 65535 is exactly divisible by 5.
  */
-#define SCP_Q_LOW_U16   ((uint16_t)26214U)
-#define SCP_Q_HIGH_U16  ((uint16_t)39321U)
+#define SSCP_Q_LOW_U16   ((uint16_t)26214U)
+#define SSCP_Q_HIGH_U16  ((uint16_t)39321U)
 
 /*
  * Lambda = 2 expansion in logit space:
@@ -1958,8 +1958,8 @@ int scp_is_closed(int fd)
  * q_dec_star = 4/13 ≈ 0.307692
  * q_inc_star = 9/13 ≈ 0.692308
  */
-#define SCP_Q_DEC_STAR  (4.0f / 13.0f)
-#define SCP_Q_INC_STAR  (9.0f / 13.0f)
+#define SSCP_Q_DEC_STAR  (4.0f / 13.0f)
+#define SSCP_Q_INC_STAR  (9.0f / 13.0f)
 
 #define Q16_ONE   (1 << 16)
 #define Q16_INT(x) ((int32_t)((x) << 16))
@@ -1994,10 +1994,10 @@ static inline uint16_t logistic(int32_t z)
  * Full logit span:
  *     logit(0.8) - logit(0.2) ~= 181704
  */
-#define SCP_LOGIT_02_Q16       ((int32_t)-90852)
-#define SCP_LOGIT_08_Q16       ((int32_t) 90852)
-#define SCP_LOGIT_28_SPAN_Q16  ((uint32_t)181704U)
-#define SCP_PROB_Q16_ONE       ((uint32_t)65536U)
+#define SSCP_LOGIT_02_Q16       ((int32_t)-90852)
+#define SSCP_LOGIT_08_Q16       ((int32_t) 90852)
+#define SSCP_LOGIT_28_SPAN_Q16  ((uint32_t)181704U)
+#define SSCP_PROB_Q16_ONE       ((uint32_t)65536U)
 
 /*
  * Configure:
@@ -2007,7 +2007,7 @@ static inline uint16_t logistic(int32_t z)
  *
  * where:
  *
- *     d_min = loss_q16 * (SCP_RTO_MIN / SCP_TICK_SCALE)
+ *     d_min = loss_q16 * (SSCP_RTO_MIN / SSCP_TICK_SCALE)
  *
  * Parameters:
  *
@@ -2019,7 +2019,7 @@ static inline uint16_t logistic(int32_t z)
  *         Expected average loss probability in Q16.16.
  *         For 10%, pass approximately 6554.
  */
-int scp_prob_configure(struct scp_stream *ss,
+int sscp_prob_configure(struct sscp_stream *ss,
                               uint32_t rtt_span_ms,
                               uint32_t loss_q16)
 {
@@ -2029,22 +2029,22 @@ int scp_prob_configure(struct scp_stream *ss,
     int64_t gamma_q16;
 
     if (!ss)
-        return SCP_ERR_GENERIC;
+        return SSCP_ERR_GENERIC;
 
     if (rtt_span_ms == 0)
-        return SCP_ERR_GENERIC;
+        return SSCP_ERR_GENERIC;
 
-    if (loss_q16 > SCP_PROB_Q16_ONE)
-        return SCP_ERR_GENERIC;
+    if (loss_q16 > SSCP_PROB_Q16_ONE)
+        return SSCP_ERR_GENERIC;
 
     /*
-     * d_min = configured_loss * (SCP_RTO_MIN / SCP_TICK_SCALE)
+     * d_min = configured_loss * (SSCP_RTO_MIN / SSCP_TICK_SCALE)
      *
      * Round to the nearest millisecond.
      */
     d_min_ms =
         ((uint64_t)loss_q16 *
-         (uint64_t)(SCP_RTO_MIN / SCP_TICK_SCALE) +
+         (uint64_t)(SSCP_RTO_MIN / SSCP_TICK_SCALE) +
          (1ULL << 15)) >> 16;
 
     d_max_ms =
@@ -2056,7 +2056,7 @@ int scp_prob_configure(struct scp_stream *ss,
      * part must fit within INT32_MAX >> 16.
      */
     if (d_max_ms > (uint64_t)(INT32_MAX >> 16))
-        return SCP_ERR_GENERIC;
+        return SSCP_ERR_GENERIC;
 
     /*
      * beta =
@@ -2066,7 +2066,7 @@ int scp_prob_configure(struct scp_stream *ss,
      * beta_q16 is Q16.16 per millisecond.
      */
     beta_q16 =
-        ((uint64_t)SCP_LOGIT_28_SPAN_Q16 +
+        ((uint64_t)SSCP_LOGIT_28_SPAN_Q16 +
          (uint64_t)rtt_span_ms / 2U) /
         (uint64_t)rtt_span_ms;
 
@@ -2074,7 +2074,7 @@ int scp_prob_configure(struct scp_stream *ss,
         beta_q16 = 1;
 
     if (beta_q16 > (uint64_t)INT32_MAX)
-        return SCP_ERR_GENERIC;
+        return SSCP_ERR_GENERIC;
 
     /*
      * Anchor the theoretical minimum effective delay at q=0.2:
@@ -2086,13 +2086,13 @@ int scp_prob_configure(struct scp_stream *ss,
      *   gamma = logit(0.2) - beta*d_min
      */
     gamma_q16 =
-        (int64_t)SCP_LOGIT_02_Q16 -
+        (int64_t)SSCP_LOGIT_02_Q16 -
         (int64_t)beta_q16 *
         (int64_t)d_min_ms;
 
     if (gamma_q16 < INT32_MIN ||
         gamma_q16 > INT32_MAX) {
-        return SCP_ERR_GENERIC;
+        return SSCP_ERR_GENERIC;
     }
 
     ss->prob_beta_q16 =
@@ -2107,18 +2107,18 @@ int scp_prob_configure(struct scp_stream *ss,
     ss->cong_q = 0;
     ss->cong_q_ema = 0;
     ss->z = 0;
-    ss->cc_phase = SCP_CC_PHASE_INC;
+    ss->cc_phase = SSCP_CC_PHASE_INC;
 
     return 0;
 }
 
-static inline void scp_md_prob(struct scp_stream *ss)
+static inline void sscp_md_prob(struct sscp_stream *ss)
 {
     int64_t d_q16 = 0;
 
     if (ss->rtt_base > 0 && ss->srtt > 0) {
         d_q16 = (((int64_t)ss->srtt -
-                  (int64_t)ss->rtt_base) * 65536LL) / SCP_TICK_SCALE;
+                  (int64_t)ss->rtt_base) * 65536LL) / SSCP_TICK_SCALE;
 
         if (d_q16 < 0)
             d_q16 = 0;
@@ -2153,11 +2153,11 @@ static inline void scp_md_prob(struct scp_stream *ss)
     }
 }
 
-static void scp_update_cwnd_fast(struct scp_stream *ss,
+static void sscp_update_cwnd_fast(struct sscp_stream *ss,
                                  uint32_t acked)
 {
-    const float q_inc_star = SCP_Q_INC_STAR;
-    const float q_dec_star = SCP_Q_DEC_STAR;
+    const float q_inc_star = SSCP_Q_INC_STAR;
+    const float q_dec_star = SSCP_Q_DEC_STAR;
     const float k_dec = 0.3f;
 
     float q_inst =
@@ -2168,15 +2168,15 @@ static void scp_update_cwnd_fast(struct scp_stream *ss,
 
     float w = (float)ss->cwnd;
 
-    if (ss->cc_phase == SCP_CC_PHASE_INC) {
-        if (ss->cong_q >= SCP_Q_HIGH_U16)
-            ss->cc_phase = SCP_CC_PHASE_DEC;
+    if (ss->cc_phase == SSCP_CC_PHASE_INC) {
+        if (ss->cong_q >= SSCP_Q_HIGH_U16)
+            ss->cc_phase = SSCP_CC_PHASE_DEC;
     } else {
-        if (ss->cong_q <= SCP_Q_LOW_U16)
-        ss->cc_phase = SCP_CC_PHASE_INC;
+        if (ss->cong_q <= SSCP_Q_LOW_U16)
+        ss->cc_phase = SSCP_CC_PHASE_INC;
     }
 
-    if (ss->cc_phase == SCP_CC_PHASE_INC) {
+    if (ss->cc_phase == SSCP_CC_PHASE_INC) {
         /*
          * Increase-branch virtual zero:
          *
@@ -2257,13 +2257,13 @@ static void scp_update_cwnd_fast(struct scp_stream *ss,
     ss->cwnd = (uint32_t)w;
 }
 
-static uint32_t scp_prob_pacing_gain(struct scp_stream *ss)
+static uint32_t sscp_prob_pacing_gain(struct sscp_stream *ss)
 {
     (void)ss;
-    return SCP_GAIN_CA_Q16;
+    return SSCP_GAIN_CA_Q16;
 }
 
-static void scp_prob_init(struct scp_stream *ss)
+static void sscp_prob_init(struct sscp_stream *ss)
 {
     ss->cwnd = MSS;
 
@@ -2279,48 +2279,48 @@ static void scp_prob_init(struct scp_stream *ss)
     ss->cong_q = 0;
     ss->cong_q_ema = 0;
 
-    ss->cc_phase = SCP_CC_PHASE_INC;
+    ss->cc_phase = SSCP_CC_PHASE_INC;
 
     ss->ssthresh = 0;
     ss->recover_seq = 0;
     ss->fr_active = 0;
 }
 
-static void scp_prob_on_ack(struct scp_stream *ss,
+static void sscp_prob_on_ack(struct sscp_stream *ss,
                             uint32_t acked)
 {
-    scp_md_prob(ss);
-    scp_update_cwnd_fast(ss, acked);
+    sscp_md_prob(ss);
+    sscp_update_cwnd_fast(ss, acked);
 }
 
-static void scp_prob_on_loss(struct scp_stream *ss)
+static void sscp_prob_on_loss(struct sscp_stream *ss)
 {
 
     (void)ss;
 }
 
-static void scp_prob_on_timeout(struct scp_stream *ss)
+static void sscp_prob_on_timeout(struct sscp_stream *ss)
 {
     (void)ss;
 }
 
-static uint32_t scp_prob_on_rtt(struct scp_stream *ss)
+static uint32_t sscp_prob_on_rtt(struct sscp_stream *ss)
 {
     uint32_t loss_rtt;
     uint32_t rtt;
-    loss_rtt = ((uint64_t)ss->p_ema * SCP_RTO_MIN) >> 16;
+    loss_rtt = ((uint64_t)ss->p_ema * SSCP_RTO_MIN) >> 16;
     rtt = ss->rtt_sample + loss_rtt;
     return rtt;
 }
 
-static uint32_t scp_aimd_pacing_gain(struct scp_stream *ss)
+static uint32_t sscp_aimd_pacing_gain(struct sscp_stream *ss)
 {
     if (ss->cwnd < ss->ssthresh)
-        return SCP_GAIN_SS_Q16;
-    return SCP_GAIN_CA_Q16;
+        return SSCP_GAIN_SS_Q16;
+    return SSCP_GAIN_CA_Q16;
 }
 
-static void scp_aimd_init(struct scp_stream *ss)
+static void sscp_aimd_init(struct sscp_stream *ss)
 {
     ss->cwnd = MSS;
     ss->cwnd_cnt = 0;
@@ -2331,10 +2331,10 @@ static void scp_aimd_init(struct scp_stream *ss)
     ss->recover_seq = 0;
     ss->cong_q = 0;
     ss->cong_q_ema = 0;
-    ss->cc_phase = SCP_CC_PHASE_INC;
+    ss->cc_phase = SSCP_CC_PHASE_INC;
 }
 
-static void scp_aimd_on_ack(struct scp_stream *ss,
+static void sscp_aimd_on_ack(struct sscp_stream *ss,
                             uint32_t acked)
 {
     if (acked == 0)
@@ -2376,7 +2376,7 @@ static void scp_aimd_on_ack(struct scp_stream *ss,
     ss->cwnd = (uint32_t)next_cwnd;
 }
 
-static void scp_aimd_on_loss(struct scp_stream *ss)
+static void sscp_aimd_on_loss(struct sscp_stream *ss)
 {
     uint32_t half = ss->cwnd / 2U;
     uint32_t minimum = 2U * MSS;
@@ -2387,7 +2387,7 @@ static void scp_aimd_on_loss(struct scp_stream *ss)
     ss->cwnd_cnt = 0;
 }
 
-static void scp_aimd_on_timeout(struct scp_stream *ss)
+static void sscp_aimd_on_timeout(struct sscp_stream *ss)
 {
     uint32_t half = ss->cwnd / 2U;
     uint32_t minimum = 2U * MSS;
@@ -2399,38 +2399,38 @@ static void scp_aimd_on_timeout(struct scp_stream *ss)
     ss->cwnd_cnt = 0;
 }
 
-static uint32_t scp_aimd_on_rtt(struct scp_stream *ss)
+static uint32_t sscp_aimd_on_rtt(struct sscp_stream *ss)
 {
     return ss->rtt_sample;
 }
 
-static int scp_install_cc(struct scp_stream *ss,
-                          enum scp_cc_id cc_id)
+static int sscp_install_cc(struct sscp_stream *ss,
+                          enum sscp_cc_id cc_id)
 {
     if (!ss)
-        return SCP_ERR_GENERIC;
+        return SSCP_ERR_GENERIC;
 
     switch (cc_id) {
-    case SCP_CC_PROB:
-        ss->cc_init       = scp_prob_init;
-        ss->cc_on_ack     = scp_prob_on_ack;
-        ss->cc_on_loss    = scp_prob_on_loss;
-        ss->cc_on_timeout = scp_prob_on_timeout;
-        ss->cc_on_rtt     = scp_prob_on_rtt;
-        ss->cc_pacing_gain = scp_prob_pacing_gain;
+    case SSCP_CC_PROB:
+        ss->cc_init       = sscp_prob_init;
+        ss->cc_on_ack     = sscp_prob_on_ack;
+        ss->cc_on_loss    = sscp_prob_on_loss;
+        ss->cc_on_timeout = sscp_prob_on_timeout;
+        ss->cc_on_rtt     = sscp_prob_on_rtt;
+        ss->cc_pacing_gain = sscp_prob_pacing_gain;
         break;
 
-    case SCP_CC_AIMD:
-        ss->cc_init       = scp_aimd_init;
-        ss->cc_on_ack     = scp_aimd_on_ack;
-        ss->cc_on_loss    = scp_aimd_on_loss;
-        ss->cc_on_timeout = scp_aimd_on_timeout;
-        ss->cc_on_rtt     = scp_aimd_on_rtt;
-        ss->cc_pacing_gain = scp_aimd_pacing_gain;
+    case SSCP_CC_AIMD:
+        ss->cc_init       = sscp_aimd_init;
+        ss->cc_on_ack     = sscp_aimd_on_ack;
+        ss->cc_on_loss    = sscp_aimd_on_loss;
+        ss->cc_on_timeout = sscp_aimd_on_timeout;
+        ss->cc_on_rtt     = sscp_aimd_on_rtt;
+        ss->cc_pacing_gain = sscp_aimd_pacing_gain;
         break;
 
     default:
-        return SCP_ERR_GENERIC;
+        return SSCP_ERR_GENERIC;
     }
 
     ss->cc_id = (uint8_t)cc_id;
@@ -2442,17 +2442,17 @@ static int scp_install_cc(struct scp_stream *ss,
 }
 
 
-int scp_set_cc(int fd, enum scp_cc_id cc_id)
+int sscp_set_cc(int fd, enum sscp_cc_id cc_id)
 {
-    struct scp_stream *ss =
-        hashmap_get(&scp_stream_map,
+    struct sscp_stream *ss =
+        hashmap_get(&sscp_stream_map,
                     (void *)(uintptr_t)fd);
 
     if (!ss)
-        return SCP_ERR_GENERIC;
+        return SSCP_ERR_GENERIC;
 
-    if (ss->state != SCP_CLOSED)
-        return SCP_ERR_GENERIC;
+    if (ss->state != SSCP_CLOSED)
+        return SSCP_ERR_GENERIC;
 
-    return scp_install_cc(ss, cc_id);
+    return sscp_install_cc(ss, cc_id);
 }

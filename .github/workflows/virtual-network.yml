@@ -1,4 +1,4 @@
-name: SCP transfer curves and network sweep
+name: SSCP transfer curves and network sweep
 on:
   push:
     branches: ['main']
@@ -32,9 +32,9 @@ jobs:
           cmake --build build-asan -j2
           ctest --test-dir build-asan -L virtual --output-on-failure
       - name: Virtual network 1 GiB and jPlot trace
-        run: python3 test/run.py build/scp_virtual --backend virtual --bytes 1073741824 --mbps 1000 --out results/transfers/virtual-1g
+        run: python3 test/run.py build/sscp_virtual --backend virtual --bytes 1073741824 --mbps 1000 --out results/transfers/virtual-1g
       - name: Linux UDP file transfer 1 GiB and jPlot trace
-        run: python3 test/run.py build/scp_udp --file-test --bytes 1073741824 --out results/transfers/linux-udp-1g
+        run: python3 test/run.py build/sscp_udp --file-test --bytes 1073741824 --out results/transfers/linux-udp-1g
       - name: Publish transfer results
         if: always()
         run: |
@@ -69,7 +69,7 @@ jobs:
       - name: Sweep configured network environments
         env:
           PROFILE: ${{ inputs.profile || 'scenarios' }}
-        run: python3 test/virtual/sweep.py build/scp_virtual --config test/virtual/network_sweep.json --profile "$PROFILE" --shard-index ${{ matrix.shard }} --shard-count 8 --jobs 2 --out results/shard-${{ matrix.shard }}
+        run: python3 test/virtual/sweep.py build/sscp_virtual --config test/virtual/network_sweep.json --profile "$PROFILE" --shard-index ${{ matrix.shard }} --shard-count 8 --jobs 2 --out results/shard-${{ matrix.shard }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
