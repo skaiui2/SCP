@@ -1,241 +1,116 @@
-# SCP (Simple Stream Control Protocol)
+# SSCP (Simple Stream Control Protocol)
 
-[中文说明](./docs/中文/README中文.md) · [User guide](docs/English/UserGuide.md) · [Tests and reproduction](test/README.md)
+[中文说明](docs/中文/README中文.md)
 
-SCP is a compact, stream-oriented reliable transport protocol implemented over UDP or another unreliable packet transport. The project focuses on network transport research: exploring reliable delivery, congestion control, pacing, and connection behavior with an inspectable C implementation.
+SSCP is a compact, stream-oriented reliable transport protocol implemented over UDP in clean C. It provides reliable delivery, flow control, connection management, congestion control, and pacing without depending on kernel TCP or external libraries.
 
-SCP provides sequencing, ACK/SACK processing, retransmission, flow control, connection management, RTT/RTO estimation, and congestion control without depending on a kernel TCP stack. The project currently contains two interchangeable congestion controllers:
+## Motivation
 
-- **SCP-PROB**: an experimental nonlinear controller that converts loss and RTT evidence into a continuous congestion-likelihood signal.
-- **AIMD**: a conventional additive-increase, multiplicative-decrease controller, also used as the baseline in comparative experiments.
+Why did I start this project? Sometimes it begins with a tiny spark of an idea, and looking back, you've already walked a very long way.
 
-The current implementation also includes a sender-side pacing layer. Packets admitted by the congestion window are assigned transmission times derived from `cwnd` and RTT, then released by the pacing timer.
+Initially, I just felt that TCP was way too bloated, and mechanisms like AIMD relying purely on packet loss as a congestion signal were very bad. I believed I could do better, so I started my research into network transport protocols, hahaha! Maybe I won't end up designing a better protocol, but the exploration itself is the real fun! Hhha, just for fun!
 
-> **Project status:** SCP is under active development; its API and wire format may change. The transport core and the selectable congestion controllers are evaluated separately. The PROB-specific experimental results are documented below.
+## Real-World Deployments & Experimental Validation
 
-## Research papers
+SSCP is strictly decoupled from underlying packet transports, and I have conducted extensive testing and experiments across many scenarios:
 
-The probability-driven controller is described in [SCP-PROB: Probability-Driven Nonlinear Congestion Control](./SCP-PROB_Probability-Driven_Nonlinear_Congestion_Control.pdf).
-
-The pacing study, [Pacing Gain and Congestion-Window Growth: Packet Models and SCP Experiments](./Pacing_and_Congestion_Window_Growth.pdf), began with slower transfers after the author added pacing to SCP. Its question is practical: which gain preserves window growth while spreading a group's packets across an RTT? The paper follows the author's route from continuous window growth to discrete packets, then sandwiches the packet gaps between neighbouring window values. Following the final packet and the extra packet born at an integer-window crossing explains the SS scale `2 ln 2` and the CA scale `3 ln 3 / 2`.
-
-SCP now uses these fixed phase gains: AIMD uses `2 ln 2` in SS and `3 ln 3 / 2` in CA; PROB uses the CA gain throughout. The CA choice is supported by the birth-front integral and parameter sweeps: around this value, middle and late complete packet groups span approximately one RTT; larger gains shorten the span. Lower gains can keep the span near an RTT by delaying later groups, so span and group-start delay are recorded together. The paper preserves the continuous reference `1 + MSS/(2*cwnd)` and explains why the packet implementation moved to a constant. The latest controlled comparison separates clock precision from CA rounding: the earlier 1 ms SCP result was 88 ms; at 1 μs, the old per-ACK integer update gives 92.369 ms, while retaining its division remainder restores 99.569 ms in both Python and actual SCP. The late groups have zero accumulated start delay. See the [compact comparison](papers/pacing/data/ca-byte-ablation-late.csv) and the paper for conditions and the historical results.
-
-For Overleaf, upload [papers/pacing/](./papers/pacing/), including `figures/`, and compile `Pacing_and_Congestion_Window_Growth.tex` with pdfLaTeX.
-
-| Research | Reproduction code and steps | Actions data |
-|---|---|---|
-| Slow start | [Next-slot SS guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/slowstart-nextslot-q16-20261022/reproduction) | [Verified full run 40340718507](https://github.com/skaiui2/SCP/actions/runs/40340718507) |
-| Congestion avoidance | [Next-slot CA guide and plotting scripts](https://github.com/skaiui2/SCP/tree/research/ca-nextslot-q16-20261022/reproduction) | [Verified full run 40340725047](https://github.com/skaiui2/SCP/actions/runs/40340725047) |
-
-Each research branch keeps its own reproduction scripts and compact tables; main maintains the common paper and engineering tests. The verified runs above execute the actual SCP core at 1 μs resolution with retained CA byte credit: SS commit `7c7c71a`, CA commit `ebb5ff5`, shared core baseline `ddea254`. Each ran 22 gains × 3 plus three native-policy controls, with 1 GiB per transfer. Their manifests identify the exact configuration. Earlier 1 ms and byte-truncation results remain historical comparisons in the paper, not descriptions of current behavior. Large data stays in Actions artifacts, not Git or Release attachments; rerun from the branch instructions if artifacts expire.
-
-Research proceeds from an idea to a mathematical algorithm model, a reviewed Python simulation, and actual SCP execution. The current scheduler follows Linux's next-slot approach: retain the next available time, start a batch at `max(next_slot, now)`, assign a packet's time, then advance the slot by that packet's interval. See the [model and execution contract](test/README.md#model-and-execution-contract) for the clock, queue and numeric differences between the two implementations.
-
-The [rebuilt Python model](test/models/pacing.py) retains fractional reservations; the earlier per-gap truncation mismatch is recorded in the discussion notes. Its outputs are checked by an [independent ACK-index evaluator](test/models/check.py). Its CA modes isolate real windows, the historical per-ACK byte truncation, and the current byte-remainder update. AIMD now carries the unused division remainder instead of discarding it at every ACK. Across the 1 GiB comparison, its largest window difference from the real recurrence at matching full-MSS ACK counts was 1.006703 bytes, rather than a guaranteed bound below one byte. Compare matching ACK counts and matching elapsed times separately. Complete-group span, the retained trailing slot and group-start delay must also be read separately; a 99 ms span inside a 100 ms fixed bin cannot establish perfect pacing.
-
-The [research discussion notes](papers/drafts/Pacing_Research_Discussion_Draft.md) and [bilingual IETF-oriented draft](papers/drafts/IETF_Pacing_Draft.md) preserve the questions, intermediate models, corrections and implementation decisions behind the two formal papers. The discussion notes also retain the earlier adaptive CA formula as part of that research history.
-
-The reading order is continuous models → discrete models → sandwich arguments → Python sweeps → SCP execution. Continuous SS and CA window formulas provide the scale; packet and ACK timing explain the difference between a local service budget and a group's actual first-to-last span. Compact derivations and the experimental comparisons stay together in the paper.
+- **Microcontrollers**: In an early prototype, I ported the protocol to an STM32F103C8T6 MCU with only 20 KB of SRAM. To be completely candid, running a full streaming protocol with window control and retransmission state machines on an MCU is complete overkill ("using a sledgehammer to crack a nut"). But I just wanted to see if it could even run. Surprisingly, it ran remarkably well—not only could it run, but it could even run the operating system and programming language I wrote. Later, I used it directly for data transfer in another of my microcontroller distributed projects, where it performed smoothly.
+- **Transcontinental Real-World WAN**: Repeatedly transferred 100 MB files between a local machine in China and a US VPS over public Internet routes across multiple experiments, thoroughly testing end-to-end data integrity and performance.
+- **Intensive Linux & Netem Stress Testing**: Set up rigorous network namespace topologies using Linux `netem` qdiscs with bandwidth bottlenecks, round-trip propagation delays (RTT), and random packet loss, conducting large-scale, high-intensity transfer tests from hundreds of megabytes up to 1 GiB.
 
 ## Features
 
-- Reliable byte stream over an unreliable packet transport
-- Sequence numbers, cumulative ACKs, and SACK information
+- Reliable byte stream over unreliable packet transports
+- Sequence numbers, cumulative ACKs, and selective ACKs (SACK)
 - Out-of-order buffering and retransmission
 - Receiver-advertised flow-control window
-- RTT, RTT variance, and retransmission-timeout estimation
-- CONNECT/FIN connection lifecycle
-- Pluggable congestion-control callbacks
-- Selectable PROB and AIMD congestion controllers
+- Smoothed RTT, RTT variance, and dynamic RTO estimation
+- Full CONNECT and FIN connection lifecycle
+- Pluggable congestion control: SSCP-PROB and AIMD baseline
 - Sender-side pacing based on `cwnd / RTT`
-- Red-black trees for timers and out-of-order receive buffers
-- Small C implementation intended to remain inspectable and portable
+- Intrusive red-black trees for timers and out-of-order buffers
+- Clean C implementation with no external runtime dependencies
 
-## Repository layout
-
-```text
-scp.c / scp.h                  protocol core
-lib/                           intrusive containers and data structures
-test/common/                   shared transfer logic and real UDP runner
-test/virtual/                  virtual network, functional tests and sweeps
-test/run.py                    paired transfers, validation and saved results
-test/plot.py                   plotting entry point and sweep overview
-test/analyze_scp.py / fig.py    original state-log analyzer and publication figures
-.github/workflows/             Linux transfers and virtual-network CI
-setup_scp_netns.sh             Linux network-namespace topology
-papers/pacing/                 pacing manuscript source
-papers/drafts/                 working research notes and IETF-oriented draft
-docs/                          user documentation
-```
-
-## Connection state machine
+## Connection State Machine
 
 ```mermaid
 stateDiagram-v2
     [*] --> CLOSED
-
     CLOSED --> SYN_SENT: send CONNECT
     CLOSED --> SYN_RECV: receive CONNECT / send CONNECT_ACK
-
     SYN_SENT --> ESTABLISHED: receive CONNECT_ACK / send ACK
     SYN_RECV --> ESTABLISHED: receive ACK
-
     ESTABLISHED --> ESTABLISHED: DATA / ACK / SACK
     ESTABLISHED --> FIN_WAIT: active close / send FIN+ACK
     ESTABLISHED --> LAST_ACK: receive FIN+ACK / send ACK+FIN
-
     FIN_WAIT --> CLOSED: receive FIN+ACK / send ACK
     LAST_ACK --> CLOSED: receive ACK
-
     FIN_WAIT --> FIN_WAIT: FIN timeout / retransmit
     LAST_ACK --> LAST_ACK: FIN timeout / retransmit
 ```
 
-## Congestion control and pacing
+## Congestion Control and Pacing
 
-### SCP-PROB
+- **SSCP-PROB**: Combines smoothed loss rate with RTT inflation to produce a continuous congestion signal, driving nonlinear window adjustments.
+- **AIMD**: Standard additive-increase, multiplicative-decrease controller used as a baseline.
+- **Pacing**: Dispatches packets admitted by `cwnd` using per-packet intervals derived from RTT and `cwnd`. Batches start at `max(next_slot, now)` and preserve pacing intervals across empty queue states.
 
-SCP-PROB combines a smoothed loss estimate with RTT measurements to form a residual congestion signal. A calibrated sigmoid and hysteresis determine whether its nonlinear control law increases or decreases the window.
+## Quick Start
 
-The design target is transmission in lossy or variable environments. In the zero-random-loss configuration reported below, two PROB flows received unequal shares, and PROB received a very small share when competing with AIMD. These observations concern the tested PROB controller and configuration; they do not establish a failure of the AIMD controller or SCP's reliable-transport mechanisms.
-
-### AIMD
-
-AIMD is an independently selectable congestion controller using conventional additive increase and multiplicative decrease. It uses the same congestion-control interface as SCP-PROB, while applying its own window-update rules. It also serves as the baseline in the experiments below.
-
-### Pacing
-
-The pacing layer does not replace the congestion window:
-
-1. `cwnd` and the peer window determine how much data may enter the network.
-2. The sender derives a per-packet interval from the current RTT and congestion window.
-3. Each batch starts at `max(next_slot, now)`. Each packet receives that time, then advances the persistent next slot by its own interval, including after the queue drains.
-4. ACK-triggered output and the pacing timer release packets whose scheduled integer-tick part is due. The timer wakes for the queue head's due tick instead of polling every tick.
-
-`SCP_TICK_SCALE` defaults to one tick per millisecond for real transports; virtual-network builds default to 1000 ticks per millisecond (1 μs). Physical timeout constants scale with it. Multiple packets may be released in one tick when their calculated interval is shorter or when the process wakes up late. The pacing integration test measures calls to the real transport `send` callback; it does not claim to measure physical wire-departure time after qdisc.
-
-Each controller supplies its gain through its registered callback. AIMD uses Q16 `90852` for `2 ln 2` in SS and Q16 `107998` for `3 ln 3 / 2` in CA. PROB uses Q16 `107998` throughout. The effective CA gain is `107998 / 65536 = 1.647918701171875`. Fractional reservation times persist even though execution checks their integer part.
-
-### Pacing discussion notes
-
-The analysis asks how pacing changes ACK timing and window growth, and how that behavior depends on the pacing gain. Relevant ICCRG threads record the questions and implementation details considered during the work:
-
-- [Slow-start timing and comparison models](https://mailarchive.ietf.org/arch/msg/iccrg/K0LZfeCUDnp3Kj91dMx-0iPGef8/), including the distinction between [fixed-batch and per-ACK scheduling](https://mailarchive.ietf.org/arch/msg/iccrg/GSzlNebpiu6Gp1UTRZJISBRiIi8/) and [window limits versus pacing-rate limits](https://mailarchive.ietf.org/arch/msg/iccrg/6K-oKt8LfaaH1XQKzp62wfElujc/).
-- [Why Linux uses a slow-start pacing multiplier of 2](https://mailarchive.ietf.org/arch/msg/iccrg/ms7Nww2LvUBuDaUmOD71osmp8bI/). [Neal Cardwell's reply](https://mailarchive.ietf.org/arch/msg/iccrg/ERsHqvYQLs7cNCxOPw13U5Jl9sg/) provides paced/unpaced CUBIC timing diagrams and the BBR Startup gain derivation. The [follow-up question](https://mailarchive.ietf.org/arch/msg/iccrg/a59n7DRXZr4q6it_djAZh23wuas/) examines the assumptions behind a continuous-model calculation of `2 ln 2` and its relation to Linux's multiplier of 2.
-
-## Build and tests
-
-One CMake configuration builds all tests. Real UDP and virtual-network tests share the generated-data transfer, checksum exchange and close verification. No payload files are needed.
+### 1. Build
 
 ```sh
 cmake -S test -B test/build -DCMAKE_BUILD_TYPE=Release
 cmake --build test/build -j
-ctest --test-dir test/build --output-on-failure
-python3 test/run.py test/build/scp_udp --out test/results/udp-1g
 ```
 
-The default standalone transfer is 1 GiB. See [test instructions](test/README.md) for dependencies, file transfers, network sweeps, and fairness measurements.
-
-### Current test system
-
-- **Functional and integrity checks:** CTest registers 17 checks: 11 virtual and six real UDP checks. They cover lifecycle, control-packet loss, allocation failures, sequence ordering, closure, checksums, both controllers, pacing and deterministic replay. CI also runs virtual checks under AddressSanitizer with leak detection.
-- **Shared transfer logic:** both backends run the actual SCP core and `test/common/transfer.c`. Generated bytes are checked individually and with FNV-1a; real file tests additionally verify file length and SHA-256. Virtual transfers monitor sequences and core resource cleanup throughout the run.
-- **Network scenarios:** the default `scenarios` sweep has 200 runs of 64 MiB over Wi-Fi-like, WAN and intercontinental links, loss rates from 0% to 5%, and five seeds. WAN has a 100-packet queue; intercontinental tests both 100 and 1000 Mbps. `quick` has 21 runs, `scenarios-1g` has 48, and optional `shallow-stress` has three 8 MiB runs with a 20-packet queue.
-- **Quality gates and metrics:** report checksum, sequence and cleanup failures separately from throughput, ACK-weighted SRTT, bufferbloat, cumulative DATA RTOs, retransmissions and startup RTTs. Zero-RTO is an additional gate for loss-free intercontinental tests; lossy tests measure RTO recovery rather than treating every necessary timeout as a protocol failure.
-- **Compact visual diagnosis:** sweeps retain at most 256 core-state samples per connection, case plots, configurations and summary JSON. Aggregate PNGs show Goodput vs Loss, seed envelopes and bufferbloat; failed gates remain visible. Successful sweeps save no raw text logs. Failed cases print an exact `Repro:` command and retain a short diagnostic tail.
-- **CI artifacts:** `network-report` provides aggregate figures and tables; `network-shard-*` contains compact case results. `transfer-1g-curves` covers the separate virtual and Linux localhost UDP 1 GiB transfers; raw transfer logs are uploaded only on failure. The Actions Summary links the figure bundle. Artifacts expire after 14 days; follow the [test guide](test/README.md) to reproduce them.
-
-These tests provide evidence for the configurations exercised; they do not establish correctness for every network or turn simulation results into real-path measurements.
-
-### Test architecture and environments
-
-The harness separates the transfer workload from packet delivery. Both backends exercise the actual SCP core and reuse `test/common/transfer.c` for data generation, receive validation, checksum exchange, and closure. The virtual backend uses a seeded packet scheduler and simulated clock; the UDP backend uses sockets and real elapsed time. Python runners coordinate execution and retain diagnostics. Standalone runs use the original log analyzer; bulk sweeps reduce core-state samples into compact CSVs and plots without saving full text logs. The [test design and environment notes](test/README.md#test-design-and-environments) describe the layers and pass criteria.
-
-| Environment | What it exercises |
-|---|---|
-| Virtual network | Repeatable rate, propagation delay, random loss, optional drop-tail queues, and protocol events without waiting for real elapsed time |
-| Localhost UDP | Real sockets, Linux/Windows process scheduling, paired endpoints, and file I/O |
-| Linux namespaces + netem | Real Linux UDP/IP and qdisc behavior on a controlled client–router–server path |
-| Actual China-to-US path | Deployment experience on a real intercontinental route; separate from configured simulation scenarios |
-
-Earlier netem experiments used `scp-c ↔ scp-r ↔ scp-s`, with a netem qdisc on each router egress. Each direction had its own rate, one-way delay, random loss, and finite packet queue. The historical results below used 5 Mbit/s per direction, 50 ms one-way delay (about 100 ms unloaded RTT), a 1000-packet queue, 100 MiB transfers, and 300-second fairness measurements. This exercises actual Linux networking under emulated impairments; it does not reproduce every feature of an Internet path. The current CI localhost transfer does not apply this netem topology, while the virtual model now has an optional drop-tail queue and its own deterministic clock. Results from these environments should be reported separately.
-
-For Linux namespaces, create the topology, then start B and A in separate terminals:
+### 2. Run Tests
 
 ```sh
-sudo bash setup_scp_netns.sh
-sudo ip netns exec scp-s test/build/scp_udp B
-sudo ip netns exec scp-c test/build/scp_udp A 10.0.2.1
+# Virtual network suite (11/11 tests)
+ctest --test-dir test/build -L virtual --output-on-failure
+
+# Paired localhost UDP transfer
+python3 test/run.py test/build/sscp_udp --bytes 8388608 --out test/results/udp-test
 ```
 
-## Earlier validation snapshot
-
-The following results are a transparent snapshot from **2026-08-19**, not a multi-run benchmark or a general performance claim.
-
-Environment:
-
-```text
-rate:             5 Mbit/s per direction
-one-way delay:    50 ms
-expected RTT:     approximately 100 ms
-queue limit:      1000 packets
-file size:        100 MiB
-fairness period:  300 seconds
-```
-
-### Zero random loss
-
-| Case | Observed result |
-|---|---|
-| PROB, single flow | 4.686 Mbit/s receiver goodput |
-| AIMD, single flow | 4.746 Mbit/s receiver goodput |
-| Pacing | 8 MiB verified; 2.200 ms average sender-callback gap; at most 4 DATA packets observed in one millisecond |
-| PROB vs PROB | 4.735 Mbit/s total; Jain index 0.641; flow ratio 6.95:1 |
-| PROB vs AIMD | 3.421 Mbit/s total; Jain index 0.504; PROB received 0.36% of delivered bytes |
-
-The transferred 100 MiB file passed end-to-end hash verification.
-
-### Ten percent random loss
-
-| Case | Observed result |
-|---|---|
-| PROB vs PROB | 2.044 Mbit/s total; Jain index 0.999887; flow ratio 1.022:1 |
-
-In this snapshot, the two PROB flows had near-equal shares at 10% random loss and unequal shares at zero random loss; aggregate goodput was lower in the loss case. PROB's allocation behavior and coexistence with AIMD need further investigation. The tables report controller-specific throughput and sharing separately from the transport's file-integrity checks.
-
-In test output, `"status":"success"` records successful case execution and the applicable protocol/integrity checks. Throughput and fairness are reported as separate measurements.
-
-## Analysis
-
-Test builds enable the protocol's own JSON state printer, sampled every 100 ms.
-`test/run.py` saves logs and plots automatically (requires matplotlib). Real Linux
-file transfer and virtual-network runs are separate:
+### 3. Linux Namespace Impairment Experiments
 
 ```sh
-sudo python3 test/run.py test/build/scp_udp --netns --file testA.bin --timeout 3600 --out test/results/linux-file
-python3 test/run.py test/build/scp_virtual --backend virtual --out test/results/virtual-1g
+# Setup 5 Mbps, 50 ms delay, 10% loss topology
+sudo bash setup_sscp_netns.sh setup 5mbit 50ms 10% 1000
+
+# Terminal 1 (Receiver B):
+sudo ip netns exec sscp-s test/build/sscp_udp B 10.0.2.1 104857600 aimd
+
+# Terminal 2 (Sender A):
+sudo ip netns exec sscp-c test/build/sscp_udp A 10.0.2.1 104857600 aimd
+
+# Teardown
+sudo bash setup_sscp_netns.sh teardown
 ```
 
-Create the namespace topology before the file run. The file test writes
-`received.bin`, checks both files' SHA-256 and saves endpoint logs and curves.
-See [test instructions](test/README.md) for setup and output locations.
+### 4. Trace Visualization with jPlot
 
-## Research use and project experience
+jPlot was recommended by Sebastian Moeller and is a fantastic tool. I ran into lots of trouble using classic xplot, so I strongly recommend everyone use jPlot!
 
-The author reports using SCP in Linux protocol-stack and network experiments, transferring 100 MB files on an actual China-to-US intercontinental path, and running a version on a microcontroller with 20 KB of memory. The repository also contains extensive automated transport tests. These experiences concern particular versions and environments; the microcontroller experience is not a memory requirement guaranteed by the current version, and the real intercontinental transfer is separate from the virtual scenarios above.
+```sh
+python3 test/sscptrace.py test/results/udp-test -o test/results/udp-test/trace.xpl
+java -jar jPlot.jar test/results/udp-test/trace.xpl
+```
 
-If you enjoy experimenting with networking, try SCP, inspect its behavior, and join the discussion. The project is a place to investigate transport mechanisms and compare designs. For products with strict reliability, security, maintenance, or interoperability requirements, consider established options such as lwIP, QUIC implementations, or KCP and evaluate them against your requirements.
+## Documentation
 
-SCP remains experimental: its API and wire format may change, it is not TCP-compatible, and the core provides no authentication or encryption. The historical PROB results above leave sharing and coexistence questions open. Automated tests, code review, and mathematical analysis each contribute different evidence.
+- User Guide (English): [docs/English/UserGuide.md](docs/English/UserGuide.md)
+- 使用手册 (中文): [docs/中文/使用手册.md](docs/中文/使用手册.md)
+- Testing Guide (English): [test/README.md](test/README.md)
+- 测试说明 (中文): [docs/中文/测试说明.md](docs/中文/测试说明.md)
+- README (中文): [docs/中文/README中文.md](docs/中文/README中文.md)
 
-## Contributing and discussion
+## Contributing
 
-[Issues](https://github.com/skaiui2/SCP/issues) are welcome for questions, experiment reports, bugs, and design discussions. For a reproducible report, include the commit, OS and build commands, controller, transfer size, network settings or virtual seed, expected and observed behavior, and relevant logs. Distinguish real-network measurements from simulations.
-
-Before proposing a core algorithm or API change, discuss the intended behavior and a concrete approach in an issue. Read [AGENTS.md](AGENTS.md) and the [project contribution rules](FUCKAI/SKILL.md),. Keep pull requests focused, explain what changes and why, and report the checks actually run with their results. Run the relevant CTest checks; network or performance claims should include their configuration, logs, and per-connection curves. Submit through [pull requests](https://github.com/skaiui2/SCP/pulls) for author review.
-
+Issues and pull requests are welcome for bug reports, questions, and protocol discussions.
 
 ## License
 
-SCP is released under the [MIT License](./LICENSE).
+SSCP is released under the [MIT License](./LICENSE).
