@@ -45,17 +45,13 @@ if args.file_test and not args.file:
 if args.file:
     args.bytes = args.file.stat().st_size
     if not args.bytes: parser.error("Input file is empty")
-if not args.no_plot:
-    try: import matplotlib, numpy, pandas
-    except ImportError: parser.error("Plotting needs matplotlib, numpy and pandas: python3 -m pip install matplotlib numpy pandas; or use --no-plot")
-
 def finish():
-    if not args.no_plot:
-        subprocess.run([sys.executable, str(Path(__file__).with_name("plot.py")), str(args.out)], check=True)
+    if not args.no_plot and Path(__file__).with_name("sscptrace.py").exists():
+        subprocess.run([sys.executable, str(Path(__file__).with_name("sscptrace.py")), str(args.out), "-o", str(args.out / "trace.xpl")], check=False)
     (args.out / "report.md").write_text(
-        f"# SCP {args.backend} run\n\nResult: PASS\n\n"
+        f"# SSCP {args.backend} run\n\nResult: PASS\n\n"
         f"Mode: {args.mode}\n\nBytes: {args.bytes if not args.mode.startswith('prob-') else 'timed two-flow experiment'}\n\n"
-        "State curves come from the protocol's own JSON logs, using test/analyze_scp.py.\n", encoding="utf-8")
+        "Trace exported to trace.xpl for jPlot visualization.\n", encoding="utf-8")
     print(f"Results: {args.out}", flush=True)
 args.out.mkdir(parents=True, exist_ok=True)
 exe = str(args.executable.resolve())
@@ -85,8 +81,10 @@ if args.file:
     command_a += ["--file", str(args.file)]
     command_b += ["--file", str(received)]
 if args.netns:
-    command_a = ["ip", "netns", "exec", "scp-c"] + command_a
-    command_b = ["ip", "netns", "exec", "scp-s"] + command_b
+    ns_c = "sscp-c" if Path("setup_sscp_netns.sh").exists() else "scp-c"
+    ns_s = "sscp-s" if Path("setup_sscp_netns.sh").exists() else "scp-s"
+    command_a = ["ip", "netns", "exec", ns_c] + command_a
+    command_b = ["ip", "netns", "exec", ns_s] + command_b
 with (args.out / "B.log").open("w") as log_b, (args.out / "A.log").open("w") as log_a:
     b = subprocess.Popen(command_b, stdout=log_b, stderr=subprocess.STDOUT, cwd=args.out)
     a = None

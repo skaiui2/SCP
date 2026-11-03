@@ -1,9 +1,9 @@
 name: SCP transfer curves and network sweep
 on:
   push:
-    paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/virtual-network.yml']
+    branches: ['main']
   pull_request:
-    paths: ['scp.c', 'scp.h', 'lib/**', 'test/**', '.github/workflows/virtual-network.yml']
+    branches: ['main']
   workflow_dispatch:
     inputs:
       profile:
@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check full XPL export
-        run: python3 test/test_scptrace.py
+        run: python3 test/test_sscptrace.py
       - run: cmake -S test -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
       - name: Integrity and functional checks
         run: ctest --test-dir build --output-on-failure
@@ -31,10 +31,9 @@ jobs:
           cmake -S test -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
           cmake --build build-asan -j2
           ctest --test-dir build-asan -L virtual --output-on-failure
-      - run: python3 -m pip install matplotlib numpy pandas
-      - name: Virtual network 1 GiB and protocol curves
+      - name: Virtual network 1 GiB and jPlot trace
         run: python3 test/run.py build/scp_virtual --backend virtual --bytes 1073741824 --mbps 1000 --out results/transfers/virtual-1g
-      - name: Linux UDP file transfer 1 GiB and protocol curves
+      - name: Linux UDP file transfer 1 GiB and jPlot trace
         run: python3 test/run.py build/scp_udp --file-test --bytes 1073741824 --out results/transfers/linux-udp-1g
       - name: Publish transfer results
         if: always()
@@ -45,7 +44,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: transfer-1g-curves
+          name: transfer-1g-traces
           path: |
             results/transfers/
             !results/transfers/**/*.bin
@@ -67,7 +66,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cmake -S test -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
-      - run: python3 -m pip install matplotlib numpy pandas
       - name: Sweep configured network environments
         env:
           PROFILE: ${{ inputs.profile || 'scenarios' }}
@@ -79,7 +77,6 @@ jobs:
           path: |
             results/**/*.json
             results/**/*.csv
-            results/**/*.png
             results/**/*.md
             results/**/failure.log
           retention-days: 14
@@ -94,10 +91,7 @@ jobs:
           pattern: network-shard-*
           merge-multiple: true
           path: results
-      - run: python3 -m pip install matplotlib numpy pandas
       - run: python3 test/virtual/sweep.py --merge results
-      - run: python3 test/plot.py results
-        if: always()
       - uses: actions/upload-artifact@v4
         id: figures
         if: always()
@@ -106,8 +100,6 @@ jobs:
           path: |
             results/report.md
             results/sweep.csv
-            results/sweep.png
-            results/bufferbloat.png
           retention-days: 14
       - name: Publish network diagnosis
         if: always()
@@ -118,9 +110,9 @@ jobs:
           import os, pathlib
           report = pathlib.Path('results/report.md')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
-              output.write('## Network figures\n\n[Download PNG charts and tables](' + os.environ['REPORT_URL'] + ')\n\n')
+              output.write('## Network sweep report\n\n[Download sweep report and CSV](' + os.environ['REPORT_URL'] + ')\n\n')
               if report.exists():
-                  output.write('\n'.join(line for line in report.read_text().splitlines() if not line.startswith('![')))
+                  output.write(report.read_text())
               else:
                   output.write('FAIL: merged report was not produced; inspect shard jobs.\n')
           PY

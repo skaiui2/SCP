@@ -60,3 +60,6 @@ dkms.conf
 # Test artifacts
 /test/results/
 **/__pycache__/
+
+*.pdf
+/jPlot.jar

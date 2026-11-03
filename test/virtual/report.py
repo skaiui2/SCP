@@ -18,13 +18,12 @@ def write_report(root, rows, expected=None):
         writer.writerows(rows)
     count = sum(passed(row) for row in rows)
     lines = [f"# Network sweep: {count}/{expected or len(rows)} passed", "",
-             "Actual SCP core, deterministic tick-by-tick virtual network. Goodput includes startup and close.",
+             "Actual SSCP core, deterministic tick-by-tick virtual network. Goodput includes startup and close.",
              "Queue capacity is per direction, including serialization but excluding propagation. Zero means unlimited.",
              "SRTT mean/max are sampled after sender ACK processing; Bufferbloat = mean SRTT / propagation RTT.",
              "Rexmit Ratio = DATA retransmissions (both directions) / max(1, all network drops). This is not proof of spurious retransmission.",
              "Every run requires byte validation, checksum, sequence conservation and core allocation/timer cleanup. Zero RTO is additionally required only where the profile says so.",
              "Startup measures the first crossing of 80% of the observed peak cwnd, from first DATA send, in propagation RTTs. It is not 80% BDP.", "",
-             "![Goodput and seed envelope](sweep.png)", "![Bufferbloat](bufferbloat.png)", "",
              "| Scenario | MiB | Link Mbps / RTT ms / Queue | Loss% | Seed | Result | Goodput Mbps | Bufferbloat | Zero-RTO? | Rexmit Ratio | Repro Command (if failed) |",
              "|:---|---:|:---|---:|---:|:---:|---:|---:|:---:|---:|:---|"]
     if expected is not None and len(rows) != expected:

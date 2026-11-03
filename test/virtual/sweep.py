@@ -146,6 +146,5 @@ def run(case):
 with ThreadPoolExecutor(max_workers=args.jobs) as pool:
     rows = list(pool.map(run, cases))
 passed = write_report(out, rows)
-plots = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "plot.py"), str(out), "--recursive"]) if rows else None
 print(f"Completed: {passed}/{len(rows)} passed. Report: {out / 'report.md'}")
-raise SystemExit(0 if passed == len(rows) and (plots is None or plots.returncode == 0) else 1)
+raise SystemExit(0 if passed == len(rows) else 1)

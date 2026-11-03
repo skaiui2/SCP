@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import scptrace
+import sscptrace
 
 
 class ExportTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class ExportTests(unittest.TestCase):
                    plan='', slot=initial_slot, cwnd=window):
             rows.append(dict(event=event, direction=direction, t_ms=now/scale,
                 t_tick=now, fd=2 if direction == 0 else 1, flags=flags,
-                seq=seq & scptrace.MASK, ack=ack & scptrace.MASK, payload_bytes=size,
+                seq=seq & sscptrace.MASK, ack=ack & sscptrace.MASK, payload_bytes=size,
                 echo_send_ms=echo/scale, echo_send_tick=echo, cwnd_bytes=cwnd,
                 cwnd_cnt=0, flight_bytes=0, planned_q32_tick=plan,
                 gain_q16=gain, next_slot_q32_tick=slot))
@@ -104,7 +104,7 @@ class ExportTests(unittest.TestCase):
                 with self.subTest(initial=initial, scale=scale), tempfile.TemporaryDirectory() as directory:
                     run = Path(directory)
                     rows, summary = self.fixture(run, initial, scale, base=0xfffffff0)
-                    result = scptrace.export_case(run)
+                    result = sscptrace.export_case(run)
                     self.assertEqual(result, dict(data_packets=initial+2, ack_packets=initial+2,
                                                   state_samples=4, control_packets=1))
                     tsg = self.commands(run/'xpl/a2b_tsg.xpl')
@@ -116,7 +116,7 @@ class ExportTests(unittest.TestCase):
                     self.assertEqual([float(parts[1]) for parts in data],
                                      [(row['t_tick']-100*scale)/scale/1000 for row in observed])
                     self.assertNotEqual(float(data[-1][1]),
-                        (observed[-1]['planned_q32_tick']-100*scale*scptrace.Q32)/(scptrace.Q32*scale*1000))
+                        (observed[-1]['planned_q32_tick']-100*scale*sscptrace.Q32)/(sscptrace.Q32*scale*1000))
                     self.assertTrue(any(text.startswith('G0 ') for _, _, text in tsg))
                     self.assertFalse(any(text.startswith('G-1 ') for _, _, text in tsg))
                     ack_ends = [float(parts[-1]) for color, parts, _ in tsg if color == 'green' and
@@ -136,7 +136,7 @@ class ExportTests(unittest.TestCase):
                 run = root/name
                 run.mkdir()
                 self.fixture(run, compressed=compressed)
-                scptrace.export_case(run)
+                sscptrace.export_case(run)
             for name in ('a2b_tsg.xpl', 'a2b_window.xpl'):
                 self.assertEqual((root/'plain/xpl'/name).read_bytes(), (root/'gzip/xpl'/name).read_bytes())
 
@@ -147,7 +147,7 @@ class ExportTests(unittest.TestCase):
             summary['new_packets'] += 1
             (run/'summary.json').write_text(json.dumps(summary))
             with self.assertRaises(ValueError):
-                scptrace.export_case(run)
+                sscptrace.export_case(run)
             self.assertFalse(list(run.glob('xpl/*.xpl')))
 
     def test_legacy_clock_and_native_policy(self):
@@ -172,7 +172,7 @@ class ExportTests(unittest.TestCase):
             summary = json.loads((run/'summary.json').read_text())
             summary['gain_policy'] = 'native_aimd'
             (run/'summary.json').write_text(json.dumps(summary))
-            self.assertEqual(scptrace.export_case(run)['data_packets'], 12)
+            self.assertEqual(sscptrace.export_case(run)['data_packets'], 12)
             self.assertIn('native_aimd', (run/'xpl/a2b_tsg.xpl').read_text())
 
     def test_failed_window_export_does_not_publish_partial_files(self):
@@ -181,8 +181,23 @@ class ExportTests(unittest.TestCase):
             self.fixture(run)
             (run/'run.log').write_text('No sender state samples\n')
             with self.assertRaisesRegex(ValueError, 'No sender state'):
-                scptrace.export_case(run)
+                sscptrace.export_case(run)
             self.assertFalse(list((run/'xpl').iterdir()))
+
+
+    def test_plain_log_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            with (run / 'A.log').open('w') as stream:
+                stream.write(json.dumps({'type': 'ss', 't': 100, 'cwnd': 1000, 'flight': 500, 'ssthresh': 2000}) + '\n')
+                stream.write(json.dumps({'type': 'ss', 't': 200, 'cwnd': 1500, 'flight': 800, 'ssthresh': 2000}) + '\n')
+            out = run / 'trace.xpl'
+            res = sscptrace.export_case(run, out)
+            self.assertEqual(res['state_samples'], 2)
+            self.assertTrue(out.exists())
+            content = out.read_text(encoding='ascii')
+            self.assertIn('SSCP Window Trace', content)
+            self.assertIn('line 0.000000000000 1000 0.100000000000 1500', content)
 
 
 if __name__ == '__main__':
