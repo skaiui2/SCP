@@ -235,21 +235,7 @@ def write_tsg(run, plot, summary, scale, origin, group_rows):
                 if first_seq is None:
                     first_seq = seq
                 relative = (seq - first_seq) & MASK
-                plot.line('blue', seconds, relative, seconds, relative + size)
-                planned = row.get('planned_q32_tick', row.get('planned_q32_ms'))
-                if planned not in (None, ''):
-                    plan = int(planned) if 'planned_q32_tick' in row else int(planned) * scale
-                    reserved = (plan - origin * Q32) / (Q32 * scale * 1000)
-                    plot.dot('gray20', reserved, relative)
-                if data in heads:
-                    group = heads[data]
-                    plot.dot('red', seconds, relative)
-                    if group['generation'] % 100 == 0 or group['terminal']:
-                        plot.label('red', seconds, relative,
-                                   f"G{group['generation']} L={group['actual_span_ms']:.6f} ms"
-                                   + (' complete' if group['complete'] else ' partial'))
-                if data in tails:
-                    plot.dot('red', seconds, relative + size)
+                plot.line('white', seconds, relative, seconds, relative + size)
                 data += 1
                 payload += size
             elif (direction == 1 and flags == 2 and origin <= now <= end and

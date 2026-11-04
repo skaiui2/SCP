@@ -91,7 +91,7 @@ class ExportTests(unittest.TestCase):
         for line in lines:
             if line in ('title', 'xlabel', 'ylabel'):
                 next(lines)
-            elif line in ('blue', 'green', 'red', 'purple', 'gray20'):
+            elif line in ('white', 'blue', 'green', 'red', 'purple', 'gray20'):
                 color = line
             elif line.startswith(('line ', 'dot ', 'ltext ')):
                 parts = line.split()
@@ -108,7 +108,7 @@ class ExportTests(unittest.TestCase):
                     self.assertEqual(result, dict(data_packets=initial+2, ack_packets=initial+2,
                                                   state_samples=4, control_packets=1))
                     tsg = self.commands(run/'xpl/a2b_tsg.xpl')
-                    data = [parts for color, parts, _ in tsg if color == 'blue' and parts[0] == 'line']
+                    data = [parts for color, parts, _ in tsg if color == 'white' and parts[0] == 'line']
                     self.assertEqual(len(data), initial+2)
                     self.assertEqual([int(parts[2]) for parts in data], [1430*n for n in range(initial+2)])
                     self.assertEqual(int(data[-1][4]), summary['received_bytes'])
@@ -117,8 +117,6 @@ class ExportTests(unittest.TestCase):
                                      [(row['t_tick']-100*scale)/scale/1000 for row in observed])
                     self.assertNotEqual(float(data[-1][1]),
                         (observed[-1]['planned_q32_tick']-100*scale*sscptrace.Q32)/(sscptrace.Q32*scale*1000))
-                    self.assertTrue(any(text.startswith('G0 ') for _, _, text in tsg))
-                    self.assertFalse(any(text.startswith('G-1 ') for _, _, text in tsg))
                     ack_ends = [float(parts[-1]) for color, parts, _ in tsg if color == 'green' and
                                 (parts[0] == 'dot' or parts[1] == parts[3])]
                     self.assertEqual(ack_ends, [1430*n for n in range(1, initial+2)]+[summary['received_bytes']])
