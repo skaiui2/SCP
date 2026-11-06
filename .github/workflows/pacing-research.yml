@@ -1,0 +1,67 @@
+name: SSCP Congestion Avoidance Pacing Sweep
+
+on:
+  push:
+    branches: ['research/ca-nextslot-q16-20261022']
+  pull_request:
+    branches: ['research/ca-nextslot-q16-20261022']
+  workflow_dispatch:
+
+concurrency:
+  group: scp-ca-sweep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run theoretical pacing model
+        run: |
+          python test/models/pacing.py --mode ca --gain-grid ca-critical --bytes 8388608 --repeats 1 --out sim_results
+
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      gains: ${{ steps.matrix.outputs.gains }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build research runner and run unit tests
+        run: |
+          cmake -S test -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure
+      - id: matrix
+        run: |
+          echo 'gains=["g90","g100","g120","g140","g150","g154_8","g159_8","g162_8","g163_8","g164_3","g164_8","g165_3","g165_8","g166_8","g169_8","g174_8","g190","g200","g250","g300","g400","g800","native"]' >> $GITHUB_OUTPUT
+
+  sweep:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        gain: ${{ fromJSON(needs.build.outputs.gains) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build runner
+        run: |
+          cmake -S test -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target sscp_research -j2
+      - name: Run sweep for ${{ matrix.gain }}
+        run: |
+          python test/research/run_sweep.py --mode ca --gain-id ${{ matrix.gain }} --bin build/sscp_research --out results/${{ matrix.gain }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sscp-ca-xpl-${{ matrix.gain }}
+          path: results/${{ matrix.gain }}/xpl/*.xpl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sscp-ca-summary-${{ matrix.gain }}
+          path: results/${{ matrix.gain }}/summary.csv
