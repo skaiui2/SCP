@@ -84,7 +84,7 @@ def run(case):
     if summary.exists():
         summary.unlink()
     start = time.perf_counter()
-    tail, states, counts, strides = deque(maxlen=32), {}, {}, {}
+    tail = deque(maxlen=32)
     expired = []
     with subprocess.Popen(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, encoding="utf-8", errors="replace") as process:
@@ -96,29 +96,11 @@ def run(case):
         timer.start()
         try:
             for line in process.stdout:
-                try: state = json.loads(line)
-                except ValueError: state = None
-                if isinstance(state, dict) and state.get("type") == "ss":
-                    fd = state["stream_fd"]
-                    counts[fd] = counts.get(fd, 0) + 1
-                    stride = strides.setdefault(fd, 1)
-                    if (counts[fd] - 1) % stride: continue
-                    records = states.setdefault(fd, [])
-                    records.append(state)
-                    if len(records) > 256:
-                        states[fd] = records[::2]
-                        strides[fd] *= 2
-                else: tail.append(line.rstrip())
+                tail.append(line.rstrip())
             row["exit_code"] = process.wait()
         finally:
             timer.cancel()
     if expired: row["exit_code"] = "wall_timeout"
-    with (directory / "curve.csv").open("w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["tick", "stream_fd", "cwnd", "flight", "srtt_ticks"])
-        for records in states.values():
-            for state in records:
-                writer.writerow([state['t'], state['stream_fd'], state['cwnd'], state['flight'], state['srtt']])
     row["wall_seconds"] = round(time.perf_counter() - start, 3)
     if summary.exists():
         try:
@@ -139,8 +121,13 @@ def run(case):
     else:
         (directory / "failure.log").unlink(missing_ok=True)
     ms = row.get("simulated_ms", 0)
-    row["goodput_mbps"] = round(row.get("received_bytes", 0) * 8 / (ms * 1000), 3) if ms else 0
-    print(f"{'PASS' if row['success'] else 'FAIL'} {directory.name} {row['goodput_mbps']} Mbps", flush=True)
+    retrans = row.get("retrans_packets", 0)
+    new_pkts = (size + 1429) // 1430
+    row["time_s"] = round(ms / 1000, 3) if ms else 0
+    row["goodput_mbps"] = round(row.get("received_bytes", 0) * 8 / (ms * 1000), 2) if ms else 0
+    row["util_pct"] = round(row["goodput_mbps"] / rate * 100, 1) if rate and ms else 0
+    row["retrans_pct"] = round(retrans / (new_pkts + retrans) * 100, 2) if (new_pkts + retrans) else 0
+    print(f"{'PASS' if row['success'] else 'FAIL'} {directory.name} {row['time_s']}s {row['goodput_mbps']} Mbps ({row['util_pct']}%) retrans={row['retrans_pct']}% rto={row.get('timeouts', 0)}", flush=True)
     return row
 
 with ThreadPoolExecutor(max_workers=args.jobs) as pool:

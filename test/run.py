@@ -46,12 +46,10 @@ if args.file:
     args.bytes = args.file.stat().st_size
     if not args.bytes: parser.error("Input file is empty")
 def finish():
-    if not args.no_plot and Path(__file__).with_name("sscptrace.py").exists():
-        subprocess.run([sys.executable, str(Path(__file__).with_name("sscptrace.py")), str(args.out), "-o", str(args.out / "trace.xpl")], check=False)
     (args.out / "report.md").write_text(
         f"# SSCP {args.backend} run\n\nResult: PASS\n\n"
-        f"Mode: {args.mode}\n\nBytes: {args.bytes if not args.mode.startswith('prob-') else 'timed two-flow experiment'}\n\n"
-        "Trace exported to trace.xpl for jPlot visualization.\n", encoding="utf-8")
+        f"Mode: {args.mode}\n\nBytes: {args.bytes if not args.mode.startswith('prob-') else 'timed two-flow experiment'}\n",
+        encoding="utf-8")
     print(f"Results: {args.out}", flush=True)
 args.out.mkdir(parents=True, exist_ok=True)
 exe = str(args.executable.resolve())

@@ -29,9 +29,9 @@ jobs:
           cmake -S test -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
           cmake --build build-asan -j2
           ctest --test-dir build-asan -L virtual --output-on-failure
-      - name: Virtual network 1 GiB and jPlot trace
+      - name: Virtual network 1 GiB transfer
         run: python3 test/run.py build/sscp_virtual --backend virtual --bytes 1073741824 --mbps 1000 --out results/transfers/virtual-1g
-      - name: Linux UDP file transfer 1 GiB and jPlot trace
+      - name: Linux UDP file transfer 1 GiB
         run: python3 test/run.py build/sscp_udp --file-test --bytes 1073741824 --out results/transfers/linux-udp-1g
       - name: Publish transfer results
         if: always()
@@ -42,7 +42,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: transfer-1g-traces
+          name: transfer-1g-results
           path: |
             results/transfers/
             !results/transfers/**/*.bin
